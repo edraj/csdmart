@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { goto, params } from "@roxi/routify";
+  import { goto as gotoStore, params } from "@roxi/routify";
   import { onMount } from "svelte";
   import HtmlEditor from "@/components/editors/HtmlEditor.svelte";
   import TemplateEditor from "@/components/editors/TemplateEditor.svelte";
@@ -34,11 +34,14 @@
     TrashBinSolid,
     UploadOutline,
   } from "flowbite-svelte-icons";
-  import { _, locale } from "@/i18n";
-  import { derived as derivedStore } from "svelte/store";
+  import { _, locale, isRTL } from "@/i18n";
   import { formatNumberInText } from "@/lib/helpers";
 
-  $goto;
+  // Routify's helpers read the fragment context when first subscribed, and
+  // Svelte 5 subscribes to a `$store` lazily on first read — so a `$gotoStore`
+  // first touched inside an async callback logs "Unable to access context".
+  // Capture the navigate function once, during component init.
+  const goto = $gotoStore;
 
   let entity: any = $state(null);
   let isLoading = $state(false);
@@ -84,10 +87,6 @@
   let schemaFormData: Record<string, any> = $state({});
   let loadingSchema = $state(false);
 
-  const isRTL = derivedStore(
-    locale,
-    (val: any) => val === "ar" || val === "ku"
-  );
 
   function getItemContent(item: any) {
     if (!item?.payload) return "";
@@ -120,8 +119,8 @@
     content = newContent;
   }
 
-  function handleJsonContentChange(event: any) {
-    jsonEditorContent = event.detail;
+  function handleJsonContentChange(newContent: any) {
+    jsonEditorContent = newContent;
   }
 
   function handleLabelClick() {
@@ -225,9 +224,6 @@
       $params.resource_type,
       entityData
     );
-    // const msg = isPublish
-    //   ? $_("entry_edit.published")
-    //   : $_("entry_edit.updated");
 
     if (response) {
       successToastMessage($_("entry_edit.success"));
@@ -250,7 +246,7 @@
         }
       }
       setTimeout(() => {
-        $goto("/entries/[space_name]/[subpath]/[shortname]/[resource_type]", {
+        goto("/entries/[space_name]/[subpath]/[shortname]/[resource_type]", {
           space_name: $params.space_name,
           subpath: $params.subpath,
           shortname: $params.shortname,
@@ -262,10 +258,6 @@
       isLoading = false;
     }
   }
-
-  // function getContent() {
-  //   return htmlEditor;
-  // }
 
   async function loadSchemaForEntry(schemaShortname: string) {
     loadingSchema = true;
@@ -386,23 +378,6 @@
     }
   }
 
-  // function getExistingAttachments() {
-  //   if (!entity?.attachments) return [];
-  //
-  //   const allAttachments: any[] = [];
-  //   Object.keys(entity.attachments).forEach((key: any) => {
-  //     if (Array.isArray(entity.attachments[key])) {
-  //       entity.attachments[key].forEach((attachment: any) => {
-  //         if (attachment.resource_type === ResourceType.media) {
-  //           allAttachments.push(attachment);
-  //         }
-  //       });
-  //     }
-  //   });
-  //
-  //   return allAttachments;
-  // }
-
   function getLocalizedDisplayName(entity: any) {
     if (!entity?.displayname) return entity?.shortname || "";
 
@@ -437,7 +412,7 @@
           aria-label={$_("entry_edit.navigation.back_to_entry")}
           class="back-button"
           onclick={() =>
-            $goto(
+            goto(
               "/entries/[space_name]/[subpath]/[shortname]/[resource_type]",
               { shortname: $params.shortname }
             )}
@@ -586,7 +561,7 @@
 
           {#if tags.length > 0}
             <div class="tags-container" class:flex-row-reverse={$isRTL}>
-              {#each tags as tag, index}
+              {#each tags as tag, index (index)}
                 <div class="tag-item">
                   <TagOutline class="tag-icon" />
                   <span class="tag-text">{tag}</span>
@@ -641,8 +616,7 @@
                 <TemplateEditor
                   content={templateEditorContent}
                   space_name={$params.space_name}
-                  on:contentChange={(e) =>
-                    handleTemplateContentChange(e.detail)}
+                  onContentChange={handleTemplateContentChange}
                 />
               {:else if entity?.payload?.content_type === "json"}
                 <div class="json-edit-with-preview">
@@ -650,7 +624,7 @@
                     <JsonEditor
                       content={jsonEditorContent}
                       isEditMode={true}
-                      on:contentChange={handleJsonContentChange}
+                      onContentChange={handleJsonContentChange}
                     />
                   </div>
                   <div class="preview-section">
@@ -669,7 +643,6 @@
               {:else}
                 <HtmlEditor
                   bind:content={htmlEditor}
-                  resource_type={$params.resource_type}
                   space_name={$params.space_name}
                   subpath={$params.subpath}
                   parent_shortname={entity.shortname}
@@ -743,7 +716,7 @@
         <div class="section-content">
           {#if attachments.length > 0}
             <div class="attachments-list">
-              {#each attachments as attachment, index}
+              {#each attachments as attachment, index (index)}
                 <div class="attachment-row">
                   <div class="attachment-preview">
                     {#if getPreviewUrl(attachment.file)}
@@ -879,7 +852,7 @@
       </div>
       <h2>{$_("entry_edit.error.not_found_title")}</h2>
       <p>{$_("entry_edit.error.not_found_message")}</p>
-      <button class="back-button" onclick={() => $goto("/entries")}>
+      <button class="back-button" onclick={() => goto("/entries")}>
         {$_("entry_edit.back_to_entries")}
       </button>
     </div>

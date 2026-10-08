@@ -10,7 +10,8 @@
   } from "@/lib/dmart_services";
   import { DmartScope } from "@edraj/tsdmart";
   import { onMount } from "svelte";
-  import { _ } from "@/i18n";
+  import { _, locale } from "@/i18n";
+  import { formatDate } from "@/lib/format";
   import { params } from "@roxi/routify";
 
   let templates = $state<any[]>([]);
@@ -43,7 +44,6 @@
   let loadingSpaces = $state(false);
   let loadingSchemas = $state(false);
   let schemaKeys = $state<any[]>([]);
-  let draggedKey: any = $state(null);
   
   // Get space_name from query params (when coming from admin space selection)
   let querySpaceName = $derived($params?.space_name || "");
@@ -160,14 +160,6 @@
     }
   }
 
-  function handleDragStart(key: any) {
-    draggedKey = key;
-  }
-
-  function handleDragEnd() {
-    draggedKey = null;
-  }
-
   function openCreateModal() {
     templateName = "";
     templateShortname = "";
@@ -181,7 +173,6 @@
     showOptionalFields = isSpaceLocked;
     availableSchemas = [];
     schemaKeys = [];
-    draggedKey = null;
     loadSpaces();
     // If space is locked, load schemas for that space
     if (targetSpaceName) {
@@ -343,16 +334,6 @@
     }
   }
 
-  function formatDate(dateString: any) {
-    return new Date(dateString).toLocaleDateString("en-US", {
-      year: "numeric",
-      month: "short",
-      day: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
-    });
-  }
-
   function getTemplateName(template: any) {
     const pathParts = template.subpath.split("/");
     return (
@@ -453,8 +434,8 @@
                   <code>{template.shortname}</code>
                 </td>
                 <td>{template.attributes.owner_shortname}</td>
-                <td>{formatDate(template.attributes.created_at)}</td>
-                <td>{formatDate(template.attributes.updated_at)}</td>
+                <td>{formatDate(template.attributes.created_at, "datetime", $locale)}</td>
+                <td>{formatDate(template.attributes.updated_at, "datetime", $locale)}</td>
                 <td class="actions">
                   <button
                     class="btn btn-sm btn-outline"
@@ -586,7 +567,7 @@
                     class="form-select"
                   >
                     <option value="">{$_("templates.form.select_space")}</option>
-                    {#each availableSpaces as space}
+                    {#each availableSpaces as space (space.shortname)}
                       <option value={space.shortname}>
                         {space.attributes?.displayname?.en || space.shortname}
                       </option>
@@ -622,7 +603,7 @@
                       {$_("templates.form.select_schema")}
                     {/if}
                   </option>
-                  {#each availableSchemas as schema}
+                  {#each availableSchemas as schema (schema.shortname)}
                     <option value={schema.shortname}>
                       {schema.attributes?.displayname?.en || schema.shortname}
                     </option>
@@ -639,18 +620,15 @@
                   <span class="schema-keys-hint">{$_("templates.form.schema_keys_hint")}</span>
                 </h4>
                 <div class="schema-keys-container">
-                  {#each schemaKeys as key}
-                    <!-- svelte-ignore a11y_no_static_element_interactions -->
+                  {#each schemaKeys as key (key.name)}
                     <div
                       class="schema-key-badge"
                       role="listitem"
                       draggable={true}
                       ondragstart={(e: any) => {
-                        handleDragStart(key);
                         e.dataTransfer!.setData("application/json", JSON.stringify(key));
                         e.dataTransfer!.effectAllowed = "copy";
                       }}
-                      ondragend={handleDragEnd}
                       title={`${key.title} (${key.type})`}
                     >
                       <span class="key-name">{key.name}</span>
@@ -681,7 +659,6 @@
           <MarkdownEditor 
             bind:content 
             handleSave={handleContentChange} 
-            onDropKey={(key) => console.log("Dropped key:", key)}
           />
         </div>
 
@@ -748,9 +725,8 @@
 
 <!-- Edit Modal -->
 {#if showEditModal}
-  <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+  <!-- svelte-ignore a11y_click_events_have_key_events -->
   <div class="modal-overlay" role="presentation" onclick={closeModals}>
-    <!-- svelte-ignore a11y_no_static_element_interactions a11y_interactive_supports_focus -->
     <div class="modal" role="dialog" tabindex="-1" onclick={(event) => event.stopPropagation()}>
       <div class="modal-header">
         <h2>{$_("templates.edit_modal.title")}</h2>
@@ -789,7 +765,6 @@
           <MarkdownEditor 
             bind:content 
             handleSave={handleContentChange}
-            onDropKey={(key) => console.log("Dropped key:", key)}
           />
         </div>
 
@@ -1036,14 +1011,6 @@
     animation: spin 1s linear infinite;
   }
 
-  @keyframes spin {
-    0% {
-      transform: rotate(0deg);
-    }
-    100% {
-      transform: rotate(360deg);
-    }
-  }
 
   /* Error State */
   .error-alert {

@@ -50,7 +50,6 @@
     itemsPerPageOptions?: number[];
     rtl?: boolean;
     name?: string;
-    class?: string;
     sortKey?: string | null;
     sortDirection?: SortDirection;
     onSortChange?: (key: string, direction: SortDirection) => void;
@@ -80,7 +79,6 @@
     itemsPerPageOptions = [10, 25, 50, 100],
     rtl = false,
     name,
-    class: className = "",
     sortKey = null,
     sortDirection = "asc",
     onSortChange,
@@ -271,7 +269,7 @@
         {@render loadingState({ items })}
       {:else}
         <div class="skeleton-rows" aria-busy="true" aria-label={$_("loading") || "Loading..."}>
-          {#each Array(5) as _skeletonRow}
+          {#each Array(5) as _skeletonRow, i (i)}
             <div class="skeleton-row">
               <SkeletonBlock width="28%" height="0.875rem" />
               <SkeletonBlock width="18%" height="0.875rem" />
@@ -327,7 +325,7 @@
                   />
                 </th>
               {/if}
-              {#each effectiveIndexAttributes as attr}
+              {#each effectiveIndexAttributes as attr (attr.key)}
                 <th
                   class="px-6 py-4 text-xs font-semibold text-gray-500 uppercase tracking-wider"
                   aria-sort={attr.sortable && internalSortKey === attr.key
@@ -370,7 +368,7 @@
             </tr>
           </thead>
           <tbody class="divide-y divide-gray-100 bg-white">
-            {#each displayItems as item, index}
+            {#each displayItems as item, index (item.shortname ?? item.id ?? index)}
               {@const itemId = getItemId(item)}
               <tr
                 class="data-table-row hover:bg-yellow-50/70 transition-colors group cursor-pointer {selectable && selectedItems.has(itemId) ? 'bg-indigo-50/30' : ''}"
@@ -387,7 +385,7 @@
                     />
                   </td>
                 {/if}
-                {#each effectiveIndexAttributes as attr}
+                {#each effectiveIndexAttributes as attr (attr.key)}
                   <td class="px-4 py-1.5">
                     {@render cell({ item, attr, index })}
                   </td>
@@ -415,7 +413,7 @@
                 onchange={handleItemsPerPageChange}
                 class="bg-white border border-gray-200 text-sm font-medium text-gray-700 rounded-lg pl-3 pr-8 py-1.5 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 cursor-pointer"
               >
-                {#each itemsPerPageOptions as option}
+                {#each itemsPerPageOptions as option (option)}
                   <option value={option}>{option}</option>
                 {/each}
               </select>
@@ -461,7 +459,7 @@
 
                 <div class="flex items-center gap-1 pagination-pages">
                   {#if totalPages <= 7}
-                    {#each Array(totalPages) as _, i}
+                    {#each Array(totalPages) as _, i (i)}
                       <button
                         class="pagination-page-btn {currentPage === i + 1 ? 'pagination-page-btn-active' : ''}"
                         onclick={() => goToPage(i + 1)}
@@ -481,7 +479,7 @@
                       <span class="pagination-ellipsis">...</span>
                     {/if}
 
-                    {#each Array(totalPages) as _, i}
+                    {#each Array(totalPages) as _, i (i)}
                       {#if i + 1 > 1 && i + 1 < totalPages && Math.abs(currentPage - (i + 1)) <= 1}
                         <button
                           class="pagination-page-btn {currentPage === i + 1 ? 'pagination-page-btn-active' : ''}"

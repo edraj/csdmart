@@ -6,6 +6,7 @@
 
   let {
     formData = $bindable(),
+    // eslint-disable-next-line no-useless-assignment -- $bindable() prop: assigned here, read by the parent through bind:validateFn
     validateFn = $bindable(),
     fullWidth = false,
   }: {
@@ -94,6 +95,7 @@
     return formData.permissions.length !== 0;
   }
 
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars, no-useless-assignment -- $bindable() prop: assigned here, read by the parent through bind:validateFn
   validateFn = validate;
 
   searchTerm.subscribe((term) => {
@@ -157,7 +159,7 @@
 
         {#if $showDropdown && $filteredPermissions.length > 0}
           <div class="dropdown">
-            {#each $filteredPermissions as permission}
+            {#each $filteredPermissions as permission (permission.key)}
               <button
                 class="dropdown-item"
                 aria-label={`${$_("toggle")} ${permission.key}`}
@@ -180,7 +182,7 @@
         <label class="form-label">{$_("addedPermissions")}</label>
         <div class="permissions-container">
           <div class="permissions-list">
-            {#each formData.permissions as permission}
+            {#each formData.permissions as permission (permission)}
               <div class="permission-tag">
                 <span>{permission}</span>
                 <button

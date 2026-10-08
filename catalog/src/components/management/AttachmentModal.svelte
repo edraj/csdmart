@@ -11,10 +11,9 @@
     UploadOutline,
     CheckCircleSolid,
     CloseCircleSolid,
-    FileOutline,
   } from "flowbite-svelte-icons";
-  import { getFileExtension, isImageFile } from "@/lib/fileUtils";
-  import { createAttachment } from "@/lib/dmart_services";
+  import { getFileExtension } from "@shared/file-extension";
+  import { isImageFile } from "@/lib/fileUtils";
   import { AUTO_UUID_RULE, resolveAutoShortname } from "@/lib/helpers";
 
   interface Translation {
@@ -63,7 +62,6 @@
     isOpen = $bindable(false),
     space_name,
     subpath,
-    resource_type,
     parent_shortname,
     onAttachmentCreated,
   }: {
@@ -305,17 +303,6 @@
           values: { count: errorCount },
         }),
       );
-    }
-  }
-
-  function getStatusIcon(status: FileUploadItem["status"]) {
-    switch (status) {
-      case "success":
-        return CheckCircleSolid;
-      case "error":
-        return CloseCircleSolid;
-      default:
-        return null;
     }
   }
 

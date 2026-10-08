@@ -138,12 +138,11 @@ export async function getRelatedContents(
     spaceName: string,
     subpath = "/",
     scope: DmartScope,
-    currentTags: string[] = [],
     editorShortname?: string,
     limit = 10,
     offset = 0
 ): Promise<ApiQueryResponse> {
-    let searchQuery = "-@shortname:" + editorShortname;
+    const searchQuery = "-@shortname:" + editorShortname;
 
     return (await Dmart.query(
         {

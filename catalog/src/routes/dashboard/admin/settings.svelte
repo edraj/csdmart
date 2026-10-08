@@ -8,9 +8,13 @@
     ensureCriticalResources,
     checkCriticalResources,
   } from "@/lib/dmart_services";
-  import { goto } from "@roxi/routify";
+  import { goto as gotoStore } from "@roxi/routify";
 
-  $goto;
+  // Routify's helpers read the fragment context when first subscribed, and
+  // Svelte 5 subscribes to a `$store` lazily on first read — so a `$gotoStore`
+  // first touched inside an async callback logs "Unable to access context".
+  // Capture the navigate function once, during component init.
+  const goto = $gotoStore;
 
   let missingFolders = $state<string[]>([]);
   let missingWorkflowSchema = $state(false);
@@ -86,7 +90,7 @@
     <div class="container mx-auto px-4 py-8 max-w-375">
       <div class="flex items-center justify-between gap-4">
         <button
-          onclick={() => $goto("/dashboard/admin")}
+          onclick={() => goto("/dashboard/admin")}
           class="inline-flex items-center gap-2 text-sm font-medium text-gray-600 hover:text-gray-900 transition-colors"
         >
           <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">

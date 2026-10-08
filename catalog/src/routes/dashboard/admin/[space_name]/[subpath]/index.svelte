@@ -1,6 +1,6 @@
 <script lang="ts">
   import { resolveTotal } from "@shared/query-total";
-  import { goto, params } from "@roxi/routify";
+  import { goto as gotoStore, params } from "@roxi/routify";
   import { can, permissions } from "@/stores/permissions";
   import { visibleColumns } from "@/lib/access-fields";
   import {
@@ -21,7 +21,8 @@
   } from "@/lib/schemaTypes";
   import { createFolder } from "@/lib/dmart_services/entries";
   import { collectSchemaPropertyBags, resolveSchemaDef } from "@/lib/jsonSchema";
-  import { _, locale } from "@/i18n";
+  import { _, locale, isRTL } from "@/i18n";
+  import { formatDate } from "@/lib/format";
   import {
     Dmart,
     RequestType,
@@ -31,7 +32,7 @@
     SortType,
     ContentType,
   } from "@edraj/tsdmart";
-  import { derived as derivedStore, writable } from "svelte/store";
+  import { writable } from "svelte/store";
   import MetaForm from "@/components/forms/MetaForm.svelte";
   import FolderForm from "@/components/forms/FolderForm.svelte";
   import { formatNumber, getParentPath } from "@/lib/helpers";
@@ -55,7 +56,11 @@
   import { UploadOutline, DownloadOutline } from "flowbite-svelte-icons";
   import DataTable from "@/components/DataTable.svelte";
 
-  $goto;
+  // Routify's helpers read the fragment context when first subscribed, and
+  // Svelte 5 subscribes to a `$store` lazily on first read — so a `$gotoStore`
+  // first touched inside an async callback logs "Unable to access context".
+  // Capture the navigate function once, during component init.
+  const goto = $gotoStore;
 
   let isLoading = writable(false);
   let allContents = writable<any[]>([]);
@@ -110,9 +115,7 @@
   let isInitialLoad = $state(true);
   const itemsPerPageOptions = [10, 25, 50, 100];
 
-  let paginatedContents = $state<any[]>([]);
 
-  let filteredContents = $state<any[]>([]);
 
   // Bulk selection state
   let selectedItems = $state(new Set<string>());
@@ -197,10 +200,6 @@
   let tagCounts: Record<string, any> = $state({});
   let showAllTags = $state(false);
 
-  const isRTL = derivedStore(
-    locale,
-    ($locale: any) => $locale === "ar" || $locale === "ku",
-  );
 
   const sortOptions = [
     { value: "name", label: $_("admin_dashboard.sort.name") },
@@ -233,10 +232,8 @@
       { name: spaceName, path: `/dashboard/admin/${spaceName}` },
     ];
 
-    let currentPath = "";
     let currentUrlPath = "";
     pathParts.forEach((part, index) => {
-      currentPath += `/${part}`;
       currentUrlPath += (index === 0 ? "" : "-") + part;
       breadcrumbs.push({
         name: part,
@@ -476,9 +473,7 @@
         applyFilters();
       } else {
         $allContents = [];
-        filteredContents = [];
         displayedContents = [];
-        paginatedContents = [];
         totalItemsCount = 0;
         totalPages = 1;
       }
@@ -486,9 +481,7 @@
       console.error("Error fetching space contents:", err);
       error = $_("admin_content.error.failed_load_contents");
       $allContents = [];
-      filteredContents = [];
       displayedContents = [];
-      paginatedContents = [];
       totalItemsCount = 0;
       totalPages = 1;
     } finally {
@@ -501,8 +494,6 @@
     // Already in server order — see SERVER_SORT_FIELD.
     const filtered = [...$allContents];
 
-    filteredContents = filtered;
-    paginatedContents = filtered;
     displayedContents = filtered;
   }
 
@@ -518,18 +509,6 @@
     }
   }
 
-  // function nextPage() {
-  //   if (currentPage < totalPages) {
-  //     goToPage(currentPage + 1);
-  //   }
-  // }
-  //
-  // function previousPage() {
-  //   if (currentPage > 1) {
-  //     goToPage(currentPage - 1);
-  //   }
-  // }
-
   function handleItemsPerPageChange(newItemsPerPage: number) {
     itemsPerPage = newItemsPerPage;
     if (typeof localStorage !== "undefined") {
@@ -542,12 +521,12 @@
   function handleItemClick(item: any) {
     if (item.resource_type === "folder") {
       const newSubpath = `${subpath}-${item.shortname}`;
-      $goto("/dashboard/admin/[space_name]/[subpath]", {
+      goto("/dashboard/admin/[space_name]/[subpath]", {
         space_name: spaceName,
         subpath: newSubpath,
       });
     } else {
-      $goto(
+      goto(
         "/dashboard/admin/[space_name]/[subpath]/[shortname]/[resource_type]",
         {
           space_name: spaceName,
@@ -716,7 +695,7 @@
           createItemResourceType === ResourceType.content &&
           createdShortname
         ) {
-          $goto(
+          goto(
             "/dashboard/admin/[space_name]/[subpath]/[shortname]/[resource_type]",
             {
               space_name: spaceName,
@@ -836,47 +815,17 @@
     return item.shortname;
   }
 
-  // function getDescription(item: any) {
-  //   if (item.attributes?.description) {
-  //     return (
-  //       item.attributes.description.ar || item.attributes.description.en || ""
-  //     );
-  //   }
-  //   return "";
-  // }
-
-  function formatDate(dateString: any) {
-    if (!dateString) return $_("common.not_available");
-    return new Date(dateString).toLocaleDateString($locale ?? undefined);
-  }
-
-  // function formatRelativeTime(dateString: any) {
-  //   if (!dateString) return "Unknown";
-  //   const date = new Date(dateString);
-  //   const now = new Date();
-  //   const diffInSeconds = Math.floor((now.getTime() - date.getTime()) / 1000);
-  //
-  //   if (diffInSeconds < 60) return "Just now";
-  //   if (diffInSeconds < 3600)
-  //     return `${Math.floor(diffInSeconds / 60)} ${$_("catalog_contents.time.minutes_ago")}`;
-  //   if (diffInSeconds < 86400)
-  //     return `${Math.floor(diffInSeconds / 3600)} ${$_("catalog_contents.time.hours_ago")}`;
-  //   if (diffInSeconds < 2592000)
-  //     return `${Math.floor(diffInSeconds / 86400)} ${$_("catalog_contents.time.days_ago")}`;
-  //   return formatDate(dateString);
-  // }
-
   function navigateToBreadcrumb(path: any) {
     const target = parseBreadcrumbPath(path);
     if (!target) return;
     if (target.kind === "admin-root") {
-      $goto("/dashboard/admin");
+      goto("/dashboard/admin");
     } else if (target.kind === "space-root") {
-      $goto("/dashboard/admin/[space_name]", {
+      goto("/dashboard/admin/[space_name]", {
         space_name: target.spaceName,
       });
     } else {
-      $goto("/dashboard/admin/[space_name]/[subpath]", {
+      goto("/dashboard/admin/[space_name]/[subpath]", {
         space_name: target.spaceName,
         subpath: target.subpath,
       });
@@ -922,24 +871,6 @@
     loadContents(true);
   }
 
-  async function loadSpaceTags() {
-    try {
-      const tagsResponse = await getSpaceTags(spaceName);
-      if (tagsResponse.records && tagsResponse.records[0]?.attributes) {
-        const tagsData = tagsResponse.records[0].attributes;
-        availableTags = tagsData.tags || [];
-        tagCounts = tagsData.tag_counts || {};
-      } else {
-        availableTags = [];
-        tagCounts = {};
-      }
-    } catch (err) {
-      console.warn("Error loading space tags:", err);
-      availableTags = [];
-      tagCounts = {};
-    }
-  }
-
   function toggleTag(tag: string) {
     if (selectedTags.includes(tag)) {
       selectedTags = selectedTags.filter((t) => t !== tag);
@@ -964,15 +895,6 @@
     }
     selectedItems = new Set(selectedItems);
   }
-
-  // function toggleAllItems() {
-  //   if (selectedItems.size === displayedContents.length) {
-  //     selectedItems.clear();
-  //   } else {
-  //     selectedItems = new Set(displayedContents.map((item) => item.shortname));
-  //   }
-  //   selectedItems = new Set(selectedItems);
-  // }
 
   function clearSelection() {
     selectedItems.clear();
@@ -1199,7 +1121,6 @@
 
     bulkEditData = { ...initialData };
     showBulkEditModal = true;
-    console.log({ bulkEditData });
   }
 
   function closeBulkEditModal() {
@@ -1229,30 +1150,6 @@
       bulkEditData = { ...bulkEditData };
     }
   }
-
-  // function addTagToBulkEdit(shortname: string, tag: string) {
-  //   if (bulkEditData[shortname] && tag.trim()) {
-  //     const currentTags = bulkEditData[shortname].tags || [];
-  //     if (!currentTags.includes(tag.trim())) {
-  //       bulkEditData[shortname] = {
-  //         ...bulkEditData[shortname],
-  //         tags: [...currentTags, tag.trim()],
-  //       };
-  //       bulkEditData = { ...bulkEditData };
-  //     }
-  //   }
-  // }
-  //
-  // function removeTagFromBulkEdit(shortname: string, tag: string) {
-  //   if (bulkEditData[shortname]) {
-  //     const currentTags = bulkEditData[shortname].tags || [];
-  //     bulkEditData[shortname] = {
-  //       ...bulkEditData[shortname],
-  //       tags: currentTags.filter((t: any) => t !== tag),
-  //     };
-  //     bulkEditData = { ...bulkEditData };
-  //   }
-  // }
 
   async function handleBulkSave() {
     if (bulkEditData.size === 0) return;
@@ -1341,22 +1238,7 @@
     }
   }
 
-  // function handleCardTagClick(event: any, tag: any) {
-  //   event.stopPropagation();
-  // }
-
-  // const filteredContentsDerived = $derived.by(() => filteredContents);
-  //
-  // const displayedContentsDerived = $derived.by(() => paginatedContents);
-
   const totalItemsDerived = $derived.by(() => totalItemsCount);
-
-  // const paginationInfoDerived = $derived.by(() => {
-  //   const start =
-  //     totalItemsCount === 0 ? 0 : (currentPage - 1) * itemsPerPage + 1;
-  //   const end = Math.min(currentPage * itemsPerPage, totalItemsCount);
-  //   return { start, end, total: totalItemsCount, currentPage, totalPages };
-  // });
 
   let isCreatingFolder = $state(false);
   let metaContent: any = $state({});
@@ -1708,7 +1590,7 @@
     }
     if (key === "author") return item.attributes?.owner_shortname || "Unknown";
     if (key === "updated_at" || key === "created_at") {
-      return formatDate(item.attributes?.[key]);
+      return formatDate(item.attributes?.[key], "date", $locale);
     }
 
     const findValue = (obj: any, k: any) => {
@@ -1795,7 +1677,7 @@
               aria-label="Breadcrumb"
             >
               <ol class="inline-flex items-center space-x-2">
-                {#each breadcrumbs as crumb, index}
+                {#each breadcrumbs as crumb, index (index)}
                   <li class="inline-flex items-center">
                     {#if index > 0}
                       <svg
@@ -2016,7 +1898,7 @@
             {$_("space.filter_by_tag_label")}
           </div>
           <div class="tag-pills">
-            {#each displayedTags as tag}
+            {#each displayedTags as tag (tag)}
               <button
                 onclick={() => toggleTag(tag)}
                 class="tag-pill {selectedTags.includes(tag)
@@ -2125,7 +2007,7 @@
                 title={$_("catalog_contents.filters.sort_by")}
                 aria-label={$_("catalog_contents.filters.sort_by")}
               >
-                {#each sortOptions as option}
+                {#each sortOptions as option (option.value)}
                   <option value={option.value}>{option.label}</option>
                 {/each}
               </select>
@@ -2619,7 +2501,7 @@
               {/if}
             {/snippet}
 
-            {#snippet bulkActions({ selectedCount })}
+            {#snippet bulkActions()}
               <button
                 onclick={clearSelection}
                 class="bulk-btn bulk-btn-secondary"
@@ -2945,18 +2827,18 @@
             <table class="bulk-edit-table">
               <thead>
                 <tr>
-                  {#each effectiveColumns as attr}
+                  {#each effectiveColumns as attr (attr.key)}
                     <th class="bulk-edit-th">{attr.name}</th>
                   {/each}
                 </tr>
               </thead>
               <tbody>
-                {#each Object.entries(bulkEditData) as [shortname, editData], rowIndex (shortname)}
+                {#each Object.entries(bulkEditData) as [shortname, editData] (shortname)}
                   {@const item = $allContents.find(
                     (i) => i.shortname === shortname,
                   )}
                   <tr class="bulk-edit-row">
-                    {#each effectiveColumns as attr, colIndex (attr.key)}
+                    {#each effectiveColumns as attr (attr.key)}
                       <td class="bulk-edit-td">
                         {#if attr.key === "status"}
                           <!-- Status Toggle -->
@@ -3055,7 +2937,7 @@
                             ? attr.key.slice(11)
                             : attr.key}
                           <div class="localized-inputs compact">
-                            {#each ["en", "ar", "ku"] as lang}
+                            {#each ["en", "ar", "ku"] as lang (lang)}
                               <div class="localized-input-row">
                                 <span class="locale-badge">{lang}</span>
                                 <input
@@ -3301,7 +3183,6 @@
           <FolderForm
             bind:content={folderContent}
             space_name={spaceName}
-            on:submit={handleSaveFolder}
             fullWidth={true}
           />
         </div>
@@ -3622,7 +3503,7 @@
                   <option value=""
                     >{$_("create_entry.schema.choose_option")}</option
                   >
-                  {#each createItemSchemaShortnames as schemaShortname}
+                  {#each createItemSchemaShortnames as schemaShortname (schemaShortname)}
                     <option value={schemaShortname}>{schemaShortname}</option>
                   {/each}
                 </select>
@@ -3863,7 +3744,7 @@
           {$_("admin_content.settings_modal.column_settings")}
         </h3>
         <div class="space-y-4">
-          {#each editingIndexAttributes as attr, i}
+          {#each editingIndexAttributes as attr, i (i)}
             <div
               class="flex items-center gap-3 p-4 bg-white rounded-2xl border border-gray-100 shadow-sm"
             >

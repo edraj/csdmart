@@ -1,5 +1,4 @@
 <script lang="ts">
-    import { createEventDispatcher } from "svelte";
     import { _ } from "@/i18n";
     import { createEntity } from "@/lib/dmart_services";
     import { ResourceType } from "@edraj/tsdmart";
@@ -11,16 +10,17 @@
     import Modal from "@/components/Modal.svelte";
     import { ChartOutline } from "flowbite-svelte-icons";
 
-    export let onClose = () => {};
+    let {
+        onClose = () => {},
+        onSuccess = () => {},
+    }: { onClose?: () => void; onSuccess?: () => void } = $props();
 
-    const dispatch = createEventDispatcher();
-
-    let title = "";
-    let description = "";
-    let space = "";
-    let choiceType = "single";
-    let options = ["", "", ""];
-    let isSubmitting = false;
+    let title = $state("");
+    let description = $state("");
+    let space = $state("");
+    let choiceType = $state("single");
+    let options = $state(["", "", ""]);
+    let isSubmitting = $state(false);
 
     function addOption() {
         options = [...options, ""];
@@ -83,7 +83,7 @@
 
             if (response) {
                 successToastMessage($_("polls.create_success"));
-                dispatch("success");
+                onSuccess();
                 onClose();
             } else {
                 errorToastMessage($_("polls.create_error"));
@@ -183,7 +183,7 @@
                 >{$_("polls.form.options_label")}</label
             >
             <div class="space-y-3">
-                {#each options as option, index}
+                {#each options as _option, index (index)}
                     <div class="relative flex items-center">
                         <input
                             type="text"

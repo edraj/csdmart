@@ -4,6 +4,7 @@
     let {
         isCreate,
         formData = $bindable(),
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars, no-useless-assignment -- $bindable() prop: assigned here, read by the parent through bind:validateFn
         validateFn = $bindable(),
         fullWidth = false
     } = $props();

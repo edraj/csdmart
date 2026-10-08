@@ -1,12 +1,16 @@
 <script>
-    import {goto} from "@roxi/routify";
+    import {goto as gotoStore} from "@roxi/routify";
     import {EyeSlashSolid, LockSolid, ShieldCheckSolid, UsersSolid,} from "flowbite-svelte-icons";
     import {_} from "@/i18n";
 
-    $goto;
+    // Routify's helpers read the fragment context when first subscribed, and
+    // Svelte 5 subscribes to a `$store` lazily on first read — so a `$gotoStore`
+    // first touched inside an async callback logs "Unable to access context".
+    // Capture the navigate function once, during component init.
+    const goto = $gotoStore;
 
   function handleContactUs() {
-    $goto("/contact");
+    goto("/contact");
   }
 </script>
 
@@ -120,7 +124,7 @@
             {$_("privacy.questions.description")}
           </p>
           <button
-            aria-label={`Contact us`}
+            aria-label="Contact us"
             class="btn-contact"
             onclick={handleContactUs}
           >

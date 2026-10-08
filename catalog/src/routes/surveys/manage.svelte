@@ -1,17 +1,21 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { goto } from "@roxi/routify";
+  import { goto as gotoStore } from "@roxi/routify";
   import {
     getUserSurveys,
     getSurveys,
     getEntity,
   } from "@/lib/dmart_services";
   import { ResourceType, DmartScope } from "@edraj/tsdmart";
-  import { _, locale } from "@/i18n";
+  import { _, locale, isRTL } from "@/i18n";
+  import { formatDate } from "@/lib/format";
   import { user } from "@/stores/user";
-  import { derived as derivedStore } from "svelte/store";
 
-  $goto;
+  // Routify's helpers read the fragment context when first subscribed, and
+  // Svelte 5 subscribes to a `$store` lazily on first read — so a `$gotoStore`
+  // first touched inside an async callback logs "Unable to access context".
+  // Capture the navigate function once, during component init.
+  const goto = $gotoStore;
 
   let mySurveys = $state<any[]>([]);
   let respondedSurveys = $state<any[]>([]);
@@ -22,10 +26,6 @@
   let surveyAnalytics: any = $state(null);
   let isModalOpen = $state(false);
 
-  const isRTL = derivedStore(
-    locale,
-    ($locale: any) => $locale === "ar" || $locale === "ku"
-  );
 
   onMount(async () => {
     await loadSurveys();
@@ -178,19 +178,6 @@
     URL.revokeObjectURL(url);
   }
 
-  // function navigateToSurvey(shortname: string) {
-  //   $goto(`/surveys/${shortname}`);
-  // }
-
-  function formatDate(dateString: string) {
-    if (!dateString) return "N/A";
-    return new Date(dateString).toLocaleDateString();
-  }
-
-  function formatDateTime(dateString: string) {
-    if (!dateString) return "N/A";
-    return new Date(dateString).toLocaleString();
-  }
 </script>
 
 <svelte:head>
@@ -201,7 +188,7 @@
   <div class="page-header">
     <div class="header-content">
       <div class="header-left">
-        <button class="btn btn-ghost" onclick={() => $goto("/surveys")}>
+        <button class="btn btn-ghost" onclick={() => goto("/surveys")}>
           <svg
             class="icon"
             fill="none"
@@ -223,7 +210,7 @@
       <div class="header-actions">
         <button
           class="btn btn-primary"
-          onclick={() => $goto("/surveys/create")}
+          onclick={() => goto("/surveys/create")}
         >
           {$_("surveys.create_button")}
         </button>
@@ -292,13 +279,13 @@
               <p>{$_("survey_manage.no_surveys_description")}</p>
               <button
                 class="btn btn-primary"
-                onclick={() => $goto("/surveys/create")}
+                onclick={() => goto("/surveys/create")}
               >
                 {$_("survey_manage.create_first")}
               </button>
             </div>
           {:else}
-            {#each mySurveys as survey}
+            {#each mySurveys as survey (survey.shortname)}
               <div
                 class="survey-item"
                 role="button"
@@ -317,9 +304,7 @@
                   </p>
                   <div class="survey-meta">
                     <span class="survey-date"
-                      >{$_("survey_manage.created")}: {formatDate(
-                        survey.attributes?.created_at
-                      )}</span
+                      >{$_("survey_manage.created")}: {formatDate(survey.attributes?.created_at, "date", $locale)}</span
                     >
                     <span class="survey-questions"
                       >{survey.attributes?.payload?.body?.questions?.length ||
@@ -376,7 +361,7 @@
               <p>{$_("survey_manage.no_responses_description")}</p>
             </div>
           {:else}
-            {#each respondedSurveys as survey}
+            {#each respondedSurveys as survey (survey.shortname)}
               <div
                 class="survey-item"
                 role="button"
@@ -393,7 +378,7 @@
                       >By: {survey.owner_shortname}</span
                     >
                     <span class="survey-date"
-                      >Responded on: {formatDate(survey.submittedAt)}</span
+                      >Responded on: {formatDate(survey.submittedAt, "date", $locale)}</span
                     >
                     <span class="survey-questions"
                       >{survey.questions.length} questions</span
@@ -498,7 +483,7 @@
             <div class="details-section">
               <h4>{$_("survey_manage.survey_questions")}</h4>
               <div class="questions-list">
-                {#each selectedSurvey.attributes?.payload?.body?.questions || [] as question, index}
+                {#each selectedSurvey.attributes?.payload?.body?.questions || [] as question, index (index)}
                   <div class="question-preview">
                     <span class="question-number">{index + 1}.</span>
                     <span class="question-text">{question.question}</span>
@@ -569,7 +554,7 @@
                     </div>
 
                     <div class="responses-list">
-                      {#each surveyAnalytics.responseData.slice(0, 5) as response, idx}
+                      {#each surveyAnalytics.responseData.slice(0, 5) as response, idx (idx)}
                         <div class="response-card">
                           <div class="response-card-header">
                             <div class="respondent-info">
@@ -614,13 +599,13 @@
                                     d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"
                                   />
                                 </svg>
-                                {formatDateTime(response.submittedAt)}
+                                {formatDate(response.submittedAt, "datetime", $locale)}
                               </span>
                             </div>
                           </div>
 
                           <div class="response-content">
-                            {#each Object.entries(response.responses) as [questionId, answer]}
+                            {#each Object.entries(response.responses) as [questionId, answer] (questionId)}
                               {@const question =
                                 selectedSurvey.attributes?.payload?.body?.questions.find(
                                   (q: any) => q.id === questionId
@@ -647,7 +632,7 @@
                                   <div class="answer-value">
                                     {#if Array.isArray(answer)}
                                       <div class="multi-answer-tags">
-                                        {#each answer as item}
+                                        {#each answer as item, i (i)}
                                           <span class="mini-tag">{item}</span>
                                         {/each}
                                       </div>
@@ -723,12 +708,12 @@
               </p>
               <p>
                 <strong>{$_("survey_manage.submitted_on")} : </strong>
-                {formatDateTime(selectedSurvey.submittedAt)}
+                {formatDate(selectedSurvey.submittedAt, "datetime", $locale)}
               </p>
             </div>
 
             <div class="questions-answers">
-              {#each selectedSurvey.questions as question, index}
+              {#each selectedSurvey.questions as question, index (question.id)}
                 <div class="question-block">
                   <div class="question-header">
                     <span class="question-number">{index + 1}</span>
@@ -740,7 +725,7 @@
                     {#if selectedSurvey.userResponse[question.id]}
                       {#if question.type === "multi" && Array.isArray(selectedSurvey.userResponse[question.id])}
                         <div class="answer-text multiple-answer">
-                          {#each selectedSurvey.userResponse[question.id] as answer}
+                          {#each selectedSurvey.userResponse[question.id] as answer, i (i)}
                             <span class="answer-tag">{answer}</span>
                           {/each}
                         </div>
@@ -926,14 +911,6 @@
     margin-bottom: 1rem;
   }
 
-  @keyframes spin {
-    from {
-      transform: rotate(0deg);
-    }
-    to {
-      transform: rotate(360deg);
-    }
-  }
 
   .empty-state {
     display: flex;

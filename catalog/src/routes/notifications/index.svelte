@@ -7,14 +7,14 @@
   } from "@/lib/dmart_services";
   import { user } from "@/stores/user";
   import { onMount, onDestroy } from "svelte";
-  import { formatDate } from "@/lib/helpers";
   import Avatar from "@/components/Avatar.svelte";
   import { SyncLoader } from "svelte-loading-spinners";
   import { newNotificationType } from "@/stores/newNotificationType";
   import { ResourceType } from "@edraj/tsdmart";
 
-  import { _ } from "@/i18n";
-  import { goto } from "@roxi/routify";
+  import { _, locale } from "@/i18n";
+  import { formatDate } from "@/lib/format";
+  import { goto as gotoStore } from "@roxi/routify";
   import {
     successToastMessage,
     errorToastMessage,
@@ -22,7 +22,11 @@
   import { getWebSocketService } from "@/lib/services/websocket";
   import { wsConnected, wsStatus } from "@/stores/websocket";
 
-  $goto;
+  // Routify's helpers read the fragment context when first subscribed, and
+  // Svelte 5 subscribes to a `$store` lazily on first read — so a `$gotoStore`
+  // first touched inside an async callback logs "Unable to access context".
+  // Capture the navigate function once, during component init.
+  const goto = $gotoStore;
 
   let notifications = $state<any[]>([]);
   let isNotificationsLoading = $state(false);
@@ -30,8 +34,6 @@
     $wsStatus.charAt(0).toUpperCase() + $wsStatus.slice(1),
   );
   let notificationError: any = $state(null);
-  let selectedReportNotification = $state<any>(null);
-  let showReportModal = $state(false);
 
   let removeListener: (() => void) | null = null;
 
@@ -102,7 +104,7 @@
 
             let _notification: any = {
               shortname: n.shortname,
-              created_at: formatDate(n.attributes.created_at),
+              created_at: formatDate(n.attributes.created_at, "datetime", $locale),
               action_by,
               entry_shortname,
               entry_subpath,
@@ -115,10 +117,10 @@
             };
 
             return _notification;
-          } catch (notificationError) {
+          } catch {
             return {
               shortname: n.shortname,
-              created_at: formatDate(n.attributes.created_at),
+              created_at: formatDate(n.attributes.created_at, "datetime", $locale),
               action_by: n.attributes.payload.body.action_by || "Unknown",
               resource_type:
                 n.attributes.payload.body.resource_type || "unknown",
@@ -157,7 +159,7 @@
 
         notifications = [...newNotifications, ...notifications];
       }
-    } catch (error) {
+    } catch {
       errorToastMessage("Failed to load notifications");
     }
 
@@ -172,8 +174,7 @@
         notification.resource_type === ResourceType.ticket ||
         notification.resource_type === "ticket"
       ) {
-        selectedReportNotification = notification;
-        showReportModal = true;
+        // Report (ticket) notifications have no detail page to open yet.
         return;
       }
 
@@ -182,7 +183,7 @@
         notification.parent_space_name &&
         notification.parent_subpath
       ) {
-        $goto(
+        goto(
           "/dashboard/admin/[space_name]/[subpath]/[shortname]/[resource_type]",
           {
             space_name: notification.parent_space_name,
@@ -194,7 +195,7 @@
           }
         );
       } else if (notification.entry_shortname && notification.entry_subpath) {
-        $goto(
+        goto(
           "/dashboard/admin/[space_name]/[subpath]/[shortname]/[resource_type]",
           {
             space_name: notification.entry_space || "catalog",
@@ -206,9 +207,9 @@
           }
         );
       } else {
-        $goto("/dashboard/admin");
+        goto("/dashboard/admin");
       }
-    } catch (error) {
+    } catch {
       errorToastMessage("Failed to open notification");
     }
   }
@@ -232,7 +233,7 @@
       );
       await loadNotifications(true);
       successToastMessage("All notifications marked as read");
-    } catch (error) {
+    } catch {
       errorToastMessage("Failed to mark all as read");
     }
   }
@@ -252,7 +253,7 @@
       );
       await loadNotifications(true);
       successToastMessage("All notifications marked as unread");
-    } catch (error) {
+    } catch {
       errorToastMessage("Failed to mark all as unread");
     }
   }
@@ -263,7 +264,7 @@
       await deleteAllNotification($user.shortname!, shortnames);
       await loadNotifications(true);
       successToastMessage("All notifications deleted");
-    } catch (error) {
+    } catch {
       errorToastMessage("Failed to delete all notifications");
     }
   }
@@ -469,7 +470,7 @@
     {/if}
 
     <div class="space-y-4">
-      {#each notifications as notification}
+      {#each notifications as notification (notification.shortname)}
         <div
           class="bg-white rounded-xl border border-gray-200 hover:border-gray-300 transition-all duration-200 cursor-pointer {notification.is_read ===
           'yes'
@@ -477,7 +478,7 @@
             : 'ring-2 ring-indigo-100 border-indigo-200'}"
           role="button"
           tabindex="0"
-          onclick={(e) => handleNotificationClick(notification)}
+          onclick={() => handleNotificationClick(notification)}
           onkeydown={(e) => {
             if (e.key === "Enter" || e.key === " ") {
               handleNotificationClick(notification);
@@ -489,7 +490,7 @@
               <div class="shrink-0">
                 {#await getAvatar(notification.action_by) then avatar}
                   <Avatar src={avatar ?? undefined} size="48" />
-                {:catch error}
+                {:catch}
                   <Avatar src={null as any} size="48" />
                 {/await}
               </div>

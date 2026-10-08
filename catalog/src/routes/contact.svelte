@@ -1,6 +1,5 @@
 <script lang="ts">
-    import {goto} from "@roxi/routify";
-    import {_, locale} from "@/i18n";
+    import {_, isRTL} from "@/i18n";
     import {
         ArrowLeftOutline,
         CheckCircleSolid,
@@ -11,16 +10,14 @@
     } from "flowbite-svelte-icons";
     import {contactUs} from "@/stores/user";
 
-    $: isRTL = $locale === "ar" || $locale === "ku";
-
-  let name = "";
-  let email = "";
-  let subject = "";
-  let message = "";
-  let isSubmitting = false;
-  let showSuccess = false;
-  let showError = false;
-  let errors: Record<string, any> = {};
+  let name = $state("");
+  let email = $state("");
+  let subject = $state("");
+  let message = $state("");
+  let isSubmitting = $state(false);
+  let showSuccess = $state(false);
+  let showError = $state(false);
+  let errors: Record<string, any> = $state({});
 
   function validateForm() {
     const newErrors: Record<string, any> = {};
@@ -64,7 +61,7 @@
       setTimeout(() => {
         showSuccess = false;
       }, 5000);
-    } catch (error) {
+    } catch {
       showError = true;
       setTimeout(() => {
         showError = false;
@@ -74,16 +71,13 @@
     }
   }
 
-  function goBack() {
-    $goto("/");
-  }
 </script>
 
 <div class="contact-container">
   <div class="contact-content">
     <div class="contact-header">
       <button
-        aria-label={`Go back`}
+        aria-label="Go back"
         onclick={() => history.back()}
         class="btn-back"
       >
@@ -104,7 +98,7 @@
     </div>
 
     {#if showSuccess}
-      <div class="success-message" class:rtl={isRTL}>
+      <div class="success-message" class:rtl={$isRTL}>
         <CheckCircleSolid class="success-icon" />
         <div class="success-content">
           <h3 class="success-title">{$_("MessageSent")}</h3>
@@ -114,7 +108,7 @@
     {/if}
 
     {#if showError}
-      <div class="error-message" class:rtl={isRTL}>
+      <div class="error-message" class:rtl={$isRTL}>
         <svg
           class="shrink-0 inline w-4 h-4 me-3"
           aria-hidden="true"
@@ -135,7 +129,7 @@
     <div class="form-container">
       <form onsubmit={handleSubmit} class="contact-form">
         <div class="form-group">
-          <label for="name" class="form-label" class:rtl={isRTL}>
+          <label for="name" class="form-label" class:rtl={$isRTL}>
             <UserSolid class="label-icon" />
             {$_("YourName")}
           </label>
@@ -146,15 +140,15 @@
             placeholder={$_("YourNamePlaceholder")}
             class="form-input"
             class:error={errors.name}
-            class:rtl={isRTL}
+            class:rtl={$isRTL}
             disabled={isSubmitting}
           />
           {#if errors.name}
-            <p class="error-text-small" class:rtl={isRTL}>{errors.name}</p>
+            <p class="error-text-small" class:rtl={$isRTL}>{errors.name}</p>
           {/if}
         </div>
         <div class="form-group">
-          <label for="subject" class="form-label" class:rtl={isRTL}>
+          <label for="subject" class="form-label" class:rtl={$isRTL}>
             <UserSolid class="label-icon" />
             {$_("YourSubject")}
           </label>
@@ -165,15 +159,15 @@
             placeholder={$_("YourSubjectPlaceholder")}
             class="form-input"
             class:error={errors.subject}
-            class:rtl={isRTL}
+            class:rtl={$isRTL}
             disabled={isSubmitting}
           />
           {#if errors.subject}
-            <p class="error-text-small" class:rtl={isRTL}>{errors.subject}</p>
+            <p class="error-text-small" class:rtl={$isRTL}>{errors.subject}</p>
           {/if}
         </div>
         <div class="form-group">
-          <label for="email" class="form-label" class:rtl={isRTL}>
+          <label for="email" class="form-label" class:rtl={$isRTL}>
             <MailBoxOutline class="label-icon" />
             {$_("YourEmail")}
           </label>
@@ -184,16 +178,16 @@
             placeholder={$_("YourEmailPlaceholder")}
             class="form-input"
             class:error={errors.email}
-            class:rtl={isRTL}
+            class:rtl={$isRTL}
             disabled={isSubmitting}
           />
           {#if errors.email}
-            <p class="error-text-small" class:rtl={isRTL}>{errors.email}</p>
+            <p class="error-text-small" class:rtl={$isRTL}>{errors.email}</p>
           {/if}
         </div>
 
         <div class="form-group">
-          <label for="message" class="form-label" class:rtl={isRTL}>
+          <label for="message" class="form-label" class:rtl={$isRTL}>
             <EnvelopeSolid class="label-icon" />
             {$_("YourMessage")}
           </label>
@@ -204,25 +198,25 @@
             rows="6"
             class="form-textarea"
             class:error={errors.message}
-            class:rtl={isRTL}
+            class:rtl={$isRTL}
             disabled={isSubmitting}
           ></textarea>
-          <div class="character-count" class:rtl={isRTL}>
+          <div class="character-count" class:rtl={$isRTL}>
             <span class:over-limit={message.length > 1000}>
               {message.length}/1000
             </span>
           </div>
           {#if errors.message}
-            <p class="error-text-small" class:rtl={isRTL}>{errors.message}</p>
+            <p class="error-text-small" class:rtl={$isRTL}>{errors.message}</p>
           {/if}
         </div>
 
         <button
-          aria-label={`Send message`}
+          aria-label="Send message"
           type="submit"
           class="submit-button"
           class:loading={isSubmitting}
-          class:rtl={isRTL}
+          class:rtl={$isRTL}
           disabled={isSubmitting}
         >
           {#if isSubmitting}
@@ -242,7 +236,7 @@
         <div class="info-content">
           <h3 class="info-title">{$_("Welcome")}</h3>
           <p class="info-description">
-            {isRTL
+            {$isRTL
               ? "نحن نقدر ملاحظاتك ونسعى لتحسين تجربتك معنا باستمرار."
               : "We value your feedback and strive to continuously improve your experience with us."}
           </p>

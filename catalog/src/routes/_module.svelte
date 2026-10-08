@@ -52,7 +52,6 @@
         // the <base href> prefix (e.g. "/cat/"). Strip it before comparing.
         const currentPath = stripBase(window.location.pathname);
         if (!isPublicRoute(currentPath)) {
-          console.log(`401 Unauthorized (code ${errorCode}) - redirecting to login`);
           redirectTo("/login");
         }
         await signout();

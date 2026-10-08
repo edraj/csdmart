@@ -11,6 +11,7 @@
 
   let {
     formData = $bindable(),
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars, no-useless-assignment -- $bindable() prop: assigned here, read by the parent through bind:validateFn
     validateFn = $bindable(),
   }: {
     formData: any;
@@ -205,22 +206,10 @@
 
   let jsonEditorContent = $state("");
 
-  function updateJsonEditor() {
-    try {
-      jsonEditorContent = JSON.stringify(
-        formData.allowed_fields_values,
-        null,
-        2,
-      );
-    } catch (e) {
-      jsonEditorContent = "{}";
-    }
-  }
-
   function saveJsonEditor() {
     try {
       formData.allowed_fields_values = JSON.parse(jsonEditorContent);
-    } catch (e) {
+    } catch {
       alert($_("errors.invalid_json"));
     }
   }
@@ -228,7 +217,7 @@
   function validate() {
     try {
       formData.allowed_fields_values = JSON.parse(jsonEditorContent);
-    } catch (e) {
+    } catch {
       errorToastMessage($_("validation.json_syntax_error"));
     }
 
@@ -278,12 +267,12 @@
           id="resourceTypeSelect"
         >
           <option value="">{$_("options.select_resource_type")}</option>
-          {#each resourceTypeOptions as option}
+          {#each resourceTypeOptions as option (option.value)}
             <option value={option.value}>{option.name}</option>
           {/each}
         </select>
         <button
-          aria-label={`Add resource type`}
+          aria-label="Add resource type"
           type="button"
           class="btn btn-primary bg-indigo-500 hover:bg-indigo-600 text-white rounded-full w-10 h-10 flex items-center justify-center p-0"
           onclick={addResourceType}>+</button
@@ -292,7 +281,7 @@
 
       {#if formData.resource_types.length > 0}
         <div class="tag-container flex flex-wrap gap-2 mt-3">
-          {#each formData.resource_types as item}
+          {#each formData.resource_types as item (item)}
             <div
               class="tag bg-blue-50 text-blue-500 px-3 py-1.5 rounded-full text-xs font-medium flex items-center gap-2"
             >
@@ -321,12 +310,12 @@
           id="actionSelect"
         >
           <option value="">{$_("options.select_action")}</option>
-          {#each requestTypeOptions as option}
+          {#each requestTypeOptions as option (option.value)}
             <option value={option.value}>{option.name}</option>
           {/each}
         </select>
         <button
-          aria-label={`Add action`}
+          aria-label="Add action"
           type="button"
           class="btn btn-primary bg-indigo-500 hover:bg-indigo-600 text-white rounded-full w-10 h-10 flex items-center justify-center p-0"
           onclick={addAction}>+</button
@@ -335,7 +324,7 @@
 
       {#if formData.actions.length > 0}
         <div class="tag-container flex flex-wrap gap-2 mt-3">
-          {#each formData.actions as item}
+          {#each formData.actions as item (item)}
             <div
               class="tag bg-orange-50 text-orange-500 px-3 py-1.5 rounded-full text-xs font-medium flex items-center gap-2"
             >
@@ -402,7 +391,7 @@
                     id="spaceSelect"
                   >
                     <option value="">{$_("options.select_space")}</option>
-                    {#each spaces as space}
+                    {#each spaces as space (space.value)}
                       <option value={space.value}>{space.name}</option>
                     {/each}
                   </select>
@@ -430,7 +419,7 @@
                       id="subpathSelect"
                     >
                       <option value="">{$_("options.select_subpath")}</option>
-                      {#each subpaths as subpath}
+                      {#each subpaths as subpath (subpath.value)}
                         <option value={subpath.value}>{subpath.name}</option>
                       {/each}
                     </select>
@@ -450,7 +439,7 @@
               <div
                 class="subpath-display bg-gray-50 border border-gray-100 rounded-lg p-4 mt-4"
               >
-                {#each subpathEntries as [space, paths]}
+                {#each subpathEntries as [space, paths] (space)}
                   <div class="subpath-space mb-4 last:mb-0">
                     <div
                       class="subpath-space-title text-sm font-semibold text-blue-500 mb-2"
@@ -458,7 +447,7 @@
                       {space}
                     </div>
                     <div class="tag-container flex flex-wrap gap-2">
-                      {#each Array.isArray(paths) ? paths : [] as path}
+                      {#each Array.isArray(paths) ? paths : [] as path (path)}
                         <div
                           class="tag bg-white text-blue-600 border border-blue-100 px-3 py-1 rounded-full text-xs font-medium flex items-center gap-2"
                         >
@@ -526,7 +515,7 @@
 
             {#if formData.conditions.length > 0}
               <div class="tag-container flex flex-wrap gap-2 mt-3">
-                {#each formData.conditions as item}
+                {#each formData.conditions as item (item)}
                   <div
                     class="tag bg-amber-50 text-amber-600 px-3 py-1.5 rounded-full text-xs font-medium flex items-center gap-2"
                   >
@@ -592,7 +581,7 @@
 
             {#if formData.restricted_fields.length > 0}
               <div class="tag-container flex flex-wrap gap-2 mt-3">
-                {#each formData.restricted_fields as item}
+                {#each formData.restricted_fields as item (item)}
                   <div
                     class="tag bg-red-50 text-red-500 px-3 py-1.5 rounded-full text-xs font-medium flex items-center gap-2"
                   >
@@ -653,7 +642,7 @@
             ></textarea>
             <div class="flex justify-end mt-3">
               <button
-                aria-label={`Apply changes to JSON editor`}
+                aria-label="Apply changes to JSON editor"
                 type="button"
                 class="btn btn-secondary bg-gray-200 hover:bg-gray-300 text-gray-700 rounded-lg px-4 py-2"
                 onclick={saveJsonEditor}>{$_("buttons.apply_changes")}</button
@@ -676,12 +665,4 @@
     animation: spin 1s linear infinite;
   }
 
-  @keyframes spin {
-    0% {
-      transform: rotate(0deg);
-    }
-    100% {
-      transform: rotate(360deg);
-    }
-  }
 </style>

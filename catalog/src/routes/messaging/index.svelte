@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { website } from "@/config";
   import { onMount, onDestroy } from "svelte";
   import { user } from "@/stores/user";
   import { ResourceType } from "@edraj/tsdmart";
@@ -14,16 +13,12 @@
     fetchOnlineUsers,
     createGroup,
     getUserGroups,
-    getGroupDetails,
     createGroupMessage,
     getGroupMessages,
     getGroupMessageByShortname,
-    addUserToGroup,
-    removeUserFromGroup,
-    makeUserGroupAdmin,
     updateGroup,
   } from "@/lib/dmart_services";
-  import { _ } from "@/i18n";
+  import { _, isRTL } from "@/i18n";
   import {
     successToastMessage,
     errorToastMessage,
@@ -36,19 +31,16 @@
   import MessageInput from "@/components/messaging/MessageInput.svelte";
   import GroupModal from "@/components/messaging/GroupModal.svelte";
   import {
-    getDisplayName,
     formatTime,
     getPreviewUrl,
     getFileIcon,
     formatFileSize,
-    formatRecordingDuration,
     scrollToBottom,
     transformUserRecord,
     transformMessageRecord,
     getCacheKey,
     cacheMessages,
     getCachedMessages,
-    isRelevantMessage,
     sortMessagesByTimestamp,
     transformGroupRecord,
     transformGroupMessageRecord,
@@ -56,11 +48,6 @@
     getGroupCacheKey,
     isUserGroupAdmin,
     canUserAccessGroup,
-    getGroupDisplayName,
-    type MessageData,
-    type UserData,
-    type GroupData,
-    type GroupMessageData,
   } from "@/lib/utils/messagingUtils";
   import { getWebSocketService } from "@/lib/services/websocket";
   import { wsConnected, wsStatus } from "@/stores/websocket";
@@ -106,9 +93,7 @@
   let isMessagesLoading = $state(false);
   let isLoadingOlderMessages = $state(false);
   let hasMoreMessages = $state(true);
-  let messagesOffset = $state(0);
   let chatContainer: any = $state(null);
-  let isRTL = $state(false);
 
   let showGroupForm = $state(false);
   let showGroupEditForm = $state(false);
@@ -122,14 +107,8 @@
 
   const MESSAGES_LIMIT = 100; // Increased limit since messages come from two sources
 
-  let isMounted = false;
 
   onMount(async () => {
-    console.log("[Lifecycle] onMount fired. $user:", $user?.shortname);
-    isMounted = true;
-    isRTL =
-      document.documentElement.dir === "rtl" ||
-      document.documentElement.getAttribute("dir") === "rtl";
     await initializeChat();
   });
 
@@ -146,7 +125,6 @@
 
   $effect(() => {
     if ($user && !currentUser) {
-      console.log("[Lifecycle] $effect: $user became available:", $user.shortname);
       currentUser = $user;
     }
   });
@@ -184,7 +162,6 @@
   async function initializeChat() {
     try {
       currentUser = $user;
-      console.log("[Lifecycle] initializeChat: currentUser:", currentUser?.shortname, "signedin:", currentUser?.signedin);
 
       if (!currentUser?.shortname) {
         console.warn("[Lifecycle] initializeChat: No user shortname yet, deferring connection to $effect");
@@ -255,7 +232,6 @@
 
       // Merge online status
       const onlineUsers = await onlineUsersPromise;
-      console.log("[loadUsers] loaded:", loadedUsers.length, "online:", onlineUsers.size, [...onlineUsers]);
       users = loadedUsers
         .map((u) => ({ ...u, online: onlineUsers.has(u.shortname) }))
         .sort((a, b) => (a.online === b.online ? 0 : a.online ? -1 : 1));
@@ -315,7 +291,6 @@
   async function loadGroupMessages(groupId: any) {
     try {
       isMessagesLoading = true;
-      messagesOffset = 0;
       hasMoreMessages = true;
 
       const cacheKey = getGroupCacheKey(currentUser?.shortname, groupId);
@@ -666,25 +641,20 @@
   }
 
   function handleRealtimeMessage(data: any) {
-    console.log("[RT] Received message:", JSON.stringify(data));
 
     if (data.type === "connection_response") {
-      console.log("[RT] Connection response, ignoring");
       return;
     }
 
     // Handle subscription confirmations (from channel_subscribe)
     if (data.type === "notification_subscription" && data.message?.status === "success" && !data.message?.action_type) {
-      console.log("[RT] Subscription confirmed for channel:", data.message?.channel);
       return;
     }
 
     // Handle plugin broadcast notifications (new content created/updated)
     if (data.type === "notification_subscription" && data.message?.action_type) {
-      console.log("[RT] Plugin notification:", data.message);
       if (data.message.action_type === "create" && data.message.shortname) {
         const ownerShortname = data.message.owner_shortname;
-        console.log("[RT] Fetching message by shortname:", data.message.shortname, "owner:", ownerShortname, "subpath:", data.message.subpath);
         fetchMessageByShortname(data.message.shortname, ownerShortname, undefined, data.message.subpath);
       }
       return;
@@ -692,17 +662,14 @@
 
     // Handle direct real-time messages (type: "message")
     if (data.type === "message") {
-      console.log("[RT] Direct message. groupId:", data.groupId, "senderId:", data.senderId, "receiverId:", data.receiverId);
 
       // Skip messages sent by current user (already shown via optimistic UI)
       if (data.senderId === currentUser?.shortname) {
-        console.log("[RT] Skipping own message");
         return;
       }
 
       // Group messages
       if (data.groupId) {
-        console.log("[RT] Group message for group:", data.groupId, "selectedGroup:", selectedGroup?.id, "chatMode:", chatMode);
         const isRelevant = isRelevantGroupMessage(
           data,
           data.groupId,
@@ -730,7 +697,6 @@
               (msg) => msg.id === newGroupMessage.id
             );
             if (!messageExists) {
-              console.log("[RT] Adding group message to conversation");
               groupMessages = [...groupMessages, newGroupMessage];
               scrollToBottom(chatContainer);
             }
@@ -742,11 +708,9 @@
       // Direct messages (no groupId)
       if (data.senderId && data.receiverId) {
         if (data.receiverId !== currentUser?.shortname && data.senderId !== currentUser?.shortname) {
-          console.log("[RT] Direct message not for current user");
           return;
         }
         const partnerShortname = data.senderId;
-        console.log("[RT] Direct message from:", partnerShortname);
 
         if (data.hasAttachments && data.messageId) {
           const tempMessage = {
@@ -847,7 +811,6 @@
             (msg) => msg.id === newMessage.id
           );
           if (!messageExists) {
-            console.log("[RT] Adding direct message to conversation:", newMessage.content);
             messages = [...messages, newMessage];
             scrollToBottom(chatContainer);
           }
@@ -858,7 +821,6 @@
 
     // Handle group_message type (alternative format)
     if (data.type === "group_message") {
-      console.log("[RT] group_message type for group:", data.groupId);
       if (data.senderId === currentUser?.shortname) {
         return;
       }
@@ -897,7 +859,6 @@
       return;
     }
 
-    console.log("[RT] Unhandled message type:", data.type);
   }
 
   function updateDirectMessageCache(partnerShortname: any, newMessage: any) {
@@ -924,7 +885,6 @@
 
   async function fetchMessageByShortname(messageShortname: any, senderShortname?: string, receiverShortname?: string, subpath?: string) {
     try {
-      console.log("[FetchMsg] Fetching message:", messageShortname, "sender:", senderShortname, "receiver:", receiverShortname, "subpath:", subpath);
 
       const sender = senderShortname;
       const receiver = receiverShortname || currentUser?.shortname;
@@ -932,15 +892,12 @@
       const messageData: any = await getMessageByShortname(messageShortname, sender, receiver, subpath);
 
       if (!messageData) {
-        console.log("[FetchMsg] No message data returned");
         return;
       }
 
-      console.log("[FetchMsg] Got message:", messageData.id, "from:", messageData.senderId, "to:", messageData.receiverId);
 
       // Skip messages sent by current user (already shown via optimistic UI)
       if (messageData.senderId === currentUser?.shortname) {
-        console.log("[FetchMsg] Skipping own message");
         return;
       }
 
@@ -964,11 +921,8 @@
             (msg) => msg.id === newGroupMessage.id
           );
           if (!messageExists) {
-            console.log("[FetchMsg] Adding group message to UI:", newGroupMessage.id);
             groupMessages = [...groupMessages, newGroupMessage];
             scrollToBottom(chatContainer);
-          } else {
-            console.log("[FetchMsg] Group message already exists:", newGroupMessage.id);
           }
         }
         return;
@@ -994,64 +948,13 @@
           (msg) => msg.id === newMessage.id
         );
         if (!messageExists) {
-          console.log("[FetchMsg] Adding direct message to UI:", newMessage.id, "content:", newMessage.content);
           messages = [...messages, newMessage];
           scrollToBottom(chatContainer);
-        } else {
-          console.log("[FetchMsg] Direct message already exists:", newMessage.id);
         }
-      } else {
-        console.log("[FetchMsg] Message cached for conversation with:", partnerShortname, "selectedUser:", selectedUser?.shortname, "chatMode:", chatMode);
       }
     } catch (error) {
       console.error("❌ [FetchMsg] Error fetching message:", error);
     }
-  }
-
-  function addMessageToConversation(newMessage: any) {
-    messages = [...messages, newMessage];
-
-    if (selectedUser) {
-      const conversationKey = selectedUser.shortname;
-      const existingMessages = conversationMessages.get(conversationKey) || [];
-      conversationMessages.set(conversationKey, [
-        ...existingMessages,
-        newMessage,
-      ]);
-
-      const cacheKey = getCacheKey(
-        currentUser?.shortname,
-        selectedUser.shortname
-      );
-      cacheMessages(cacheKey, messages);
-    }
-
-    scrollToBottom(chatContainer);
-  }
-
-  function addGroupMessageToConversation(newMessage: any) {
-    groupMessages = [...groupMessages, newMessage];
-
-    if (selectedGroup) {
-      const conversationKey = selectedGroup.id;
-      const existingMessages =
-        groupConversationMessages.get(conversationKey) || [];
-
-      groupConversationMessages.set(conversationKey, [
-        ...existingMessages,
-        newMessage,
-      ]);
-
-      const cacheKey = getGroupCacheKey(
-        currentUser?.shortname,
-        selectedGroup.id
-      );
-      cacheMessages(cacheKey, groupMessages);
-    } else {
-      console.warn("⚠️ [Group Message] No selected group for caching");
-    }
-
-    scrollToBottom(chatContainer);
   }
 
   function getUserDisplayName(shortname: any) {
@@ -1063,7 +966,6 @@
     if (!selectedUser) return;
 
     isMessagesLoading = true;
-    messagesOffset = 0;
     hasMoreMessages = true;
 
     try {
@@ -1115,7 +1017,7 @@
 
       const cacheKey = getCacheKey(currentUser?.shortname, userShortname);
       cacheMessages(cacheKey, messages);
-    } catch (error) {
+    } catch {
       messages = conversationMessages.get(userShortname) || [];
 
       if (messages.length === 0) {
@@ -1265,16 +1167,14 @@
 
         const wsRef = getWebSocketService();
         if (wsRef) {
-          console.log("[SendMsg] Sending WS message:", JSON.stringify(wsMessage));
-          const sendResult = await wsRef.send(wsMessage);
-          console.log("[SendMsg] WS send result:", sendResult);
+          await wsRef.send(wsMessage);
         } else {
           console.warn("[SendMsg] No WS service, skipping WS send");
         }
       } else {
         messages = messages.filter((msg) => msg.id !== tempId);
       }
-    } catch (error) {
+    } catch {
       messages = messages.filter((msg) => msg.id !== tempId);
     } finally {
       isAttachmentLoading = false;
@@ -1282,7 +1182,6 @@
 
     if (!hasAttachments) {
       const conversationKey = selectedUser.shortname;
-      const existingMessages = conversationMessages.get(conversationKey) || [];
       const updatedMessages = messages.filter((msg) => msg.id !== tempId);
 
       if (updatedMessages.length > 0) {
@@ -1406,7 +1305,7 @@
       recordingInterval = setInterval(() => {
         recordingDuration++;
       }, 1000);
-    } catch (error) {
+    } catch {
       isRecording = false;
 
       if (stream) {
@@ -1450,7 +1349,7 @@
   }
 </script>
 
-<div class="chat-container" class:rtl={isRTL}>
+<div class="chat-container" class:rtl={$isRTL}>
   <ChatHeader {isConnected} {connectionStatus} />
 
   <div class="chat-content">
@@ -1583,7 +1482,7 @@
                   <!-- Show temp attachments for pending messages -->
                   {#if message.hasAttachments && message.attachments && !message.attachments?.media && !message.isUploading}
                     <div class="message-attachments">
-                      {#each message.attachments as file}
+                      {#each message.attachments as file, i (i)}
                         <div class="attachment-item temp-attachment">
                           {#if file.type.startsWith("audio/") && file.name.includes("voice_message_")}
                             <!-- Voice Message Preview -->

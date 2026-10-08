@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { goto } from "@roxi/routify";
+  import { goto as gotoStore } from "@roxi/routify";
   import {
     getSurveys,
     submitSurveyResponse,
@@ -14,7 +14,11 @@
     successToastMessage,
   } from "@/lib/toasts_messages";
 
-  $goto;
+  // Routify's helpers read the fragment context when first subscribed, and
+  // Svelte 5 subscribes to a `$store` lazily on first read — so a `$gotoStore`
+  // first touched inside an async callback logs "Unable to access context".
+  // Capture the navigate function once, during component init.
+  const goto = $gotoStore;
 
   let surveys = $state<any[]>([]);
   let isLoading = $state(true);
@@ -178,10 +182,6 @@
     }
   }
 
-  // function formatDate(dateString: string) {
-  //   return new Date(dateString).toLocaleDateString();
-  // }
-
   async function openSurveyModal(survey: any) {
     selectedSurvey = survey;
 
@@ -224,13 +224,13 @@
       <div class="header-actions">
         <button
           class="btn btn-secondary"
-          onclick={() => $goto("/surveys/manage")}
+          onclick={() => goto("/surveys/manage")}
         >
           {$_("surveys.manage_button")}
         </button>
         <button
           class="btn btn-primary"
-          onclick={() => $goto("/surveys/create")}
+          onclick={() => goto("/surveys/create")}
         >
           {$_("surveys.create_button")}
         </button>
@@ -279,7 +279,7 @@
         <p>{$_("surveys.no_surveys_moment")}</p>
         <button
           class="btn btn-primary"
-          onclick={() => $goto("/surveys/create")}
+          onclick={() => goto("/surveys/create")}
         >
           {$_("surveys.create_first")}
         </button>
@@ -981,14 +981,6 @@
     animation: spin 1s linear infinite;
   }
 
-  @keyframes spin {
-    from {
-      transform: rotate(0deg);
-    }
-    to {
-      transform: rotate(360deg);
-    }
-  }
 
   /* Response Status Styles */
   .response-status {

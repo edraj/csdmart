@@ -55,7 +55,7 @@
     try {
       const result = await Dmart.getSpaces();
       spaces = (result as any).records || [];
-    } catch (e) {
+    } catch {
       spaces = [];
     }
   }
@@ -76,7 +76,7 @@
         rootChildren,
       );
       subpaths = tempSubpaths.reverse();
-    } catch (e) {
+    } catch {
       subpaths = [];
     } finally {
       isLoadingSubpaths = false;
@@ -94,7 +94,7 @@
       shortnames = (result.records || []).filter(
         (r: any) => r.resource_type !== "folder",
       );
-    } catch (e) {
+    } catch {
       shortnames = [];
     } finally {
       isLoadingShortnames = false;
@@ -164,7 +164,7 @@
     try {
       attrs = JSON.parse(relAttributesJson);
     } catch {
-      attrs = {};
+      // not valid JSON: keep the empty attributes
     }
 
     return {
@@ -245,7 +245,7 @@
     <!-- Existing relationships list -->
     {#if relationships && relationships.length > 0}
       <div class="space-y-3 w-full">
-        {#each relationships as rel, index}
+        {#each relationships as rel, index (index)}
           <div class="p-4 bg-white border border-gray-200 rounded-lg shadow-sm">
             <div class="flex items-center justify-between">
               <div class="flex-1 min-w-0">
@@ -336,7 +336,7 @@
               class="mt-1 w-full px-3 py-2 bg-white text-black border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
             >
               <option value="">-- {$_("relationship_modal.select_space")} --</option>
-              {#each spaces as space}
+              {#each spaces as space (space.shortname)}
                 <option value={space.shortname}>{space.shortname}</option>
               {/each}
             </select>
@@ -352,7 +352,7 @@
               class="mt-1 w-full px-3 py-2 bg-white text-black border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 disabled:bg-gray-100 disabled:text-gray-500"
             >
               <option value="/">/</option>
-              {#each subpaths as path}
+              {#each subpaths as path (path)}
                 <option value={path}>{path}</option>
               {/each}
             </select>
@@ -373,7 +373,7 @@
               class="mt-1 w-full px-3 py-2 bg-white text-black border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 disabled:bg-gray-100 disabled:text-gray-500"
             >
               <option value="">-- {$_("relationship_modal.select_entry")} --</option>
-              {#each shortnames as item}
+              {#each shortnames as item (item.shortname)}
                 <option value={item.shortname}>{item.shortname}</option>
               {/each}
             </select>
@@ -392,7 +392,7 @@
               bind:value={relType}
               class="mt-1 w-full px-3 py-2 bg-white text-black border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
             >
-              {#each Object.values(ResourceType) as rt}
+              {#each Object.values(ResourceType) as rt (rt)}
                 <option value={rt}>{rt}</option>
               {/each}
             </select>

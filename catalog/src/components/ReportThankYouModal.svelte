@@ -3,8 +3,10 @@
   import Modal from "./Modal.svelte";
   import { CheckCircleSolid } from "flowbite-svelte-icons";
 
-  export let show = false;
-  export let onClose: () => void = () => {};
+  let {
+    show = $bindable(false),
+    onClose = () => {},
+  }: { show?: boolean; onClose?: () => void } = $props();
 
   function handleClose() {
     show = false;
@@ -47,7 +49,7 @@
     </div>
 
     {#snippet footer()}
-      <button type="button" class="submit-button" on:click={handleClose}>
+      <button type="button" class="submit-button" onclick={handleClose}>
         {$_("common.got_it")}
       </button>
     {/snippet}

@@ -1,25 +1,19 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
   import { sanitizeHtml } from "@/lib/utils/sanitize";
-  import { goto, params } from "@roxi/routify";
+  import { goto as gotoStore, params } from "@roxi/routify";
   import {
     deleteEntity,
     getEntity,
     getMyEntities,
     replaceEntity,
-    getAvatar,
   } from "@/lib/dmart_services";
-  import Avatar from "@/components/Avatar.svelte";
-  import { user } from "@/stores/user";
   import { can } from "@/stores/permissions";
-  import {
-    errorToastMessage,
-    successToastMessage,
-  } from "@/lib/toasts_messages";
+  import { errorToastMessage } from "@/lib/toasts_messages";
   import { ContentType, ResourceType, DmartScope } from "@edraj/tsdmart";
-  import { _, locale } from "@/i18n";
-  import { derived as derivedStore, writable } from "svelte/store";
-  import { website } from "@/config";
+  import { _, locale, isRTL } from "@/i18n";
+  import { formatDate } from "@/lib/format";
+  import { writable } from "svelte/store";
   import Attachment from "@/components/Attachments.svelte";
   import HtmlEditor from "@/components/editors/HtmlEditor.svelte";
   import MarkdownEditor from "@/components/editors/MarkdownEditor.svelte";
@@ -29,23 +23,17 @@
   import SchemaForm from "@/components/forms/SchemaForm.svelte";
   import DynamicSchemaBasedForms from "@/components/forms/DynamicSchemaBasedForms.svelte";
   import SchemaViewer from "@/components/forms/SchemaViewer.svelte";
-  // import PostContent from "@/components/post/PostContent.svelte";
   import JsonViewer from "@/components/JsonViewer.svelte";
   import RelationshipModal from "@/components/management/RelationshipModal.svelte";
   import AttachmentModal from "@/components/management/AttachmentModal.svelte";
-  import {
-    PlusOutline,
-    HeartSolid,
-    MessagesSolid,
-    TrashBinSolid,
-  } from "flowbite-svelte-icons";
+  import { PlusOutline } from "flowbite-svelte-icons";
 
-  $goto;
+  // Routify's helpers read the fragment context when first subscribed, and
+  // Svelte 5 subscribes to a `$store` lazily on first read — so a `$gotoStore`
+  // first touched inside an async callback logs "Unable to access context".
+  // Capture the navigate function once, during component init.
+  const goto = $gotoStore;
 
-  const isRTL = derivedStore(
-    locale,
-    ($locale) => $locale === "ar" || $locale === "ku",
-  );
 
   const isLoading = writable(false);
   const itemData = writable<any>(null);
@@ -133,8 +121,6 @@
   let jsonEditFormValue: any = $state({});
   let relationshipsValue: any[] = $state([]);
 
-  let userReactionEntry: any = $state(null);
-
   function getItemContent(item: any) {
     if (!item?.payload) return "";
 
@@ -178,20 +164,14 @@
     return content || "";
   }
 
-  function handleJsonContentChange(event: any) {
-    jsonEditorContent = event.detail;
+  function handleJsonContentChange(newContent: any) {
+    jsonEditorContent = newContent;
     jsonEditFormValue = jsonEditorContent;
     jsonEditForm.update((form) => ({
       ...form,
       content: jsonEditFormValue,
     }));
   }
-
-  // function handleSchemaContentChange(newContent) {
-  //   schemaEditorContent = newContent;
-  //   editFormValue.content = JSON.stringify(newContent);
-  //   editForm.update((form) => ({ ...form, content: editFormValue.content }));
-  // }
 
   onMount(async () => {
     await initializeContent();
@@ -444,7 +424,7 @@
 
       if (success) {
         showDeleteModal.set(false);
-        $goto("/dashboard/admin/[space_name]/[subpath]", {
+        goto("/dashboard/admin/[space_name]/[subpath]", {
           space_name: spaceNameValue,
           subpath: actualSubpathValue,
         });
@@ -480,11 +460,6 @@
     return $_("admin_item_detail.no_description");
   }
 
-  function formatDate(dateString: any) {
-    if (!dateString) return $_("common.not_available");
-    return new Date(dateString).toLocaleString($locale ?? undefined);
-  }
-
   function navigateToBreadcrumb(path: any) {
     const pathSegments = path
       .split("/")
@@ -495,14 +470,14 @@
       pathSegments[0] === "dashboard" &&
       pathSegments[1] === "admin"
     ) {
-      $goto("/dashboard/admin");
+      goto("/dashboard/admin");
     } else if (
       pathSegments.length === 3 &&
       pathSegments[0] === "dashboard" &&
       pathSegments[1] === "admin"
     ) {
       const spaceName = pathSegments[2];
-      $goto(`/dashboard/admin/[space_name]`, {
+      goto(`/dashboard/admin/[space_name]`, {
         space_name: spaceName,
       });
     } else if (
@@ -512,7 +487,7 @@
     ) {
       const spaceName = pathSegments[2];
       const subpath = pathSegments[3];
-      $goto(`/dashboard/admin/[space_name]/[subpath]`, {
+      goto(`/dashboard/admin/[space_name]/[subpath]`, {
         space_name: spaceName,
         subpath: subpath,
       });
@@ -524,7 +499,7 @@
       const spaceName = pathSegments[2];
       const subpath = pathSegments[3];
       const shortname = pathSegments[4];
-      $goto(
+      goto(
         `/dashboard/admin/[space_name]/[subpath]/[shortname]/[resource_type]`,
         {
           space_name: spaceName,
@@ -537,7 +512,7 @@
   }
 
   function goBack() {
-    $goto("/dashboard/admin/[space_name]/[subpath]", {
+    goto("/dashboard/admin/[space_name]/[subpath]", {
       space_name: spaceNameValue,
       subpath: subpathValue,
     });
@@ -572,7 +547,7 @@
           <button
             onclick={goBack}
             class="w-10 h-10 bg-indigo-50 hover:bg-indigo-100 text-indigo-600 rounded-xl flex items-center justify-center transition-colors shadow-sm"
-            aria-label={`Go back`}
+            aria-label="Go back"
           >
             <svg
               class="w-5 h-5 shrink-0"
@@ -596,7 +571,7 @@
               aria-label="Breadcrumb"
             >
               <ol class="inline-flex items-center space-x-2">
-                {#each $breadcrumbs as crumb, index}
+                {#each $breadcrumbs as crumb, index (index)}
                   <li class="inline-flex items-center">
                     {#if index > 0}
                       <svg
@@ -908,7 +883,7 @@
                         >
                           {#if itemDataValue.displayname}
                             <div class="space-y-1">
-                              {#each Object.entries(itemDataValue.displayname) as [lang, name]}
+                              {#each Object.entries(itemDataValue.displayname) as [lang, name] (lang)}
                                 <div
                                   class="flex items-center space-x-2"
                                   class:space-x-reverse={$isRTL}
@@ -941,7 +916,7 @@
                         >
                           {#if itemDataValue.description}
                             <div class="space-y-1">
-                              {#each Object.entries(itemDataValue.description) as [lang, desc]}
+                              {#each Object.entries(itemDataValue.description) as [lang, desc] (lang)}
                                 <div
                                   class="flex items-start space-x-2"
                                   class:space-x-reverse={$isRTL}
@@ -1048,7 +1023,7 @@
                               class="flex flex-wrap gap-1"
                               class:justify-end={$isRTL}
                             >
-                              {#each itemDataValue.tags as tag}
+                              {#each itemDataValue.tags as tag (tag)}
                                 {#if tag.trim()}
                                   <span
                                     class="inline-flex items-center px-2 py-1 rounded-md text-xs font-medium bg-gray-100 text-gray-800"
@@ -1085,7 +1060,7 @@
                         <td
                           class="px-3 py-1.5 whitespace-nowrap text-sm text-gray-500"
                           class:text-right={$isRTL}
-                          >{formatDate(itemDataValue.created_at)}</td
+                          >{formatDate(itemDataValue.created_at, "datetime", $locale)}</td
                         >
                       </tr>
                       <tr>
@@ -1097,7 +1072,7 @@
                         <td
                           class="px-3 py-1.5 whitespace-nowrap text-sm text-gray-500"
                           class:text-right={$isRTL}
-                          >{formatDate(itemDataValue.updated_at)}</td
+                          >{formatDate(itemDataValue.updated_at, "datetime", $locale)}</td
                         >
                       </tr>
                     </tbody>
@@ -1133,7 +1108,7 @@
               </div>
 
               {#if itemDataValue.attachments && typeof itemDataValue.attachments === "object"}
-                {#each Object.entries(itemDataValue.attachments) as [type, attachmentsArrRaw]}
+                {#each Object.entries(itemDataValue.attachments) as [type, attachmentsArrRaw] (type)}
                   {#if Array.isArray(attachmentsArrRaw) && attachmentsArrRaw.length > 0}
                     {@const attachmentsArr = attachmentsArrRaw as any[]}
                     <div
@@ -1218,7 +1193,7 @@
                       <div class="p-6">
                         {#if type === "share"}
                           <div class="space-y-3">
-                            {#each attachmentsArr as share}
+                            {#each attachmentsArr as share (share.shortname)}
                               <div
                                 class="bg-purple-50 rounded-lg p-4 border border-purple-200"
                               >
@@ -1412,7 +1387,7 @@
                       </tr>
                     </thead>
                     <tbody class="bg-white divide-y divide-gray-200">
-                      {#each authorRelatedEntriesValue as entry}
+                      {#each authorRelatedEntriesValue as entry (entry.shortname)}
                         <tr>
                           <td
                             class="px-3 py-1.5 whitespace-nowrap text-sm font-medium text-gray-900"
@@ -1468,7 +1443,7 @@
                             class="px-3 py-1.5 whitespace-nowrap text-sm text-gray-500"
                             class:text-right={$isRTL}
                           >
-                            {formatDate(entry.created_at)}
+                            {formatDate(entry.created_at, "datetime", $locale)}
                           </td>
                         </tr>
                       {/each}
@@ -1741,7 +1716,7 @@
                 </div>
                 {#if editFormValue.tags.length > 0}
                   <div class="tags-badges-container">
-                    {#each editFormValue.tags as tag, index}
+                    {#each editFormValue.tags as tag, index (index)}
                       <span class="tag-badge">
                         {tag}
                         <button
@@ -1864,7 +1839,7 @@
                         <JsonEditor
                           content={jsonEditorContent}
                           isEditMode={true}
-                          on:contentChange={handleJsonContentChange}
+                          onContentChange={handleJsonContentChange}
                         />
                       </div>
                       <div class="json-preview-pane">
@@ -1897,7 +1872,6 @@
                   {:else}
                     <HtmlEditor
                       bind:content={htmlEditor}
-                      resource_type={$params.resource_type}
                       space_name={spaceNameValue}
                       subpath={actualSubpathValue}
                       parent_shortname={itemShortnameValue}
@@ -1905,7 +1879,6 @@
                       isEditMode={true}
                       attachments={itemDataValue?.attachments || []}
                       changed={() => {
-                        console.log("Content changed:", htmlEditor);
                       }}
                     />
                   {/if}
@@ -1920,7 +1893,7 @@
                 type="button"
                 onclick={() => showEditModal.set(false)}
                 class="cancel-button"
-                aria-label={`Cancel editing item`}
+                aria-label="Cancel editing item"
               >
                 <svg
                   class="button-icon"
@@ -1939,7 +1912,7 @@
               </button>
               <!-- Removed onclick handler from submit button to rely on form onsubmit -->
               <button
-                aria-label={`Save changes`}
+                aria-label="Save changes"
                 type="submit"
                 class="save-button"
               >
@@ -2005,7 +1978,7 @@
     aria-labelledby="delete-modal-title"
     tabindex="-1"
   >
-    <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
     <div
       class="bg-white rounded-2xl shadow-2xl max-w-md w-full transform transition-all"
       role="dialog"

@@ -1,16 +1,19 @@
 <script lang="ts">
-  export let src = "";
-  export let alt = "Avatar";
-  export let size: string | number = "200";
+  let {
+    src = "",
+    alt = "Avatar",
+    size = "200",
+  }: { src?: string | null; alt?: string; size?: string | number } = $props();
 
-  let imgFailed = false;
-  let hasValidSrc = false;
+  let imgFailed = $state(false);
 
-  $: hasValidSrc = !!src && src.trim() !== "";
-  $: showImage = hasValidSrc && !imgFailed;
-  $: sizePx = typeof size === "number" ? size : parseInt(String(size), 10) || 200;
+  const hasValidSrc = $derived(!!src && src.trim() !== "");
+  const showImage = $derived(hasValidSrc && !imgFailed);
+  const sizePx = $derived(
+    typeof size === "number" ? size : parseInt(String(size), 10) || 200,
+  );
 
-  function getInitials(name : String) {
+  function getInitials(name: string) {
     if (!name || name === "Avatar") return "?";
     const parts = name.trim().split(/[\s._-]+/).filter(Boolean);
     if (parts.length >= 2) {
@@ -19,17 +22,13 @@
     return name.substring(0, 2).toUpperCase();
   }
 
-  function handleError() {
-    imgFailed = true;
-  }
-
   const colors = [
     "#6366f1", "#8b5cf6", "#ec4899", "#f43f5e",
     "#f97316", "#eab308", "#22c55e", "#14b8a6",
     "#06b6d4", "#3b82f6",
   ];
 
-  function getColor(name : String) {
+  function getColor(name: string) {
     if (!name) return colors[0];
     let hash = 0;
     for (let i = 0; i < name.length; i++) {
@@ -46,7 +45,7 @@
     {alt}
     height={sizePx}
     width={sizePx}
-    on:error={handleError}
+    onerror={() => (imgFailed = true)}
   />
 {:else}
   <div

@@ -6,7 +6,7 @@
         RequestType,
         ResourceType,
     } from "@edraj/tsdmart";
-    import { downloadFile } from "@/lib/downloadFile";
+    import { downloadFile } from "@shared/download-file";
     import {
         warningToastMessage,
         successToastMessage,
@@ -36,8 +36,8 @@
         onUpdateFolder = () => {},
     }: Props = $props();
 
-    let selectedSpace = $state("");
-    $effect(() => { selectedSpace = space_name; });
+    // Follows the prop until the user picks another space (writable $derived).
+    let selectedSpace = $derived(space_name);
     let downloadAll = $state(false);
     let limit = $state("");
     let startDate = $state("");
@@ -77,7 +77,6 @@
     }
 
     function copyIndexAttributes() {
-        console.log({ indexAttributes });
         let indexAttrs =
             indexAttributes && indexAttributes.length > 0
                 ? indexAttributes
@@ -185,7 +184,7 @@
                 "text/csv",
             );
             isOpen = false;
-        } catch (e) {
+        } catch {
             warningToastMessage("Failed to download CSV");
         } finally {
             isCSVDownloadInProgress = false;
@@ -230,7 +229,7 @@
                                 class="w-full px-4 py-2 bg-gray-50 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 text-gray-900"
                                 bind:value={selectedSpace}
                             >
-                                {#each parseSpacesForSelect(availableSpaces) as space}
+                                {#each parseSpacesForSelect(availableSpaces) as space (space.value)}
                                     <option value={space.value}
                                         >{space.name}</option
                                     >
@@ -356,7 +355,7 @@
                         </div>
                     {:else}
                         <div class="space-y-3 mb-4">
-                            {#each editingCsvColumns as attr, index}
+                            {#each editingCsvColumns as attr, index (index)}
                                 <div
                                     class="flex items-start gap-3 bg-white p-3 border border-gray-100 rounded-xl shadow-sm"
                                 >

@@ -1,18 +1,17 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { _ } from "@/i18n";
+  import { _, locale } from "@/i18n";
+  import { formatDate } from "@/lib/format";
   import {
     getReports,
     getReportDetails,
     replyToReport,
-    updateReportStatus,
   } from "@/lib/dmart_services";
   import { getWorkflow } from "@/lib/dmart_services/workflows";
   import {
     successToastMessage,
     errorToastMessage,
   } from "@/lib/toasts_messages";
-  import { formatDate } from "@/lib/helpers";
   import { Modal } from "flowbite-svelte";
   import { InboxOutline } from "flowbite-svelte-icons";
 
@@ -30,21 +29,6 @@
   let availableTransitions = $state<any[]>([]);
 
   let selectedStatusFilter = $state("all");
-
-  function formatRelativeTime(dateString: any) {
-    if (!dateString) return "Unknown";
-    const date = new Date(dateString);
-    const now = new Date();
-    const diffInSeconds = Math.floor((now.getTime() - date.getTime()) / 1000);
-
-    if (diffInSeconds < 60) return "Just now";
-    if (diffInSeconds < 3600) return `${Math.floor(diffInSeconds / 60)}m ago`;
-    if (diffInSeconds < 86400)
-      return `${Math.floor(diffInSeconds / 3600)}h ago`;
-    if (diffInSeconds < 2592000)
-      return `${Math.floor(diffInSeconds / 86400)}d ago`;
-    return formatDate(dateString);
-  }
 
   onMount(async () => {
     await Promise.all([loadReports(), loadWorkflow()]);
@@ -187,7 +171,6 @@
 
       // Get available transitions for the current state
       if (workflow && workflow.states) {
-        console.log({ workflow})
         const currentState = workflow.states.find(
           (s: any) => s.state === (selectedReport.attributes.state || "Pending"),
         );
@@ -245,30 +228,6 @@
       );
     } finally {
       isSubmittingReply = false;
-    }
-  }
-
-  async function updateStatus(reportShortname: any, newStatus: any) {
-    try {
-      const success = await updateReportStatus(reportShortname, newStatus);
-      if (success) {
-        successToastMessage(
-          $_("reports.admin.success.status_updated") ||
-            "Status updated successfully",
-        );
-        await loadReports();
-      } else {
-        errorToastMessage(
-          $_("reports.admin.error.status_update_failed") ||
-            "Failed to update status",
-        );
-      }
-    } catch (err) {
-      console.error("Error updating status:", err);
-      errorToastMessage(
-        $_("reports.admin.error.status_update_failed") ||
-          "Failed to update status",
-      );
     }
   }
 
@@ -368,7 +327,7 @@
           bind:value={selectedStatusFilter}
           class="filter-select px-6 py-2 border-0 bg-white rounded-full shadow-sm text-sm font-medium text-gray-700 cursor-pointer focus:outline-none focus:ring-2 focus:ring-blue-100"
         >
-          {#each statusFilters as filter}
+          {#each statusFilters as filter (filter.value)}
             <option value={filter.value}>{filter.label}</option>
           {/each}
         </select>
@@ -409,10 +368,8 @@
       </div>
     {:else}
       <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {#each reports as report}
+        {#each reports as report (report.shortname)}
           {@const { color, icon, label, isEndState } = getReportStyle(report)}
-          <!-- svelte-ignore a11y_click_events_have_key_events -->
-          <!-- svelte-ignore a11y_no_static_element_interactions -->
           <div
             class="bg-white rounded-2xl border border-gray-100 p-6 flex flex-col shadow-sm hover:shadow-md transition-shadow cursor-default"
             tabindex="0"
@@ -486,9 +443,11 @@
                 <div class="meta-item text-xs text-gray-400">
                   {$_("reports.admin.reported_at") || "Reported"}:
                   <span class="font-medium text-gray-500 ml-1"
-                    >{formatRelativeTime(
+                    >{formatDate(
                       report.reportData.created_at ||
                         report.attributes.created_at,
+                      "relative",
+                      $locale,
                     )}</span
                   >
                 </div>
@@ -501,7 +460,7 @@
                   >
                     {$_("reports.admin.notes") || "Admin Notes"}
                   </h4>
-                  {#each report.reportData.replies as reply}
+                  {#each report.reportData.replies as reply, i (i)}
                     <div class="reply-item bg-gray-50 rounded-xl p-3 mb-2">
                       <div
                         class="reply-header flex justify-between items-center mb-1"
@@ -511,7 +470,7 @@
                           >{reply.admin_shortname}</span
                         >
                         <span class="reply-time text-[10px] text-gray-400"
-                          >{formatRelativeTime(reply.timestamp)}</span
+                          >{formatDate(reply.timestamp, "relative", $locale)}</span
                         >
                       </div>
                       <p class="reply-content text-xs text-gray-500 m-0">
@@ -634,7 +593,7 @@
             >{$_("reports.admin.actions.no_action") ||
               "No Action Required"}</option
           >
-          {#each availableTransitions as transition}
+          {#each availableTransitions as transition (transition.action)}
             <option value={transition.action}>{transition.action}</option>
           {/each}
         </select>

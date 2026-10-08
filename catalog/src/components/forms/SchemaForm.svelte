@@ -2,8 +2,8 @@
   import {
     transformFormToJson,
     transformJsonToForm,
-  } from "@/lib/schemaEditorUtils";
-  import { _, locale } from "@/i18n";
+  } from "@shared/schema-editor-utils";
+  import { _ } from "@/i18n";
 
   let {
     content = $bindable({}),
@@ -19,7 +19,7 @@
     };
   }
 
-  let formContent = $state(transformJsonToForm($state.snapshot(content)));
+  let formContent: any = $state(transformJsonToForm($state.snapshot(content)));
 
   const schemaTypes = [
     { value: "string", name: "String" },
@@ -196,7 +196,7 @@
 
       {#if formContent.properties && formContent.properties.length > 0}
         <div class="accordion">
-          {#each formContent.properties.filter((p: any) => p !== null && !p.__removed) as property, index}
+          {#each formContent.properties.filter((p: any) => p !== null && !p.__removed) as property, index (property.id)}
             <div class="accordion-item">
               <button
                 type="button"
@@ -254,7 +254,7 @@
                         id={`property-type-${index}`}
                         bind:value={property.type}
                       >
-                        {#each schemaTypes as type}
+                        {#each schemaTypes as type (type.value)}
                           <option value={type.value}>{type.name}</option>
                         {/each}
                       </select>
@@ -432,7 +432,7 @@
                                   id={`items-type-${index}`}
                                   bind:value={property.items.type}
                                 >
-                                  {#each schemaTypes as type}
+                                  {#each schemaTypes as type (type.value)}
                                     <option value={type.value}
                                       >{type.name}</option
                                     >
@@ -461,7 +461,7 @@
 
                                 {#if property.items.properties.length > 0}
                                   <div class="nested-items">
-                                    {#each property.items.properties.filter((p: any) => p !== null && !p.__removed) as itemProperty, itemIndex}
+                                    {#each property.items.properties.filter((p: any) => p !== null && !p.__removed) as itemProperty, itemIndex (itemProperty.id)}
                                       <div class="nested-item">
                                         <div class="form-grid">
                                           <div class="form-group">
@@ -491,7 +491,7 @@
                                               id={`item-property-type-${index}-${itemIndex}`}
                                               bind:value={itemProperty.type}
                                             >
-                                              {#each schemaTypes as type}
+                                              {#each schemaTypes as type (type.value)}
                                                 <option value={type.value}
                                                   >{type.name}</option
                                                 >
@@ -570,7 +570,7 @@
 
                         {#if property.properties && property.properties.length > 0}
                           <div class="nested-items">
-                            {#each property.properties.filter((p: any) => p !== null && !p.__removed) as nestedProperty, nestedIndex}
+                            {#each property.properties.filter((p: any) => p !== null && !p.__removed) as nestedProperty, nestedIndex (nestedProperty.id)}
                               <div class="nested-item">
                                 <div class="form-grid">
                                   <div class="form-group">
@@ -600,7 +600,7 @@
                                       id={`nested-property-type-${index}-${nestedIndex}`}
                                       bind:value={nestedProperty.type}
                                     >
-                                      {#each schemaTypes as type}
+                                      {#each schemaTypes as type (type.value)}
                                         <option value={type.value}
                                           >{type.name}</option
                                         >

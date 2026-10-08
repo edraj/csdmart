@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { _ } from "@/i18n";
-  import { formatDate } from "@/lib/helpers";
+  import { _, locale } from "@/i18n";
+  import { formatDate } from "@/lib/format";
   import { user } from "@/stores/user";
   import {
     createComment,
@@ -71,7 +71,7 @@
   }
 
   function getCommentDate(comment: any): string {
-    return formatDate(comment.attributes?.created_at);
+    return formatDate(comment.attributes?.created_at, "datetime", $locale);
   }
 
   function startReply(commentId: string) {
@@ -203,7 +203,7 @@
 
 {#if organizedComments.length > 0}
   <div class="nested-comments">
-    {#each organizedComments as comment}
+    {#each organizedComments as comment (comment.shortname)}
       <div class="comment-thread">
         <!-- Top-level comment -->
         <div class="comment-item">
@@ -388,7 +388,7 @@
         <!-- Nested replies -->
         {#if comment.replies.length > 0}
           <div class="replies-container">
-            {#each comment.replies as reply}
+            {#each comment.replies as reply (reply.shortname)}
               <div class="reply-item">
                 <div class="comment-header">
                   <div class="comment-author">
@@ -742,14 +742,6 @@
     animation: spin 1s linear infinite;
   }
 
-  @keyframes spin {
-    from {
-      transform: rotate(0deg);
-    }
-    to {
-      transform: rotate(360deg);
-    }
-  }
 
   /* Mobile responsive */
   @media (max-width: 768px) {

@@ -1,14 +1,19 @@
 <script lang="ts">
-  import { goto, params } from "@roxi/routify";
+  import { goto as gotoStore, params } from "@roxi/routify";
   import { Dmart, RequestType, ResourceType } from "@edraj/tsdmart";
   import { _ } from "svelte-i18n";
 
-  $goto;
+  // Routify's helpers read the fragment context when first subscribed, and
+  // Svelte 5 subscribes to a `$store` lazily on first read — so a `$gotoStore`
+  // first touched inside an async callback logs "Unable to access context".
+  // Capture the navigate function once, during component init.
+  const goto = $gotoStore;
 
   let {
     isCreate,
     fullWidth = false,
     formData = $bindable(),
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars, no-useless-assignment -- $bindable() prop: assigned here, read by the parent through bind:validateFn
     validateFn = $bindable(),
   } = $props();
 
@@ -62,7 +67,7 @@
   let isTranslationsOpen = $state(false);
 
   // Shortname validation pattern
-  const shortnamePattern = "^[a-zA-Z\\u0621-\\u064a0-9\\u0660-\\u0669\\u064b-\\u065f_]{1,64}$";
+  const shortnamePattern = "^[\\u064b-\\u065fa-zA-Z\\u0621-\\u064a0-9\\u0660-\\u0669_]{1,64}$";
   let shortnameError = $state("");
 
   function validateShortnameInput(value: string): boolean {
@@ -150,7 +155,7 @@
           };
         }
       }
-      $goto(`${url}`, gotoPayload);
+      goto(`${url}`, gotoPayload);
     } catch (error: any) {
       shortnameUpdateError =
         error.response.data.error?.info[0]?.failed[0].error ||
@@ -239,7 +244,7 @@
 
     <div class="accordion">
       <button
-        aria-label={`Toggle translations`}
+        aria-label="Toggle translations"
         type="button"
         class="accordion-header"
         onclick={() => (isTranslationsOpen = !isTranslationsOpen)}
@@ -349,9 +354,9 @@
 
 <!-- Modal -->
 {#if isShortnameUpdateOpen}
-  <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+  <!-- svelte-ignore a11y_click_events_have_key_events -->
   <div class="modal-overlay" role="presentation" onclick={() => (isShortnameUpdateOpen = false)}>
-    <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions a11y_interactive_supports_focus -->
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
     <div class="modal-content" role="dialog" tabindex="-1" onclick={(e) => e.stopPropagation()}>
       <div class="modal-header">
         <h3 class="modal-title">{$_("modal.update_shortname.title")}</h3>

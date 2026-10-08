@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { goto } from "@roxi/routify";
-  import { _, locale } from "@/i18n";
+  import { goto as gotoStore } from "@roxi/routify";
+  import { _, isRTL } from "@/i18n";
   import {
     EyeSlashSolid,
     EyeSolid,
@@ -11,24 +11,26 @@
   import { onMount } from "svelte";
   import { consumeResetDone } from "@/lib/dmart_services/password_reset";
 
-  $goto;
-  let identifier = "";
-  let password = "";
-  let showPassword = false;
-  let isSubmitting = false;
-  let showError = false;
-  let errors: { identifier?: string; password?: string } = {};
-  let isError: boolean;
-  $: isRTL = $locale === "ar" || $locale === "ku";
+  // Routify's helpers read the fragment context when first subscribed, and
+  // Svelte 5 subscribes to a `$store` lazily on first read — so a `$gotoStore`
+  // first touched inside an async callback logs "Unable to access context".
+  // Capture the navigate function once, during component init.
+  const goto = $gotoStore;
+  let identifier = $state("");
+  let password = $state("");
+  let showPassword = $state(false);
+  let isSubmitting = $state(false);
+  let showError = $state(false);
+  let errors: { identifier?: string; password?: string } = $state({});
 
   // Set by the confirm route before it redirects here.
-  let resetSuccess = false;
+  let resetSuccess = $state(false);
   onMount(() => {
     resetSuccess = consumeResetDone();
   });
 
   function goToResetPassword() {
-    $goto("/reset-password");
+    goto("/reset-password");
   }
 
   function isEmail(input: string): boolean {
@@ -37,7 +39,6 @@
 
   async function handleSubmit(event: Event) {
     event.preventDefault();
-    isError = false;
     showError = false;
     errors = {};
     isSubmitting = true;
@@ -57,9 +58,8 @@
       } else {
         await signin(trimmedIdentifier, password);
       }
-      $goto("/dashboard");
-    } catch (error) {
-      isError = true;
+      goto("/dashboard");
+    } catch {
       showError = true;
     } finally {
       isSubmitting = false;
@@ -71,12 +71,9 @@
   }
 
   function goToRegister() {
-    $goto("/register");
+    goto("/register");
   }
 
-  function goBack() {
-    $goto("/");
-  }
 </script>
 
 <div class="login-container">
@@ -96,7 +93,7 @@
     {/if}
 
     {#if showError}
-      <div class="error-message" class:rtl={isRTL} role="alert">
+      <div class="error-message" class:rtl={$isRTL} role="alert">
         <svg
           class="shrink-0 inline w-4 h-4 me-3"
           aria-hidden="true"
@@ -117,7 +114,7 @@
     <div class="form-container">
       <form onsubmit={handleSubmit} class="login-form">
         <div class="form-group">
-          <label for="identifier" class="form-label" class:rtl={isRTL}>
+          <label for="identifier" class="form-label" class:rtl={$isRTL}>
             <UserSolid class="label-icon" />
             {$_("Username")} / {$_("Email")}
           </label>
@@ -128,7 +125,7 @@
             placeholder={$_("Username") + " " + $_("or") + " " + $_("Email")}
             class="form-input"
             class:error={errors.identifier}
-            class:rtl={isRTL}
+            class:rtl={$isRTL}
             disabled={isSubmitting}
             aria-invalid={!!errors.identifier}
             aria-describedby={errors.identifier
@@ -139,7 +136,7 @@
             <p
               id="identifier-error"
               class="error-text-small"
-              class:rtl={isRTL}
+              class:rtl={$isRTL}
               role="alert"
             >
               {errors.identifier}
@@ -148,11 +145,11 @@
         </div>
 
         <div class="form-group">
-          <label for="password" class="form-label" class:rtl={isRTL}>
+          <label for="password" class="form-label" class:rtl={$isRTL}>
             <LockSolid class="label-icon" />
             {$_("Password")}
           </label>
-          <div class="password-input-wrapper" class:rtl={isRTL}>
+          <div class="password-input-wrapper" class:rtl={$isRTL}>
             <input
               id="password"
               type={showPassword ? "text" : "password"}
@@ -160,7 +157,7 @@
               placeholder={$_("Password")}
               class="form-input password-input"
               class:error={errors.password}
-              class:rtl={isRTL}
+              class:rtl={$isRTL}
               disabled={isSubmitting}
               aria-invalid={!!errors.password}
               aria-describedby={errors.password ? "password-error" : undefined}
@@ -171,7 +168,7 @@
               type="button"
               class="password-toggle"
               onclick={togglePasswordVisibility}
-              class:rtl={isRTL}
+              class:rtl={$isRTL}
             >
               {#if showPassword}
                 <EyeSlashSolid class="toggle-icon" />
@@ -184,7 +181,7 @@
             <p
               id="password-error"
               class="error-text-small"
-              class:rtl={isRTL}
+              class:rtl={$isRTL}
               role="alert"
             >
               {errors.password}
@@ -196,9 +193,9 @@
           type="submit"
           class="submit-button"
           class:loading={isSubmitting}
-          class:rtl={isRTL}
+          class:rtl={$isRTL}
           disabled={isSubmitting}
-          aria-label={`Sign in`}
+          aria-label="Sign in"
         >
           {#if isSubmitting}
             <div class="loading-spinner"></div>
@@ -210,10 +207,10 @@
         </button>
       </form>
 
-      <div class="register-link" class:rtl={isRTL}>
+      <div class="register-link" class:rtl={$isRTL}>
         <span class="register-text">{$_("DontHaveAccount")}</span>
         <button
-          aria-label={`Go to register`}
+          aria-label="Go to register"
           class="link-button"
           onclick={goToRegister}
         >
@@ -221,13 +218,13 @@
         </button>
       </div>
 
-      <div class="forgot-link" class:rtl={isRTL}>
+      <div class="forgot-link" class:rtl={$isRTL}>
         <button class="link-button" onclick={goToResetPassword}>
           {$_("ForgotPassword")}
         </button>
       </div>
 
-      <div class="terms-text" class:rtl={isRTL}>
+      <div class="terms-text" class:rtl={$isRTL}>
         <p>{$_("TermsAndConditions")}</p>
       </div>
     </div>

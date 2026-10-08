@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { goto, params } from "@roxi/routify";
+  import { goto as gotoStore, params } from "@roxi/routify";
   import {
     checkCurrentUserReactedIdea,
     createComment,
@@ -10,11 +10,12 @@
   } from "@/lib/dmart_services";
   import { apiErrorKey } from "@/lib/apiError";
   import { catalogBreadcrumbs, decodeSubpath } from "@/lib/paths";
-  import { _, locale } from "@/i18n";
-  import { derived as derivedStore } from "svelte/store";
+  import { _, locale, isRTL } from "@/i18n";
+  import { formatDate } from "@/lib/format";
   import { ResourceType } from "@edraj/tsdmart/dmart.model";
   import { getCurrentScope } from "@/stores/user";
   import { website } from "@/config";
+  import { AUTHORS_SUBPATH } from "@/lib/constants";
   import Attachments from "@/components/Attachments.svelte";
   import PostHeader from "@/components/post/PostHeader.svelte";
   import PostContent from "@/components/post/PostContent.svelte";
@@ -27,7 +28,7 @@
     errorToastMessage,
     successToastMessage,
   } from "@/lib/toasts_messages";
-  import { formatDate, formatNumberInText } from "@/lib/helpers";
+  import { formatNumberInText } from "@/lib/helpers";
   import {
     categorizeAttachments,
     getAuthorInfo,
@@ -35,9 +36,16 @@
     getDisplayName,
   } from "@/lib/utils/postUtils";
 
-  $goto;
+  // Routify's helpers read the fragment context when first subscribed, and
+  // Svelte 5 subscribes to a `$store` lazily on first read — so a `$gotoStore`
+  // first touched inside an async callback logs "Unable to access context".
+  // Capture the navigate function once, during component init.
+  const goto = $gotoStore;
   let isLoading = $state(false);
   let postData: any = $state(null);
+  // Fetch a few more than we show so the tag filter has something to pick from.
+  const RELATED_FETCH_LIMIT = 12;
+  const RELATED_SHOW_LIMIT = 6;
   let relatedContent = $state<any[]>([]);
   let isLoadingRelated = $state(false);
   let error: any = $state(null);
@@ -51,10 +59,6 @@
   let isSubmittingReaction = $state(false);
   let userReactionId: any = $state(null);
   let showLoginPrompt = $state(false);
-  const isRTL = derivedStore(
-    locale,
-    ($locale: any) => $locale === "ar" || $locale === "ku",
-  );
 
   // The entry's owner, not "a user whose shortname equals the entry's".
   const isOwner = $derived(
@@ -148,19 +152,26 @@
         spaceName,
         actualSubpath,
         getCurrentScope(),
-        source.tags || [],
         source.owner_shortname,
-        6,
+        RELATED_FETCH_LIMIT,
       );
 
       if (token !== undefined && token !== loadToken) return;
 
       if (response?.records) {
-        //TODO fix
-        relatedContent = []
-        // relatedContent = response.records.filter(
-        //   (item) => item.shortname !== itemShortname,
-        // );
+        // The query returns the folder's newest entries. Drop the entry itself,
+        // then prefer the ones that share a tag with it; when none do, the
+        // newest neighbours are still "related" enough to show.
+        const tags: string[] = source.tags ?? [];
+        const others = response.records.filter(
+          (item: any) => item.shortname !== itemShortname,
+        );
+        const sharingTag = tags.length
+          ? others.filter((item: any) =>
+              (item.attributes?.tags ?? []).some((t: string) => tags.includes(t)),
+            )
+          : [];
+        relatedContent = (sharingTag.length ? sharingTag : others).slice(0, RELATED_SHOW_LIMIT);
       }
     } catch (err) {
       console.error("Error loading related content:", err);
@@ -169,14 +180,8 @@
     }
   }
 
-  // function navigateToBreadcrumb(path: any) {
-  //   if (path) {
-  //     $goto(path);
-  //   }
-  // }
-
   function goBack() {
-    $goto("/catalogs/[space_name]/[subpath]", {
+    goto("/catalogs/[space_name]/[subpath]", {
       space_name: spaceName,
       subpath,
     });
@@ -286,7 +291,7 @@
   }
 
   function goToLogin() {
-    $goto("/login");
+    goto("/login");
   }
 
   function handleRelationshipClick(relationship: any) {
@@ -295,9 +300,9 @@
       relationship.related_to?.shortname
     ) {
       const editorShortname = relationship.related_to.shortname;
-      $goto("/catalogs/[space_name]/[subpath]/[shortname]/[resource_type]", {
+      goto("/catalogs/[space_name]/[subpath]/[shortname]/[resource_type]", {
         space_name: spaceName,
-        subpath: "authors",
+        subpath: AUTHORS_SUBPATH,
         shortname: editorShortname,
         resource_type: ResourceType.content,
       });
@@ -305,7 +310,7 @@
   }
 
   function handleRelatedContentClick(item: any) {
-    $goto("/catalogs/[space_name]/[subpath]/[shortname]/[resource_type]", {
+    goto("/catalogs/[space_name]/[subpath]/[shortname]/[resource_type]", {
       space_name: spaceName,
       subpath: item.subpath,
       shortname: item.shortname,
@@ -457,7 +462,7 @@
             {$_("post_detail.sections.relationships")}
           </h3>
           <div class="relationships-grid">
-            {#each postData.relationships as relationship}
+            {#each postData.relationships as relationship, i (i)}
               <button
                 aria-label={`View relationship with ${relationship.related_to?.shortname}`}
                 class="relationship-item clickable"
@@ -520,7 +525,7 @@
             </div>
           {:else}
             <div class="related-content-grid">
-              {#each relatedContent as item}
+              {#each relatedContent as item (`${item.subpath}/${item.shortname}`)}
                 <button
                   aria-label={`View related content: ${getDisplayName(item)}`}
                   class="related-content-card"
@@ -546,15 +551,15 @@
                   </div>
                   <div class="related-content-meta">
                     <span class="related-content-date">
-                      {formatDate(item.attributes?.updated_at)}
+                      {formatDate(item.attributes?.updated_at, "date", $locale)}
                     </span>
                     <span class="related-content-author">
-                      {getAuthorInfo(item, $locale ?? "")}
+                      {getAuthorInfo(item, $_("common.unknown"))}
                     </span>
                   </div>
                   {#if item.tags && item.tags.length > 0}
                     <div class="related-content-tags">
-                      {#each item.tags.slice(0, 3) as tag}
+                      {#each item.tags.slice(0, 3) as tag (tag)}
                         <span class="related-tag">#{tag}</span>
                       {/each}
                       {#if item.tags.length > 3}
@@ -1216,14 +1221,6 @@
     color: #374151;
   }
 
-  @keyframes spin {
-    from {
-      transform: rotate(0deg);
-    }
-    to {
-      transform: rotate(360deg);
-    }
-  }
 
   /* Mobile Responsive */
   @media (max-width: 768px) {

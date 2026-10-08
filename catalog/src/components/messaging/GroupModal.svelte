@@ -100,7 +100,7 @@
               {$_("messaging.current_participants")} ({participants.length})
             </h4>
             <div class="participants-list">
-              {#each participants as participantId}
+              {#each participants as participantId (participantId)}
                 {#if participantId !== currentUserShortname}
                   <div class="participant-item">
                     <span class="participant-name"
@@ -138,7 +138,7 @@
           </h4>
           {#if availableUsers.length > 0}
             <div class="available-users-list">
-              {#each availableUsers as user}
+              {#each availableUsers as user (user.shortname)}
                 <div class="available-user-item">
                   <span class="user-name">{user.name}</span>
                   <button
@@ -167,7 +167,7 @@
               {$_("messaging.selected_participants")} ({participants.length})
             </h4>
             <div class="selected-participants">
-              {#each participants as participantId}
+              {#each participants as participantId (participantId)}
                 <div class="selected-participant">
                   <span>{getUserDisplayName(participantId)}</span>
                   <button

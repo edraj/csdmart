@@ -2,7 +2,6 @@ import {
     Dmart,
     QueryType,
     ResourceType,
-    DmartScope,
     SortType,
 } from "@edraj/tsdmart";
 import { log } from "@/lib/logger";

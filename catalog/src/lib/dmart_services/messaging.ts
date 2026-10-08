@@ -200,7 +200,7 @@ export async function getMessageByShortname(
                         };
                     }
                 }
-            } catch (e) {
+            } catch {
                 // Continue to next location
             }
         }

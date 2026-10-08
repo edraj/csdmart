@@ -1,16 +1,9 @@
 /**
  * File utility functions for handling file operations and type detection
  */
+import { getFileExtension } from "@shared/file-extension";
 
-/**
- * Extract file extension from filename (without dot)
- * @param filename - The filename to extract extension from
- * @returns The file extension without dot, or empty string if no extension
- */
-export function getFileExtension(filename: string): string {
-    const ext = /^.+\.([^.]+)$/.exec(filename);
-    return ext == null ? "" : ext[1];
-}
+export { getFileExtension };
 
 /**
  * Remove file extension from filename

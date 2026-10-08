@@ -4,12 +4,22 @@
   import { onMount, onDestroy } from "svelte";
   import { sanitizeHtml } from "@/lib/utils/sanitize";
 
-  export let attributes: any = {};
-  export let resource_type: ResourceType;
-  export let url: string;
-  export let displayname: string | undefined = undefined;
-  let content_type: string = attributes?.payload?.content_type || "";
-  let body: any = attributes?.payload?.body;
+  let {
+    attributes = {},
+    url,
+    displayname = undefined,
+  }: {
+    attributes?: any;
+    resource_type?: ResourceType;
+    url: string;
+    displayname?: string;
+  } = $props();
+  // Parents render one <Media> per attachment and key on it, so the payload
+  // never changes underneath a mounted instance: read it once.
+  // svelte-ignore state_referenced_locally
+  const content_type: string = attributes?.payload?.content_type || "";
+  // svelte-ignore state_referenced_locally
+  const body: any = attributes?.payload?.body;
 
   // Audio, video and PDF are handed `url` directly instead of being downloaded
   // into a blob first. The payload endpoint already advertises
@@ -53,9 +63,9 @@
     return null;
   }
 
-  let blobUrl: string | null = null;
-  let loading = !streams && content_type.includes("image");
-  let error = false;
+  let blobUrl: string | null = $state(null);
+  let loading = $state(!streams && content_type.includes("image"));
+  let error = $state(false);
 
   onMount(async () => {
     if (!content_type.includes("image")) return;

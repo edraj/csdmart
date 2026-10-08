@@ -1,9 +1,13 @@
 <script>
-    import {goto} from "@roxi/routify";
+    import {goto as gotoStore} from "@roxi/routify";
     import {GlobeSolid, HeartSolid, MessageCaptionSolid, UsersSolid,} from "flowbite-svelte-icons";
     import {_} from "@/i18n";
 
-    $goto;
+    // Routify's helpers read the fragment context when first subscribed, and
+    // Svelte 5 subscribes to a `$store` lazily on first read — so a `$gotoStore`
+    // first touched inside an async callback logs "Unable to access context".
+    // Capture the navigate function once, during component init.
+    const goto = $gotoStore;
 
   const communityFeatures = [
     {
@@ -29,11 +33,11 @@
   ];
 
   function handleJoinCommunity() {
-    $goto("/register");
+    goto("/register");
   }
 
   function handleExploreCatalogs() {
-    $goto("/");
+    goto("/");
   }
 </script>
 
@@ -70,7 +74,7 @@
       </div>
 
       <div class="features-grid">
-        {#each communityFeatures as feature}
+        {#each communityFeatures as feature (feature.title)}
           <div class="feature-card">
             <div class="feature-icon">
               <feature.icon class="icon" color="white" />

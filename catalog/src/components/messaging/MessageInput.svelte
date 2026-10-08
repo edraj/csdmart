@@ -62,7 +62,7 @@
   <!-- Attachment Preview -->
   {#if selectedAttachments.length > 0}
     <div class="attachment-preview-container">
-      {#each selectedAttachments as file, index}
+      {#each selectedAttachments as file, index (index)}
         <div class="attachment-preview-item">
           {#if file.type.startsWith("audio/") && file.name.includes("voice_message_")}
             <div class="voice-message-icon">🎤</div>
@@ -402,11 +402,6 @@
     animation: spin 1s linear infinite;
   }
 
-  @keyframes spin {
-    to {
-      transform: rotate(360deg);
-    }
-  }
 
   @keyframes pulse {
     0%,

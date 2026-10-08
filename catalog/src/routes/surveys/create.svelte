@@ -1,12 +1,15 @@
 <script lang="ts">
-  import { onMount } from "svelte";
-  import { goto } from "@roxi/routify";
+  import { goto as gotoStore } from "@roxi/routify";
   import SurveyForm from "@/components/forms/SurveyForm.svelte";
   import { createEntity } from "@/lib/dmart_services";
   import { ResourceType } from "@edraj/tsdmart";
-  import { _, locale } from "@/i18n";
+  import { _ } from "@/i18n";
 
-  $goto;
+  // Routify's helpers read the fragment context when first subscribed, and
+  // Svelte 5 subscribes to a `$store` lazily on first read — so a `$gotoStore`
+  // first touched inside an async callback logs "Unable to access context".
+  // Capture the navigate function once, during component init.
+  const goto = $gotoStore;
 
   let survey = $state({
     title: "",
@@ -103,7 +106,7 @@
       if (result) {
         success = $_("create_survey.success");
         setTimeout(() => {
-          $goto("/surveys");
+          goto("/surveys");
         }, 2000);
       } else {
         error = $_("create_survey.error");
@@ -117,7 +120,7 @@
   }
 
   function handleCancel() {
-    $goto("/surveys");
+    goto("/surveys");
   }
 </script>
 
@@ -193,51 +196,6 @@
       </button>
 
       <div class="right-actions">
-        <button
-          type="button"
-          class="btn btn-outline"
-          disabled={isLoading}
-          onclick={() => console.log("Preview not implemented yet")}
-        >
-          <svg
-            class="w-4 h-4 mr-2"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-            ><path
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              stroke-width="2"
-              d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"
-            ></path><path
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              stroke-width="2"
-              d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"
-            ></path></svg
-          >
-          Preview
-        </button>
-        <button
-          type="button"
-          class="btn btn-outline"
-          disabled={isLoading}
-          onclick={() => console.log("Save Draft not implemented yet")}
-        >
-          <svg
-            class="w-4 h-4 mr-2"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-            ><path
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              stroke-width="2"
-              d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4"
-            ></path></svg
-          >
-          Save Draft
-        </button>
         <button
           type="button"
           class="btn btn-primary"
@@ -418,16 +376,7 @@
     background-color: #4c51bf;
   }
 
-  .btn-outline {
-    background-color: white;
-    color: #374151;
-    border: 1px solid #e5e7eb;
-  }
 
-  .btn-outline:hover:not(:disabled) {
-    background-color: #f9fafb;
-    border-color: #d1d5db;
-  }
 
   .spinner {
     width: 1rem;
@@ -435,14 +384,6 @@
     animation: spin 1s linear infinite;
   }
 
-  @keyframes spin {
-    from {
-      transform: rotate(0deg);
-    }
-    to {
-      transform: rotate(360deg);
-    }
-  }
 
   /* Mobile Responsive */
   @media (max-width: 640px) {

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { goto, params } from "@roxi/routify";
+  import { goto as gotoStore, params } from "@roxi/routify";
   import { onMount } from "svelte";
   import { sanitizeHtml } from "@/lib/utils/sanitize";
   import {
@@ -11,7 +11,7 @@
     getAvatar,
     getEntity,
   } from "@/lib/dmart_services";
-  import { formatDate, formatNumberInText } from "@/lib/helpers";
+  import { formatNumberInText } from "@/lib/helpers";
   import Attachments from "@/components/Attachments.svelte";
   import BreadcrumbNavigation from "@/components/navigation/BreadcrumbNavigation.svelte";
   import { catalogBreadcrumbs, decodeSubpath } from "@/lib/paths";
@@ -36,8 +36,8 @@
     TrashBinSolid,
     UserCircleOutline,
   } from "flowbite-svelte-icons";
-  import { _, locale } from "@/i18n";
-  import { derived as derivedStore } from "svelte/store";
+  import { _, locale, isRTL } from "@/i18n";
+  import { formatDate } from "@/lib/format";
   import { marked } from "marked";
   import JsonViewer from "@/components/JsonViewer.svelte";
   import { mangle } from "marked-mangle";
@@ -51,7 +51,11 @@
     }),
   );
 
-  $goto;
+  // Routify's helpers read the fragment context when first subscribed, and
+  // Svelte 5 subscribes to a `$store` lazily on first read — so a `$gotoStore`
+  // first touched inside an async callback logs "Unable to access context".
+  // Capture the navigate function once, during component init.
+  const goto = $gotoStore;
 
   let entity: any = $state(null);
   let isLoading = $state(false);
@@ -80,10 +84,6 @@
       : ""
   );
 
-  const isRTL = derivedStore(
-    locale,
-    ($locale: any) => $locale === "ar" || $locale === "ku",
-  );
 
   onMount(async () => {
     isLoadingPage = true;
@@ -94,7 +94,7 @@
   });
 
   function handleEdit(entity: any) {
-    $goto("/entries/[space_name]/[subpath]/[shortname]/[resource_type]/edit", {
+    goto("/entries/[space_name]/[subpath]/[shortname]/[resource_type]/edit", {
       shortname: entity.shortname,
       space_name: $params.space_name,
       subpath: $params.subpath,
@@ -193,7 +193,7 @@
       );
 
       if (success) {
-        $goto("/entries");
+        goto("/entries");
       }
     } catch (err) {
       console.error("Error deleting item:", err);
@@ -302,7 +302,7 @@
     // Replace {{fieldName:type}} patterns with actual data
     const placeholderRegex = /\{\{(\w+)(?::(\w+))?\}\}/g;
     
-    result = result.replace(placeholderRegex, (match, fieldName, fieldType) => {
+    result = result.replace(placeholderRegex, (match, fieldName) => {
       const value = data[fieldName];
       
       if (value === undefined || value === null) {
@@ -423,7 +423,7 @@
           catalogsLabel: $_("post_detail.breadcrumb.catalogs"),
         })}
         onGoBack={() =>
-          $goto(`/catalogs/${$params.space_name}/${$params.subpath}`)}
+          goto(`/catalogs/${$params.space_name}/${$params.subpath}`)}
       />
 
       {#if isOwner}
@@ -466,7 +466,7 @@
             </span>
             <span class="created-date">
               {$_("entry_detail.created")}
-              {formatDate(entity.created_at)}
+              {formatDate(entity.created_at, "datetime", $locale)}
             </span>
           </div>
           <p class="status-description">
@@ -490,7 +490,7 @@
               {$_("entry_detail.tags")}
             </h3>
             <div class="tags-container" class:flex-row-reverse={$isRTL}>
-              {#each entity.tags as tag}
+              {#each entity.tags as tag (tag)}
                 <span class="tag" class:flex-row-reverse={$isRTL}>
                   <TagOutline class="w-3 h-3" />
                   {tag}
@@ -511,7 +511,7 @@
               class="relationships-container"
               class:flex-row-reverse={$isRTL}
             >
-              {#each entity.relationships as relationship}
+              {#each entity.relationships as relationship, i (i)}
                 <div class="relationship-item" class:flex-row-reverse={$isRTL}>
                   <span class="relationship-role"
                     >{relationship.attributes.relation}:</span
@@ -539,7 +539,7 @@
                 <div class="fallback-data">
                   <h4>Template: {entity.payload.body.template}</h4>
                   <dl>
-                    {#each Object.entries(entity.payload.body.data || {}) as [key, value]}
+                    {#each Object.entries(entity.payload.body.data || {}) as [key, value] (key)}
                       <dt>{key}:</dt>
                       <dd>{value}</dd>
                     {/each}
@@ -678,7 +678,7 @@
         <!-- Comments List -->
         {#if entity.attachments && entity.attachments.comment && entity.attachments.comment.length > 0}
           <div class="comments-list">
-            {#each entity.attachments.comment as reply}
+            {#each entity.attachments.comment as reply (reply.shortname)}
               <div class="comment-item">
                 <div class="comment-avatar">
                   {#await getAvatar(reply.attributes.owner_shortname) then avatar}
@@ -694,7 +694,7 @@
                         reply.attributes?.owner_shortname}
                     </span>
                     <span class="comment-date">
-                      {formatDate(reply.attributes.created_at)}
+                      {formatDate(reply.attributes.created_at, "datetime", $locale)}
                     </span>
                     {#if reply.attributes.owner_shortname === $user.shortname}
                       <button
@@ -747,7 +747,7 @@
       <button
         class="error-button"
         onclick={() =>
-          $goto(`/catalogs/${$params.space_name}/${$params.subpath}`)}
+          goto(`/catalogs/${$params.space_name}/${$params.subpath}`)}
       >
         {$_("entry_detail.back_to_folder") || "Back to folder"}
       </button>
@@ -1520,11 +1520,6 @@
     animation: spin 1s linear infinite;
   }
 
-  @keyframes spin {
-    to {
-      transform: rotate(360deg);
-    }
-  }
 
   .template-error {
     padding: 1rem;

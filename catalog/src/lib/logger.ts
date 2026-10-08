@@ -32,12 +32,14 @@ class Logger {
 
   public debug(message: string, data?: any): void {
     if (this.shouldLog(LogLevel.DEBUG)) {
+      // eslint-disable-next-line no-console -- the dev-gated central logger is the one place debug output may print
       console.debug(`[DEBUG] ${message}`, data || '');
     }
   }
 
   public info(message: string, data?: any): void {
     if (this.shouldLog(LogLevel.INFO)) {
+      // eslint-disable-next-line no-console -- the dev-gated central logger is the one place info output may print
       console.info(`[INFO] ${message}`, data || '');
     }
   }

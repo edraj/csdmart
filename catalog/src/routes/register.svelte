@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onDestroy } from "svelte";
-  import { goto } from "@roxi/routify";
-  import { _, locale } from "@/i18n";
+  import { goto as gotoStore } from "@roxi/routify";
+  import { _, isRTL } from "@/i18n";
   import { checkExisting, register, requestOtp } from "@/stores/user";
 
   import {
@@ -18,7 +18,11 @@
   import { ResourceType } from "@edraj/tsdmart";
   import { getCurrentScope } from "@/stores/user";
 
-  $goto;
+  // Routify's helpers read the fragment context when first subscribed, and
+  // Svelte 5 subscribes to a `$store` lazily on first read — so a `$gotoStore`
+  // first touched inside an async callback logs "Unable to access context".
+  // Capture the navigate function once, during component init.
+  const goto = $gotoStore;
 
   let formData = $state({
     email: "",
@@ -65,7 +69,6 @@
   };
   let errors: Errors = $state({});
 
-  const isRTL = $derived($locale === "ar" || $locale === "ku");
 
   function parseConfessors(text: string): string[] {
     if (!text.trim()) return [];
@@ -249,7 +252,7 @@
         role,
         profileData,
       );
-      $goto("/dashboard");
+      goto("/dashboard");
     } catch (error: any) {
       console.error("OTP verification error:", error.message);
       errors.otp = error.message || $_("OtpVerificationFailed");
@@ -297,7 +300,7 @@
   }
 
   function goToLogin() {
-    $goto("/login");
+    goto("/login");
   }
 
   function goBack() {
@@ -309,7 +312,7 @@
         clearInterval(resendTimer);
       }
     } else {
-      $goto("/");
+      goto("/");
     }
   }
 
@@ -347,7 +350,7 @@
     </div>
 
     {#if showSuccess}
-      <div class="success-message" class:rtl={isRTL}>
+      <div class="success-message" class:rtl={$isRTL}>
         <CheckCircleSolid class="success-icon" />
         <div class="success-content">
           <h3 class="success-title">{$_("AccountCreated")}</h3>
@@ -357,7 +360,7 @@
     {/if}
 
     {#if showError}
-      <div class="error-message" class:rtl={isRTL}>
+      <div class="error-message" class:rtl={$isRTL}>
         <svg
           class="shrink-0 inline w-4 h-4 me-3"
           aria-hidden="true"
@@ -386,7 +389,7 @@
             </h3>
 
             <div class="form-group">
-              <label for="email" class="form-label" class:rtl={isRTL}>
+              <label for="email" class="form-label" class:rtl={$isRTL}>
                 <EnvelopeSolid class="label-icon" />
                 {$_("Email")}
               </label>
@@ -397,16 +400,16 @@
                 placeholder={$_("EmailPlaceholder")}
                 class="form-input"
                 class:error={errors.email}
-                class:rtl={isRTL}
+                class:rtl={$isRTL}
                 disabled={isSubmitting}
               />
               {#if errors.email}
-                <p class="error-text-small" class:rtl={isRTL}>{errors.email}</p>
+                <p class="error-text-small" class:rtl={$isRTL}>{errors.email}</p>
               {/if}
             </div>
 
             <div class="form-group">
-              <label for="phoneNumber" class="form-label" class:rtl={isRTL}>
+              <label for="phoneNumber" class="form-label" class:rtl={$isRTL}>
                 <PhoneSolid class="label-icon" />
                 {$_("PhoneNumber")}
               </label>
@@ -417,18 +420,18 @@
                 placeholder={$_("PhoneNumberPlaceholder")}
                 class="form-input"
                 class:error={errors.phoneNumber}
-                class:rtl={isRTL}
+                class:rtl={$isRTL}
                 disabled={isSubmitting}
               />
               {#if errors.phoneNumber}
-                <p class="error-text-small" class:rtl={isRTL}>
+                <p class="error-text-small" class:rtl={$isRTL}>
                   {errors.phoneNumber}
                 </p>
               {/if}
             </div>
 
             <div class="form-group">
-              <label for="gender" class="form-label" class:rtl={isRTL}>
+              <label for="gender" class="form-label" class:rtl={$isRTL}>
                 <svg class="label-icon" fill="currentColor" viewBox="0 0 20 20">
                   <path
                     fill-rule="evenodd"
@@ -443,7 +446,7 @@
                 bind:value={formData.gender}
                 class="form-input"
                 class:error={errors.gender}
-                class:rtl={isRTL}
+                class:rtl={$isRTL}
                 disabled={isSubmitting}
               >
                 <option value="">{$_("SelectGender")}</option>
@@ -451,18 +454,18 @@
                 <option value="female">{$_("Female")}</option>
               </select>
               {#if errors.gender}
-                <p class="error-text-small" class:rtl={isRTL}>
+                <p class="error-text-small" class:rtl={$isRTL}>
                   {errors.gender}
                 </p>
               {/if}
             </div>
 
             <div class="form-group">
-              <label for="password" class="form-label" class:rtl={isRTL}>
+              <label for="password" class="form-label" class:rtl={$isRTL}>
                 <LockSolid class="label-icon" />
                 {$_("Password")}
               </label>
-              <div class="password-input-wrapper" class:rtl={isRTL}>
+              <div class="password-input-wrapper" class:rtl={$isRTL}>
                 <label for="password" class="visually-hidden"></label>
                 <input
                   id="password"
@@ -471,7 +474,7 @@
                   placeholder={$_("Password")}
                   class="form-input password-input"
                   class:error={errors.password}
-                  class:rtl={isRTL}
+                  class:rtl={$isRTL}
                   disabled={isSubmitting}
                 />
                 <button
@@ -479,7 +482,7 @@
                   type="button"
                   class="password-toggle"
                   onclick={togglePasswordVisibility}
-                  class:rtl={isRTL}
+                  class:rtl={$isRTL}
                 >
                   {#if showPassword}
                     <EyeSlashSolid class="toggle-icon" />
@@ -489,18 +492,18 @@
                 </button>
               </div>
               {#if errors.password}
-                <p class="error-text-small" class:rtl={isRTL}>
+                <p class="error-text-small" class:rtl={$isRTL}>
                   {errors.password}
                 </p>
               {/if}
             </div>
 
             <div class="form-group">
-              <label for="confirmPassword" class="form-label" class:rtl={isRTL}>
+              <label for="confirmPassword" class="form-label" class:rtl={$isRTL}>
                 <LockSolid class="label-icon" />
                 {$_("ConfirmPassword")}
               </label>
-              <div class="password-input-wrapper" class:rtl={isRTL}>
+              <div class="password-input-wrapper" class:rtl={$isRTL}>
                 <label for="confirmPassword" class="visually-hidden"></label>
                 <input
                   id="confirmPassword"
@@ -509,7 +512,7 @@
                   placeholder={$_("ConfirmPasswordPlaceholder")}
                   class="form-input password-input"
                   class:error={errors.confirmPassword}
-                  class:rtl={isRTL}
+                  class:rtl={$isRTL}
                   disabled={isSubmitting}
                 />
                 <button
@@ -517,7 +520,7 @@
                   type="button"
                   class="password-toggle"
                   onclick={toggleConfirmPasswordVisibility}
-                  class:rtl={isRTL}
+                  class:rtl={$isRTL}
                 >
                   {#if showConfirmPassword}
                     <EyeSlashSolid class="toggle-icon" />
@@ -527,7 +530,7 @@
                 </button>
               </div>
               {#if errors.confirmPassword}
-                <p class="error-text-small" class:rtl={isRTL}>
+                <p class="error-text-small" class:rtl={$isRTL}>
                   {errors.confirmPassword}
                 </p>
               {/if}
@@ -541,7 +544,7 @@
                 type="button"
                 class="expand-toggle"
                 onclick={toggleAdditionalFields}
-                class:rtl={isRTL}
+                class:rtl={$isRTL}
               >
                 <svg
                   class="expand-icon {showAdditionalFields ? 'expanded' : ''}"
@@ -573,7 +576,7 @@
 
                 <div class="optional-fields-grid">
                   <div class="form-group full-width">
-                    <label for="age" class="form-label" class:rtl={isRTL}>
+                    <label for="age" class="form-label" class:rtl={$isRTL}>
                       <svg
                         class="label-icon"
                         fill="currentColor"
@@ -592,13 +595,13 @@
                       placeholder={$_("AgePlaceholder")}
                       class="form-input"
                       class:error={errors.age}
-                      class:rtl={isRTL}
+                      class:rtl={$isRTL}
                       disabled={isSubmitting}
                       min="1"
                       max="150"
                     />
                     {#if errors.age}
-                      <p class="error-text-small" class:rtl={isRTL}>
+                      <p class="error-text-small" class:rtl={$isRTL}>
                         {errors.age}
                       </p>
                     {/if}
@@ -608,7 +611,7 @@
                     <label
                       for="profession"
                       class="form-label"
-                      class:rtl={isRTL}
+                      class:rtl={$isRTL}
                     >
                       <svg
                         class="label-icon"
@@ -633,11 +636,11 @@
                       placeholder={$_("ProfessionPlaceholder")}
                       class="form-input"
                       class:error={errors.profession}
-                      class:rtl={isRTL}
+                      class:rtl={$isRTL}
                       disabled={isSubmitting}
                     />
                     {#if errors.profession}
-                      <p class="error-text-small" class:rtl={isRTL}>
+                      <p class="error-text-small" class:rtl={$isRTL}>
                         {errors.profession}
                       </p>
                     {/if}
@@ -647,7 +650,7 @@
                     <label
                       for="description"
                       class="form-label"
-                      class:rtl={isRTL}
+                      class:rtl={$isRTL}
                     >
                       <svg
                         class="label-icon"
@@ -668,19 +671,19 @@
                       placeholder={$_("BioDescriptionPlaceholder")}
                       class="form-textarea"
                       class:error={errors.description}
-                      class:rtl={isRTL}
+                      class:rtl={$isRTL}
                       disabled={isSubmitting}
                       rows="4"
                     ></textarea>
                     {#if errors.description}
-                      <p class="error-text-small" class:rtl={isRTL}>
+                      <p class="error-text-small" class:rtl={$isRTL}>
                         {errors.description}
                       </p>
                     {/if}
                   </div>
 
                   <div class="form-group full-width">
-                    <label for="address" class="form-label" class:rtl={isRTL}>
+                    <label for="address" class="form-label" class:rtl={$isRTL}>
                       <svg
                         class="label-icon"
                         fill="currentColor"
@@ -700,12 +703,12 @@
                       placeholder={$_("AddressPlaceholder")}
                       class="form-textarea"
                       class:error={errors.address}
-                      class:rtl={isRTL}
+                      class:rtl={$isRTL}
                       disabled={isSubmitting}
                       rows="3"
                     ></textarea>
                     {#if errors.address}
-                      <p class="error-text-small" class:rtl={isRTL}>
+                      <p class="error-text-small" class:rtl={$isRTL}>
                         {errors.address}
                       </p>
                     {/if}
@@ -715,7 +718,7 @@
                     <label
                       for="confessors"
                       class="form-label"
-                      class:rtl={isRTL}
+                      class:rtl={$isRTL}
                     >
                       <svg
                         class="label-icon"
@@ -743,7 +746,7 @@
                       placeholder={$_("ConfessorsPlaceholder")}
                       class="form-textarea"
                       class:error={errors.confessors}
-                      class:rtl={isRTL}
+                      class:rtl={$isRTL}
                       disabled={isSubmitting}
                       rows="4"
                     ></textarea>
@@ -751,7 +754,7 @@
                       <div class="confessors-preview">
                         <p class="preview-title">{$_("ConfessorsList")}:</p>
                         <div class="confessors-tags">
-                          {#each formData.confessors as confessor, index}
+                          {#each formData.confessors as confessor, index (index)}
                             <span class="confessor-tag">
                               {confessor}
                               <button
@@ -778,7 +781,7 @@
                       {$_("ConfessorsHelpText")}
                     </p>
                     {#if errors.confessors}
-                      <p class="error-text-small" class:rtl={isRTL}>
+                      <p class="error-text-small" class:rtl={$isRTL}>
                         {errors.confessors}
                       </p>
                     {/if}
@@ -790,7 +793,7 @@
 
           <!-- Terms and Conditions -->
           <div class="form-group">
-            <label for="agreeToTerms" class="checkbox-label" class:rtl={isRTL}>
+            <label for="agreeToTerms" class="checkbox-label" class:rtl={$isRTL}>
               <input
                 id="agreeToTerms"
                 type="checkbox"
@@ -801,13 +804,13 @@
               <span class="checkbox-text">{$_("AgreeToTerms")}</span>
             </label>
             {#if errors.terms}
-              <p class="error-text-small" class:rtl={isRTL}>{errors.terms}</p>
+              <p class="error-text-small" class:rtl={$isRTL}>{errors.terms}</p>
             {/if}
           </div>
         {:else}
           <!-- OTP Verification -->
           <div class="form-group">
-            <label for="otpCode" class="form-label" class:rtl={isRTL}>
+            <label for="otpCode" class="form-label" class:rtl={$isRTL}>
               <LockSolid class="label-icon" />
               {$_("VerificationCode")}
             </label>
@@ -818,16 +821,16 @@
               placeholder={$_("EnterOtpCode")}
               class="form-input otp-input"
               class:error={errors.otp}
-              class:rtl={isRTL}
+              class:rtl={$isRTL}
               disabled={isVerifyingOtp}
               maxlength="6"
             />
             {#if errors.otp}
-              <p class="error-text-small" class:rtl={isRTL}>{errors.otp}</p>
+              <p class="error-text-small" class:rtl={$isRTL}>{errors.otp}</p>
             {/if}
           </div>
 
-          <div class="resend-otp-container" class:rtl={isRTL}>
+          <div class="resend-otp-container" class:rtl={$isRTL}>
             <p class="resend-text">{$_("DidNotReceiveOtp")}</p>
             <button
               aria-label={$_("ResendOtpButton")}
@@ -835,7 +838,7 @@
               class="resend-button"
               onclick={resendOtp}
               disabled={!canResendOtp}
-              class:rtl={isRTL}
+              class:rtl={$isRTL}
             >
               {#if canResendOtp}
                 {$_("ResendOtp")}
@@ -851,7 +854,7 @@
           type="submit"
           class="submit-button"
           class:loading={isSubmitting || isVerifyingOtp}
-          class:rtl={isRTL}
+          class:rtl={$isRTL}
           disabled={isSubmitting || isVerifyingOtp}
         >
           {#if isSubmitting || isVerifyingOtp}
@@ -868,7 +871,7 @@
       </form>
 
       {#if isOtpStep}
-        <div class="back-link items-center" class:rtl={isRTL}>
+        <div class="back-link items-center" class:rtl={$isRTL}>
           <button
             aria-label={$_("GoBack")}
             class="link-button d-flex align-center"
@@ -879,7 +882,7 @@
           </button>
         </div>
       {:else}
-        <div class="login-link" class:rtl={isRTL}>
+        <div class="login-link" class:rtl={$isRTL}>
           <span class="login-text">{$_("AlreadyHaveAccount")}</span>
           <button
             aria-label={$_("GoToLogin")}

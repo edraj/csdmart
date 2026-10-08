@@ -1,26 +1,16 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { goto, params } from "@roxi/routify";
+  import { goto as gotoStore, params } from "@roxi/routify";
   import { getMyEntities } from "@/lib/dmart_services";
-  import {
-    formatDate,
-    formatNumberInText,
-    truncateString,
-  } from "@/lib/helpers";
+  import { formatNumberInText } from "@/lib/helpers";
   import { errorToastMessage } from "@/lib/toasts_messages";
-  import { _, locale } from "@/i18n";
-  import { derived as derivedStore } from "svelte/store";
+  import { _, locale, isRTL } from "@/i18n";
+  import { formatDate } from "@/lib/format";
   import {
-    ClockOutline,
     EditOutline,
     EyeOutline,
-    FolderOutline,
-    HeartSolid,
-    MessagesSolid,
-    PhoneOutline,
     PlusOutline,
     SearchOutline,
-    TagOutline,
     LayersSolid,
     UploadOutline,
     DownloadOutline,
@@ -28,7 +18,11 @@
   import ModalCSVUpload from "@/components/management/Modals/ModalCSVUpload.svelte";
   import ModalCSVDownload from "@/components/management/Modals/ModalCSVDownload.svelte";
 
-  $goto;
+  // Routify's helpers read the fragment context when first subscribed, and
+  // Svelte 5 subscribes to a `$store` lazily on first read — so a `$gotoStore`
+  // first touched inside an async callback logs "Unable to access context".
+  // Capture the navigate function once, during component init.
+  const goto = $gotoStore;
   let entities = $state<any[]>([]);
   let filteredEntities = $state<any[]>([]);
   let availableSpaces = $state<any[]>([]);
@@ -42,10 +36,6 @@
   let isCSVUploadModalOpen = $state(false);
   let isCSVDownloadModalOpen = $state(false);
 
-  const isRTL = derivedStore(
-    locale,
-    ($locale: any) => $locale === "ar" || $locale === "ku",
-  );
 
   function getLocalizedDisplayName(entity: any) {
     const displayname = entity.attributes?.displayname;
@@ -116,32 +106,6 @@
     return "";
   }
 
-  function getResourceTypeIcon(resourceType: any) {
-    switch (resourceType) {
-      case "content":
-        return EditOutline;
-      case "media":
-        return PhoneOutline;
-      case "folder":
-        return FolderOutline;
-      default:
-        return EditOutline;
-    }
-  }
-
-  function getResourceTypeColor(resourceType: any) {
-    switch (resourceType) {
-      case "content":
-        return "bg-blue-100 text-blue-800";
-      case "media":
-        return "bg-purple-100 text-purple-800";
-      case "folder":
-        return "bg-yellow-100 text-yellow-800";
-      default:
-        return "bg-gray-100 text-gray-800";
-    }
-  }
-
   onMount(async () => {
     await fetchEntities();
   });
@@ -201,10 +165,10 @@
         state: entity.attributes?.state || null,
         is_active: entity.attributes?.is_active !== false,
         created_at: entity.attributes?.created_at
-          ? formatDate(entity.attributes.created_at)
+          ? formatDate(entity.attributes.created_at, "datetime", $locale)
           : "",
         updated_at: entity.attributes?.updated_at
-          ? formatDate(entity.attributes.updated_at)
+          ? formatDate(entity.attributes.updated_at, "datetime", $locale)
           : "",
         raw_created_at: entity.attributes?.created_at || "",
         raw_updated_at: entity.attributes?.updated_at || "",
@@ -298,11 +262,6 @@
     filterAndSortEntities();
   }
 
-  function filterBySpace(spaceName: any) {
-    spaceFilter = spaceName;
-    filterAndSortEntities();
-  }
-
   function clearAllFilters() {
     searchTerm = "";
     spaceFilter = "all";
@@ -311,7 +270,7 @@
   }
 
   function viewEntity(entity: any) {
-    $goto("/entries/[space_name]/[subpath]/[shortname]/[resource_type]", {
+    goto("/entries/[space_name]/[subpath]/[shortname]/[resource_type]", {
       shortname: entity.shortname,
       space_name: entity.space_name,
       subpath: entity.subpath,
@@ -320,7 +279,7 @@
   }
 
   function editEntity(entity: any) {
-    $goto("/entries/[space_name]/[subpath]/[shortname]/[resource_type]/edit", {
+    goto("/entries/[space_name]/[subpath]/[shortname]/[resource_type]/edit", {
       shortname: entity.shortname,
       space_name: entity.space_name,
       subpath: entity.subpath,
@@ -329,37 +288,9 @@
   }
 
   function createNewEntry() {
-    $goto("/entries/create");
+    goto("/entries/create");
   }
 
-  function getStatusBadge(entity: any) {
-    if (!entity.is_active) {
-      return {
-        text: $_("my_entries.status.draft"),
-        class: "bg-gray-100 text-gray-800",
-      };
-    } else if (entity.state === "pending") {
-      return {
-        text: $_("my_entries.status.pending"),
-        class: "bg-yellow-100 text-yellow-800",
-      };
-    } else if (entity.state === "approved") {
-      return {
-        text: $_("my_entries.status.published"),
-        class: "bg-green-100 text-green-800",
-      };
-    } else if (entity.state === "rejected") {
-      return {
-        text: $_("my_entries.status.rejected"),
-        class: "bg-red-100 text-red-800",
-      };
-    } else {
-      return {
-        text: $_("my_entries.status.active"),
-        class: "bg-blue-100 text-blue-800",
-      };
-    }
-  }
 </script>
 
 <div class="min-h-screen" class:rtl={$isRTL}>
@@ -451,7 +382,7 @@
           class="w-full appearance-none pl-11 pr-10 py-2.5 bg-gray-50/50 border border-transparent rounded-xl text-sm font-semibold text-gray-600 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:bg-white transition-all cursor-pointer"
         >
           <option value="all">All Spaces</option>
-          {#each availableSpaces as space}
+          {#each availableSpaces as space (space.shortname)}
             <option value={space.shortname}>
               {getLocalizedSpaceName(space)} ({space.entryCount})
             </option>
@@ -747,7 +678,7 @@
                 </tr>
               </thead>
               <tbody class="divide-y divide-gray-50">
-                {#each filteredEntities as entity}
+                {#each filteredEntities as entity (`${entity.space_name}/${entity.subpath}/${entity.shortname}`)}
                   <tr class="hover:bg-gray-50/50 transition-colors group">
                     <!-- ENTRY -->
                     <td class="px-8 py-5 flex items-start gap-4">

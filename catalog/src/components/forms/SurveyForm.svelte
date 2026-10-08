@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { _, locale } from "@/i18n";
+  import { _ } from "@/i18n";
 
   let {
     survey = $bindable({}),
@@ -92,19 +92,6 @@
     survey = { ...survey };
   }
 
-  function toggleAccordion(event: Event) {
-    const button = event.currentTarget as HTMLElement;
-    const content = button.nextElementSibling as HTMLElement;
-    const isExpanded = button.getAttribute("aria-expanded") === "true";
-
-    button.setAttribute("aria-expanded", (!isExpanded).toString());
-    content.style.display = isExpanded ? "none" : "block";
-
-    const chevron = button.querySelector(".chevron") as HTMLElement;
-    if (chevron) {
-      chevron.style.transform = isExpanded ? "rotate(0deg)" : "rotate(180deg)";
-    }
-  }
 </script>
 
 <div class="survey-form-wrapper">
@@ -244,7 +231,7 @@
     <div class="card-body">
       {#if survey.questions && survey.questions.length > 0}
         <div class="questions-list">
-          {#each survey.questions as question, questionIndex}
+          {#each survey.questions as question, questionIndex (question.id)}
             <div class="question-item">
               <div class="question-top-row">
                 <div class="drag-handle">
@@ -304,7 +291,7 @@
                           (e.target as HTMLSelectElement).value,
                         )}
                     >
-                      {#each answerTypes as type}
+                      {#each answerTypes as type (type.value)}
                         <option value={type.value}>{type.name}</option>
                       {/each}
                     </select>
@@ -347,7 +334,7 @@
               {#if ["single", "multi", "select"].includes(question.type)}
                 <div class="options-container">
                   {#if question.options && question.options.length > 0}
-                    {#each question.options as option, optionIndex}
+                    {#each question.options as option, optionIndex (optionIndex)}
                       <div class="option-row">
                         <div class="option-indicator circle"></div>
                         <input

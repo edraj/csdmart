@@ -2,7 +2,7 @@
   import { resolveTotal } from "@shared/query-total";
   import { onMount } from "svelte";
   import { sanitizeHtml } from "@/lib/utils/sanitize";
-  import { goto, params } from "@roxi/routify";
+  import { goto as gotoStore, params } from "@roxi/routify";
   import {
     getAvatar,
     getEntityAttachmentsCount,
@@ -10,16 +10,20 @@
     getSpaceTags,
     searchInSpace,
   } from "@/lib/dmart_services";
-  import { _, locale } from "@/i18n";
+  import { _, locale, isRTL } from "@/i18n";
+  import { formatDate } from "@/lib/format";
   import Avatar from "@/components/Avatar.svelte";
   import ReportModal from "@/components/ReportModal.svelte";
-  import { derived as derivedStore } from "svelte/store";
   import { formatNumberInText } from "@/lib/helpers";
   import { Dmart, QueryType, SortType } from "@edraj/tsdmart";
   import { getCurrentScope, user } from "@/stores/user";
   import { absoluteUrl, catalogPath } from "@/lib/paths";
 
-  $goto;
+  // Routify's helpers read the fragment context when first subscribed, and
+  // Svelte 5 subscribes to a `$store` lazily on first read — so a `$gotoStore`
+  // first touched inside an async callback logs "Unable to access context".
+  // Capture the navigate function once, during component init.
+  const goto = $gotoStore;
 
   let isLoading = $state(true);
   let isLoadingMore = $state(false);
@@ -68,10 +72,6 @@
 
   const itemsPerLoadOptions = [20, 50, 100];
 
-  const isRTL = derivedStore(
-    locale,
-    ($locale: any) => $locale === "ar" || $locale === "ku",
-  );
 
   const sortOptions = $derived([
     { value: "created", label: $_("admin_dashboard.sort.created") },
@@ -200,7 +200,7 @@
           tagFilteredHasMore = basicItems.length === itemsPerLoad;
         } else {
           allContents = basicItems;
-          extractContentTags(basicItems);
+          extractContentTags();
         }
       } else {
         if (isTagFiltered) {
@@ -208,7 +208,6 @@
           tagFilteredHasMore = basicItems.length === itemsPerLoad;
         } else {
           allContents = [...allContents, ...basicItems];
-          extractContentTags(basicItems, false);
         }
       }
 
@@ -339,57 +338,6 @@
     }, 500);
   }
 
-  async function enhanceItem(item: any) {
-    try {
-      const [avatar, attachmentCounts] = await Promise.all([
-        getAvatar(item.attributes?.owner_shortname || item.shortname),
-        getEntityAttachmentsCount(
-          item.shortname,
-          spaceName,
-          item.subpath || "/",
-        ),
-      ]);
-
-      const attachmentData = attachmentCounts?.[0]?.attributes || {};
-
-      const contentTags = extractItemTags(item);
-
-      return {
-        ...item,
-        owner_avatar: avatar,
-        reactionCount: attachmentData.reaction || 0,
-        commentCount: attachmentData.comment || 0,
-        mediaCount: attachmentData.media || 0,
-        reportCount: attachmentData.report || 0,
-        shareCount: attachmentData.share || 0,
-        contentTags: contentTags,
-        title:
-          item.attributes?.displayname?.[$locale ?? ""] ||
-          item.attributes?.displayname?.en ||
-          item.attributes?.displayname?.ar ||
-          item.attributes?.payload?.body?.title ||
-          item.shortname,
-        folderPath: item.subpath || "/",
-        folderName: getFolderNameFromPath(item.subpath || "/"),
-      };
-    } catch (error) {
-      console.warn(`Error enhancing item ${item.shortname}:`, error);
-      return {
-        ...item,
-        owner_avatar: null,
-        reactionCount: 0,
-        commentCount: 0,
-        mediaCount: 0,
-        reportCount: 0,
-        shareCount: 0,
-        contentTags: [],
-        title: item.shortname,
-        folderPath: item.subpath || "/",
-        folderName: getFolderNameFromPath(item.subpath || "/"),
-      };
-    }
-  }
-
   async function enhanceItemsAsync(items: any[]) {
     for (const item of items) {
       try {
@@ -514,7 +462,8 @@
     return [...new Set(tags.filter((tag: any) => tag && tag.trim()))];
   }
 
-  async function extractContentTags(items: any[], reset = true) {
+  // The space's tag cloud: one query per (re)load, not one per page.
+  async function extractContentTags() {
     const contentTags = await getSpaceTags(spaceName);
 
     if (contentTags.records && contentTags.records[0]?.attributes) {
@@ -538,7 +487,7 @@
       return;
     }
 
-    let filtered = [];
+    let filtered: any[];
 
     if (isTagFiltered) {
       filtered = [...tagFilteredContents];
@@ -588,60 +537,17 @@
   }
 
   function handleItemClick(item: any) {
-    $goto(itemPath(item));
+    goto(itemPath(item));
   }
 
   function handleNewPost() {
     // The create page reads space_name from the query string to preselect
     // the space (see routes/entries/create.svelte loadPrefilledData).
-    $goto("/entries/create", { space_name: spaceName });
-  }
-
-  function getItemIcon(item: any) {
-    switch (item.resource_type) {
-      case "content":
-        return "📄";
-      case "post":
-        return "📝";
-      case "ticket":
-        return "🎫";
-      case "user":
-        return "👤";
-      case "media":
-        return "🖼️";
-      default:
-        return "📋";
-    }
-  }
-
-  function formatDate(dateString: any) {
-    if (!dateString) return $_("common.not_available");
-    // `undefined`, not "": an empty locale string throws a RangeError.
-    return new Date(dateString).toLocaleDateString($locale || undefined, {
-      year: "numeric",
-      month: "short",
-      day: "numeric",
-    });
-  }
-
-  function formatRelativeTime(dateString: any) {
-    if (!dateString) return $_("common.unknown");
-    const date = new Date(dateString);
-    const now = new Date();
-    const diffInSeconds = Math.floor((now.getTime() - date.getTime()) / 1000);
-
-    if (diffInSeconds < 60) return $_("catalog_contents.time.just_now");
-    if (diffInSeconds < 3600)
-      return `${Math.floor(diffInSeconds / 60)}${$_("catalog_contents.time.minutes_ago")}`;
-    if (diffInSeconds < 86400)
-      return `${Math.floor(diffInSeconds / 3600)}${$_("catalog_contents.time.hours_ago")}`;
-    if (diffInSeconds < 2592000)
-      return `${Math.floor(diffInSeconds / 86400)}${$_("catalog_contents.time.days_ago")}`;
-    return formatDate(dateString);
+    goto("/entries/create", { space_name: spaceName });
   }
 
   function goBack() {
-    $goto("/catalogs");
+    goto("/catalogs");
   }
 
   function toggleContentTag(tag: any) {
@@ -707,11 +613,6 @@
     showReportModal = true;
   }
 
-  function handleCardTagClick(event: any, tag: any) {
-    event.stopPropagation();
-    toggleContentTag(tag);
-  }
-
   const displayedTags = $derived.by(() => {
     if (showAllTags) return availableContentTags;
     return availableContentTags.slice(0, 12);
@@ -728,15 +629,6 @@
     return filteredContents.length;
   });
 
-  const currentLoadingState = $derived.by(() => {
-    if (isTagFiltered && selectedContentTags.length > 0) {
-      return $_("space.showing_tagged_content", {
-        values: { tags: selectedContentTags.join(", ") },
-      });
-    }
-    return $_("space.showing_all_content");
-  });
-
   $effect(() => {
     if (!searchQuery.trim()) {
       searchResults = [];
@@ -746,7 +638,7 @@
   });
 </script>
 
-<div class="z" class:rtl={$isRTL}>
+<div class:rtl={$isRTL}>
   <!-- Hero Section -->
   <div class="space-hero">
     <div class="hero-content mx-auto px-4 max-w-7xl">
@@ -900,7 +792,7 @@
             {$_("space.filter_by_tag_label")}
           </div>
           <div class="tag-pills">
-            {#each displayedTags as tag}
+            {#each displayedTags as tag (tag)}
               <button
                 onclick={() => toggleContentTag(tag)}
                 class="tag-pill {selectedContentTags.includes(tag)
@@ -1000,7 +892,7 @@
               title={$_("catalog_contents.filters.sort_by")}
               aria-label={$_("catalog_contents.filters.sort_by")}
             >
-              {#each sortOptions as option}
+              {#each sortOptions as option (option.value)}
                 <option value={option.value}>{option.label}</option>
               {/each}
             </select>
@@ -1118,7 +1010,7 @@
                   "catalog_contents.infinite_scroll.items_per_load",
                 )}
               >
-                {#each itemsPerLoadOptions as option}
+                {#each itemsPerLoadOptions as option (option)}
                   <option value={option}>{option}</option>
                 {/each}
               </select>
@@ -1164,7 +1056,7 @@
       <!-- Post Cards List -->
       {#if totalDisplayed > 0}
         <div class="post-list">
-          {#each displayedContents as item}
+          {#each displayedContents as item (`${item.subpath}/${item.shortname}`)}
             <div
               class="post-card"
               onclick={() => handleItemClick(item)}
@@ -1208,7 +1100,7 @@
                     </div>
                     <div class="post-time-row">
                       <span class="post-time"
-                        >{formatRelativeTime(item.attributes?.created_at)}</span
+                        >{formatDate(item.attributes?.created_at, "relative", $locale)}</span
                       >
                       <span class="dot-separator">•</span>
                       <span class="post-category text-blue-500"
@@ -1270,7 +1162,7 @@
                 <!-- Post Tags -->
                 {#if item.attributes?.tags && item.attributes.tags.length > 0}
                   <div class="post-card-tags">
-                    {#each item.attributes.tags.slice(0, 3) as tag}
+                    {#each item.attributes.tags.slice(0, 3) as tag (tag)}
                       <!-- svelte-ignore a11y_click_events_have_key_events -->
                       <!-- svelte-ignore a11y_no_static_element_interactions -->
                       <span

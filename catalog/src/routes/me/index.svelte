@@ -16,17 +16,10 @@
     successToastMessage,
   } from "@/lib/toasts_messages";
   import Avatar from "@/components/Avatar.svelte";
-  import {
-    formatDate,
-    formatNumberInText,
-    renderStateString,
-  } from "@/lib/helpers";
-  import { goto } from "@roxi/routify";
   import { _, locale } from "@/i18n";
   import { writable } from "svelte/store";
   import DynamicSchemaBasedForms from "@/components/forms/DynamicSchemaBasedForms.svelte";
 
-  $goto;
   let isLoading = writable(true);
   let isUploadingAvatar = writable(false);
   let user = writable<any>(null);
@@ -195,14 +188,6 @@
     } else {
       errorToastMessage("Error updating profile");
     }
-  }
-
-  function gotoEntityDetails(entity: any) {
-    $goto("/entries/[shortname]", {
-      shortname: entity.shortname,
-      space_name: entity.space_name,
-      subpath: entity.subpath,
-    });
   }
 
   function triggerFileInput() {

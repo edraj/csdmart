@@ -1,13 +1,17 @@
 <script lang="ts">
   import { onDestroy, onMount } from "svelte";
   import { streamEntitiesAcrossSpaces } from "@/lib/dmart_services";
-  import { formatDate } from "@/lib/helpers";
-  import { goto, params } from "@roxi/routify";
-  import { _ } from "@/i18n";
+  import { goto as gotoStore, params } from "@roxi/routify";
+  import { _, locale } from "@/i18n";
+  import { formatDate } from "@/lib/format";
   import SkeletonBlock from "@/components/SkeletonBlock.svelte";
   import { encodeSubpath, ROOT_SUBPATH_SEGMENT } from "@/lib/paths";
 
-  $goto;
+  // Routify's helpers read the fragment context when first subscribed, and
+  // Svelte 5 subscribes to a `$store` lazily on first read — so a `$gotoStore`
+  // first touched inside an async callback logs "Unable to access context".
+  // Capture the navigate function once, during component init.
+  const goto = $gotoStore;
   let isProjectBeingFetched = $state(false);
   let searchString = $state("");
   let entities: any[] = $state([]);
@@ -145,7 +149,7 @@
               folder,
               subpath,
               resource_type: item.resource_type,
-              created_at: formatDate(item.attributes?.created_at),
+              created_at: formatDate(item.attributes?.created_at, "datetime", $locale),
             };
           });
 
@@ -176,12 +180,12 @@
       const folderSubpath = atRoot
         ? entity.shortname
         : `${parentRouteSubpath}-${entity.shortname}`;
-      $goto("/dashboard/admin/[space_name]/[subpath]", {
+      goto("/dashboard/admin/[space_name]/[subpath]", {
         space_name: entity.space_name,
         subpath: folderSubpath,
       });
     } else if (!atRoot) {
-      $goto(
+      goto(
         "/dashboard/admin/[space_name]/[subpath]/[shortname]/[resource_type]",
         {
           space_name: entity.space_name,
@@ -191,7 +195,7 @@
         },
       );
     } else {
-      $goto("/dashboard/admin/[space_name]", {
+      goto("/dashboard/admin/[space_name]", {
         space_name: entity.space_name,
       });
     }
@@ -298,7 +302,7 @@
       {:else}
         {#if isProjectBeingFetched}
           <div class="search-skeleton-list" aria-hidden="true">
-            {#each Array(3) as _row}
+            {#each Array(3) as _row, i (i)}
               <div class="search-skeleton-row">
                 <div class="search-skeleton-col">
                   <SkeletonBlock width="55%" height="1rem" />
@@ -316,7 +320,7 @@
           <div class="search-dropdown-empty">{$_("NoResults")}</div>
         {:else if entities.length > 0}
           <div class="search-results-list">
-            {#each entities as entity}
+            {#each entities as entity (`${entity.space_name}/${entity.subpath}/${entity.shortname}`)}
               <div
                 class="search-result-item"
                 role="button"

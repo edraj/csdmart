@@ -9,9 +9,8 @@
     TrashBinSolid,
   } from "flowbite-svelte-icons";
   import { _, locale } from "@/i18n";
-  import { get } from "svelte/store";
+  import { getFileExtension } from "@shared/file-extension";
   import {
-    getFileExtension,
     getFileTypeIcon,
     isAudioFile,
     isImageFile,
@@ -19,7 +18,6 @@
     isVideoFile,
     removeFileExtension,
   } from "../lib/fileUtils";
-  import type { Attachment } from "../lib/types";
   import { log } from "../lib/logger";
   import { getCurrentScope } from "@/stores/user";
 
@@ -295,7 +293,7 @@
     </div>
   {:else}
     <div class="attachments-grid">
-      {#each attachments as attachment}
+      {#each attachments as attachment (attachment.shortname)}
         <div class="attachment-card">
           <!-- Card Header with Actions -->
           <div class="attachment-header">
@@ -392,7 +390,7 @@
             {/if}
             {#if getTags(attachment).length > 0}
               <div class="attachment-tags">
-                {#each getTags(attachment) as tag}
+                {#each getTags(attachment) as tag (tag)}
                   <span class="attachment-tag">{tag}</span>
                 {/each}
               </div>
@@ -1086,11 +1084,6 @@
     animation: spin 0.8s linear infinite;
   }
 
-  @keyframes spin {
-    to {
-      transform: rotate(360deg);
-    }
-  }
 
   .modal-edit {
     padding: 1rem 1.5rem;

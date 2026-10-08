@@ -130,7 +130,7 @@ export async function getMyEntities(shortname: string = "") {
     const spaces = result.records.map((space) => space.shortname);
 
     const promises = spaces.map(async (space) => {
-        let currentUser = get(user);
+        const currentUser = get(user);
         const search = `@owner_shortname:${shortname || currentUser.shortname}`;
 
         const queryRequest: QueryRequest = {

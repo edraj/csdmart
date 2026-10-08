@@ -1,10 +1,11 @@
 <script lang="ts">
-  import { createEventDispatcher, untrack } from "svelte";
+  import { untrack } from "svelte";
   import { _ } from "@/i18n";
 
-  const { content = {}, isEditMode = false }: any = $props();
-
-  const dispatch = createEventDispatcher();
+  const {
+    content = {},
+    onContentChange = () => {},
+  }: { content?: any; isEditMode?: boolean; onContentChange?: (data: Record<string, any>) => void } = $props();
 
   let jsonData: Record<string, any> = $state({});
   let fieldTypes: Record<string, any> = $state({});
@@ -37,7 +38,7 @@
           jsonData = JSON.parse(content);
           detectFieldTypes();
         });
-      } catch (e) {
+      } catch {
         untrack(() => {
           jsonData = {};
           fieldTypes = {};
@@ -65,7 +66,7 @@
   }
 
   function handleFieldChange(key: any, value: any, type: any) {
-    let processedValue = value;
+    let processedValue: any;
 
     switch (type) {
       case "integer":
@@ -104,7 +105,7 @@
 
     jsonData[key] = processedValue;
 
-    dispatch("contentChange", jsonData);
+    onContentChange(jsonData);
   }
 
   function openAddFieldModal() {
@@ -117,17 +118,6 @@
   
   function closeAddFieldModal() {
     showAddFieldModal = false;
-  }
-  
-  function getDefaultValueForType(type: any) {
-    switch (type) {
-      case "integer": return 0;
-      case "number": return 0;
-      case "boolean": return false;
-      case "array": return [];
-      case "object": return {};
-      default: return "";
-    }
   }
   
   function processNewFieldValue(value: any, type: any) {
@@ -173,7 +163,7 @@
     jsonData[newFieldName] = processedValue;
     fieldTypes[newFieldName] = newFieldType;
     
-    dispatch("contentChange", jsonData);
+    onContentChange(jsonData);
     closeAddFieldModal();
   }
   
@@ -192,7 +182,7 @@
       delete fieldTypes[key];
       jsonData = { ...jsonData };
       fieldTypes = { ...fieldTypes };
-      dispatch("contentChange", jsonData);
+      onContentChange(jsonData);
     }
   }
 
@@ -226,7 +216,7 @@
     }
 
     jsonData[key] = convertedValue;
-    dispatch("contentChange", jsonData);
+    onContentChange(jsonData);
   }
 
   function formatArrayValue(value: any) {
@@ -275,7 +265,7 @@
   </div>
 
   <div class="fields-container">
-    {#each Object.entries(jsonData) as [key, value]}
+    {#each Object.entries(jsonData) as [key, value] (key)}
       <div class="field-row">
         <div class="field-header">
           <label class="field-label" for="field-{key}">{key}</label>
@@ -397,7 +387,6 @@
 
 <!-- Add Field Modal -->
 {#if showAddFieldModal}
-  <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
   <div class="modal-overlay" role="presentation" onclick={(e) => { if(e.target === e.currentTarget) closeAddFieldModal(); }}>
     <div class="modal-container">
       <!-- Header -->
@@ -440,7 +429,7 @@
               onchange={handleTypeChange}
               class="custom-select"
             >
-              {#each fieldTypeOptions as option}
+              {#each fieldTypeOptions as option (option.value)}
                 <option value={option.value}>{option.name}</option>
               {/each}
             </select>

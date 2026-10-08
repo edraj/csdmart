@@ -1,14 +1,13 @@
 <script lang="ts">
   import { Dmart } from "@edraj/tsdmart";
   import { onMount } from "svelte";
-  import { getFileExtension } from "../../lib/fileUtils";
+  import { getFileExtension } from "@shared/file-extension";
 
   let {
     uid = "",
     content = $bindable(""),
     isEditMode = false,
     attachments,
-    resource_type,
     space_name,
     subpath,
     parent_shortname,
@@ -393,7 +392,7 @@
     tabindex="-1"
     onclick={handleModalClick}
   >
-    <!-- svelte-ignore a11y_no_noninteractive_tabindex a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+    <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
     <div
       class="attachments-modal"
       role="presentation"
@@ -404,7 +403,7 @@
         <h3 class="attachments-title">Item Attachments</h3>
         <button
           class="attachments-close"
-          aria-label={`Close attachments`}
+          aria-label="Close attachments"
           onclick={closeAttachments}
         >
           ✕
@@ -413,7 +412,7 @@
       <div class="attachments-content">
         {#if attachments?.media?.length > 0}
           <div class="attachments-grid">
-            {#each attachments.media as attachment}
+            {#each attachments.media as attachment (attachment.shortname)}
               <div class="attachment-item">
                 <div class="attachment-info">
                   <div class="attachment-icon">📎</div>

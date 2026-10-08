@@ -115,7 +115,7 @@
 <div class="form-container">
   {#if schema && schema.properties}
     <div class="form-content">
-      {#each Object.keys(schema.properties) as propName}
+      {#each Object.keys(schema.properties) as propName (propName)}
         {@const property = schema.properties[propName]}
         {#if !isFieldRestricted($permissions, propName, space, subpath, resourceType)}
         <div class="field-group">
@@ -176,7 +176,7 @@
                 class="form-select"
               >
                 <option value="">{$_("SelectAnOption")}</option>
-                {#each constrainEnumOptions(property.enum, $permissions, propName, space, subpath, resourceType, content[propName]) as option}
+                {#each constrainEnumOptions(property.enum, $permissions, propName, space, subpath, resourceType, content[propName]) as option (option)}
                   <option value={option}>{option}</option>
                 {/each}
               </select>
@@ -260,12 +260,12 @@
 
               {#if content[propName] && content[propName].length > 0}
                 <div class="array-items">
-                  {#each content[propName] as item, index}
+                  {#each content[propName] as item, index (index)}
                     <div class="array-item">
                       <div class="array-item-content">
                         {#if property.items?.type === "object" && property.items?.properties && Object.keys(property.items.properties).length > 0}
                           <div class="object-fields">
-                            {#each Object.keys(property.items!.properties) as itemPropName}
+                            {#each Object.keys(property.items!.properties) as itemPropName (itemPropName)}
                               {@const itemProperty =
                                 property.items!.properties[itemPropName]}
                               <div class="object-field">
@@ -337,7 +337,7 @@
                                       class="form-select form-input-small"
                                     >
                                       <option value="">{$_("SelectAnOption")}</option>
-                                      {#each itemProperty.enum as option}
+                                      {#each itemProperty.enum as option (option)}
                                         <option value={option}>{option}</option>
                                       {/each}
                                     </select>
@@ -438,7 +438,7 @@
                           </div>
                         {:else if typeof item === "object" && item !== null}
                           <div class="object-fields">
-                            {#each Object.keys(item) as itemKey}
+                            {#each Object.keys(item) as itemKey (itemKey)}
                               <div class="object-field">
                                 <label
                                   for={`${propName}-${index}-${itemKey}`}
@@ -530,7 +530,7 @@
                 <h3 class="object-title">{property.title || propName}</h3>
               </div>
               <div class="object-content">
-                {#each Object.keys(property.properties) as nestedPropName}
+                {#each Object.keys(property.properties) as nestedPropName (nestedPropName)}
                   {@const nestedProperty = property.properties[nestedPropName]}
                   <div class="object-field">
                     <label

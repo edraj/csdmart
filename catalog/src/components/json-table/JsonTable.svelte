@@ -90,7 +90,7 @@
   >
     {#if headerLabel !== undefined}
       <div class="jt-header" style:background={headerBg} style:color={t.headerText}>
-        {headerLabel}{#if isArray}{" [ ]"}{/if}
+        {headerLabel}{#if isArray}&nbsp;[ ]{/if}
       </div>
     {/if}
 

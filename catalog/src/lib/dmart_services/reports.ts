@@ -188,7 +188,7 @@ export async function replyToReport(
     action?: string
 ) {
     try {
-        let newStatus: string = action
+        const newStatus: string = action
             ? action
             : "Pending";
 
@@ -207,7 +207,6 @@ export async function replyToReport(
         const subpath = reportDetails.payload.body.subpath || reportDetails.payload.body.reported_subpath;
 
         let reportedEntity = null;
-        let entryOwner = null;
 
         try {
             const resourceTypesToTry = [
@@ -229,10 +228,11 @@ export async function replyToReport(
                     );
 
                     if (reportedEntity) {
-                        entryOwner = reportedEntity.owner_shortname;
                         break;
                     }
-                } catch (e) { }
+                } catch {
+                    // not this resource type; try the next one
+                }
             }
         } catch (error) {
             log.warn("Could not retrieve reported entity details:", error);

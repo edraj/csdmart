@@ -2,29 +2,32 @@
   import SearchBar from "./SearchBar.svelte";
   import { onDestroy } from "svelte";
   import { newNotificationType } from "@/stores/newNotificationType";
-  import { _, locale, switchLocale } from "@/i18n";
+  import { _, locale, switchLocale, isRTL } from "@/i18n";
   import { signout, user } from "@/stores/user";
   import { can, permissions } from "@/stores/permissions";
   import { canAccessAdminSection } from "@/lib/access";
   import { ResourceType } from "@edraj/tsdmart";
-  import { goto } from "@roxi/routify";
+  import { goto as gotoStore } from "@roxi/routify";
   import { getWebSocketService } from "@/lib/services/websocket";
   import { wsConnected } from "@/stores/websocket";
   import { isPublicRoute } from "@/lib/constants";
   import { website } from "@/config";
   import { stripBase, withBase } from "@/lib/paths";
 
-  $goto;
+  // Routify's helpers read the fragment context when first subscribed, and
+  // Svelte 5 subscribes to a `$store` lazily on first read — so a `$gotoStore`
+  // first touched inside an async callback logs "Unable to access context".
+  // Capture the navigate function once, during component init.
+  const goto = $gotoStore;
 
   $effect(() => {
     const path = stripBase(window.location.pathname);
     if (!$user?.signedin && path !== "/login" && !isPublicRoute(path)) {
-      $goto("/login");
+      goto("/login");
     }
   });
 
   let isMenuOpen = $state(false);
-  let isRTL = $derived($locale === "ar" || $locale === "ku");
 
   let canSeePermissions = $derived(
     $can("query", "management", "permissions", ResourceType.permission),
@@ -84,12 +87,12 @@
   }
 
   function handleLogin() {
-    $goto("/login");
+    goto("/login");
   }
 
   async function handleLogout() {
     await signout();
-    $goto("/login");
+    goto("/login");
     isMenuOpen = false;
   }
 
@@ -102,7 +105,7 @@
   }
 
   function handleMenuItemClick(href: string) {
-    $goto(href);
+    goto(href);
     closeMenu();
   }
 
@@ -318,7 +321,7 @@
               <div
                 id="dashboard-main-menu"
                 role="menu"
-                class="dropdown-menu {isRTL
+                class="dropdown-menu {$isRTL
                   ? 'dropdown-menu-rtl'
                   : 'dropdown-menu-ltr'}"
               >
@@ -328,7 +331,7 @@
                       <div class="menu-section-title">{$_("admin")}</div>
                       {#if canSeePermissions}
                         <button
-                          aria-label={`Manage Permissions`}
+                          aria-label="Manage Permissions"
                           onclick={() =>
                             handleMenuItemClick("/dashboard/permissions")}
                           class="menu-item"
@@ -357,7 +360,7 @@
                       {/if}
                       {#if canSeeRoles}
                         <button
-                          aria-label={`Manage Roles`}
+                          aria-label="Manage Roles"
                           onclick={() =>
                             handleMenuItemClick("/dashboard/roles")}
                           class="menu-item"
@@ -380,7 +383,7 @@
                       {/if}
                       {#if canSeeUsers}
                         <button
-                          aria-label={`Manage Users`}
+                          aria-label="Manage Users"
                           onclick={() =>
                             handleMenuItemClick("/dashboard/admin/users")}
                           class="menu-item"
@@ -402,7 +405,7 @@
                         </button>
                       {/if}
                       <button
-                        aria-label={`Contact Messages`}
+                        aria-label="Contact Messages"
                         onclick={() =>
                           handleMenuItemClick(
                             "/dashboard/admin/contact-messages",
@@ -426,7 +429,7 @@
                       </button>
                       {#if canSeeConfigs}
                         <button
-                          aria-label={`Manage Configurations`}
+                          aria-label="Manage Configurations"
                           onclick={() =>
                             handleMenuItemClick("/dashboard/admin/configs")}
                           class="menu-item"
@@ -447,7 +450,7 @@
                           <span>{$_("DefaultRole")}</span>
                         </button>
                         <button
-                          aria-label={`Templates`}
+                          aria-label="Templates"
                           onclick={() =>
                             handleMenuItemClick("/dashboard/templates")}
                           class="menu-item"
@@ -468,7 +471,7 @@
                           <span>{$_("templates._val")}</span>
                         </button>
                         <button
-                          aria-label={`Reports`}
+                          aria-label="Reports"
                           onclick={() =>
                             handleMenuItemClick("/dashboard/reports")}
                           class="menu-item"
@@ -497,7 +500,7 @@
                   <div class="menu-section">
                     {#if website.enable_public_view}
                       <button
-                        aria-label={`Catalogs`}
+                        aria-label="Catalogs"
                         onclick={() => handleMenuItemClick("/catalogs")}
                         class="menu-item"
                       >
@@ -520,7 +523,7 @@
 
                     {#if website.enable_messaging}
                       <button
-                        aria-label={`Chat & Messaging`}
+                        aria-label="Chat & Messaging"
                         onclick={() => handleMenuItemClick("/messaging")}
                         class="menu-item"
                       >
@@ -544,7 +547,7 @@
 
                     {#if website.enable_poll}
                       <button
-                        aria-label={`Polls`}
+                        aria-label="Polls"
                         onclick={() => handleMenuItemClick("/polls")}
                         class="menu-item"
                       >
@@ -567,7 +570,7 @@
 
                     {#if website.enable_surveys}
                       <button
-                        aria-label={`Surveys`}
+                        aria-label="Surveys"
                         onclick={() => handleMenuItemClick("/surveys")}
                         class="menu-item"
                       >
@@ -590,7 +593,7 @@
 
                     {#if website.enable_notifications}
                       <button
-                        aria-label={`Notifications`}
+                        aria-label="Notifications"
                         onclick={() => handleMenuItemClick("/notifications")}
                         class="menu-item"
                       >
@@ -614,7 +617,7 @@
                       </button>
                     {/if}
                     <button
-                      aria-label={`My Profile`}
+                      aria-label="My Profile"
                       onclick={() => handleMenuItemClick("/me")}
                       class="menu-item"
                     >
@@ -669,7 +672,7 @@
                     </select>
                   </div>
                   <button
-                    aria-label={`Logout`}
+                    aria-label="Logout"
                     onclick={handleLogout}
                     class="menu-item logout-item"
                   >

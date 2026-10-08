@@ -7,14 +7,13 @@
     getSpaces,
     searchInCatalog,
   } from "@/lib/dmart_services";
-  import { goto } from "@roxi/routify";
-  import { _, locale } from "@/i18n";
-  import { user } from "@/stores/user";
+  import { goto as gotoStore } from "@roxi/routify";
+  import { _, locale, isRTL } from "@/i18n";
+  import { formatDate } from "@/lib/format";
   import MetaForm from "@/components/forms/MetaForm.svelte";
   import AppModal from "@/components/Modal.svelte";
   import { Modal } from "flowbite-svelte";
   import { PlusOutline } from "flowbite-svelte-icons";
-  import { derived as derivedStore } from "svelte/store";
   import { formatNumberInText } from "@/lib/helpers";
   import { DmartScope } from "@edraj/tsdmart";
   import { encodeSubpath } from "@/lib/paths";
@@ -23,28 +22,22 @@
     errorToastMessage,
   } from "@/lib/toasts_messages";
 
-  $goto;
+  // Routify's helpers read the fragment context when first subscribed, and
+  // Svelte 5 subscribes to a `$store` lazily on first read — so a `$gotoStore`
+  // first touched inside an async callback logs "Unable to access context".
+  // Capture the navigate function once, during component init.
+  const goto = $gotoStore;
   let isLoading = $state(true);
   let spaces = $state<any[]>([]);
   let displayedSpaces = $state<any[]>([]);
   let debounceTimer: any;
   let error: any = $state(null);
-  const isRTL = derivedStore(
-    locale,
-    ($locale: any) => $locale === "ar" || $locale === "ku",
-  );
   let showCreateModal = $state(false);
-  let newSpaceName = $state("");
-  let newDisplayName = $state("");
-  let newDescription = $state("");
   let isCreating = $state(false);
   let createError: any = $state(null);
 
   let showEditModal = $state(false);
   let editingSpace: any = $state(null);
-  let editSpaceName = $state("");
-  let editDisplayName = $state("");
-  let editDescription = $state("");
   let editIsActive = $state(true);
   let isEditing = $state(false);
   let editError: any = $state(null);
@@ -67,7 +60,6 @@
 
   let searchResults = $state<any[]>([]);
   let isSearching = $state(false);
-    let searchTimeout: any;
 
   const statusOptions = [
     { value: "all", label: $_("admin_dashboard.filters.all") },
@@ -158,7 +150,7 @@
     // dashes, so a percent-encoded "/" would reach the API verbatim.
     const encodedSubpath = encodeSubpath(record.subpath);
 
-    $goto(
+    goto(
       "/dashboard/admin/[space_name]/[subpath]/[shortname]/[resource_type]",
       {
         space_name: record.attributes?.space_name,
@@ -251,41 +243,24 @@
     }
   });
 
-  // $effect(() => {
-  //   if (searchQuery.trim()) {
-  //     performSearch(searchQuery);
-  //   } else {
-  //     applyFilters();
-  //   }
-  // });
-
   function handleSpaceClick(space: any) {
-    $goto(`/dashboard/admin/[space_name]`, {
+    goto(`/dashboard/admin/[space_name]`, {
       space_name: space.shortname,
     });
   }
 
   function openCreateModal() {
     showCreateModal = true;
-    newSpaceName = "";
-    newDisplayName = "";
-    newDescription = "";
     createError = null;
   }
 
   function closeCreateModal() {
     showCreateModal = false;
-    newSpaceName = "";
-    newDisplayName = "";
-    newDescription = "";
     createError = null;
   }
 
   function openEditModal(space: any) {
     editingSpace = space;
-    editSpaceName = space.shortname;
-    editDisplayName = getDisplayName(space);
-    editDescription = getDescription(space);
     editIsActive = space.attributes?.is_active ?? true;
 
     editMetaContent = {
@@ -307,9 +282,6 @@
   function closeEditModal() {
     showEditModal = false;
     editingSpace = null;
-    editSpaceName = "";
-    editDisplayName = "";
-    editDescription = "";
     editIsActive = true;
     editMetaContent = {};
     editError = null;
@@ -485,11 +457,6 @@
       : textContent;
   }
 
-  function formatDate(dateString: string): string {
-    if (!dateString) return "N/A";
-    return new Date(dateString).toLocaleDateString();
-  }
-
   onDestroy(() => {
     if (debounceTimer) {
       clearTimeout(debounceTimer);
@@ -502,7 +469,7 @@
     <div class="container mx-auto px-4 py-8 max-w-375">
       <div class="flex items-center justify-end">
         <button
-          onclick={() => $goto("/dashboard/admin/settings")}
+          onclick={() => goto("/dashboard/admin/settings")}
           class="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors"
         >
           <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -790,7 +757,7 @@
                 title={$_("catalog_contents.filters.status")}
                 aria-label={$_("catalog_contents.filters.status")}
               >
-                {#each statusOptions as option}
+                {#each statusOptions as option (option.value)}
                   <option value={option.value}
                     >{option.label === "All"
                       ? option.label
@@ -816,7 +783,7 @@
                 title={$_("catalog_contents.filters.sort_by")}
                 aria-label={$_("catalog_contents.filters.sort_by")}
               >
-                {#each sortOptions as option}
+                {#each sortOptions as option (option.value)}
                   <option value={option.value}
                     >{option.label === "Name"
                       ? option.label
@@ -961,7 +928,7 @@
                   </tr>
                 </thead>
                 <tbody class="divide-y divide-gray-50">
-                  {#each displayedSpaces as space}
+                  {#each displayedSpaces as space (space.shortname)}
                     <tr
                       class="group cursor-pointer hover:bg-yellow-50 transition-colors"
                       onclick={() => handleRecordClick(space)}
@@ -1043,7 +1010,7 @@
                         </div>
                       </td>
                       <td class="px-2 py-4 text-[12px] text-gray-400">
-                        {formatDate(space.attributes?.created_at)}
+                        {formatDate(space.attributes?.created_at, "date", $locale)}
                       </td>
                       <td class="px-2 py-4">
                         <div class="flex items-center justify-end gap-3">
@@ -1532,9 +1499,4 @@
     }
   }
 
-  @keyframes spin {
-    to {
-      transform: rotate(360deg);
-    }
-  }
 </style>

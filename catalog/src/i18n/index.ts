@@ -10,8 +10,8 @@ addMessages("ar", ar);
 addMessages("en", en);
 addMessages("ku", ku);
 
-let l17ns = { ar: ar, en: en, ku: ku };
-let available_locales = ["ar", "en", "ku"];
+const l17ns = { ar: ar, en: en, ku: ku };
+const available_locales = ["ar", "en", "ku"];
 
 /**
  * Switches the application locale reactively (no page reload).
@@ -34,7 +34,7 @@ function switchLocale(_locale: string) {
           user.locale = _locale;
           localStorage.setItem("user", JSON.stringify(user));
         }
-      } catch (e) {
+      } catch {
         // Ignore parse errors
       }
     }
@@ -82,6 +82,9 @@ const rtl = ["ar", "ku"]; // Arabic, Farsi, Urdu, Kurdish
 const dir = derived(locale, ($locale) =>
   rtl.indexOf($locale ? $locale : "") >= 0 ? "rtl" : "ltr"
 );
+// Twenty-five components used to derive this themselves from `locale`, each
+// with its own copy of the RTL list. One place, driven by `dir`.
+const isRTL = derived(dir, ($dir) => $dir === "rtl");
 const isLocaleLoaded = derived(
   locale,
   ($locale) => typeof $locale === "string"
@@ -90,6 +93,7 @@ const isLocaleLoaded = derived(
 export {
   _,
   dir,
+  isRTL,
   setupI18n,
   time,
   date,

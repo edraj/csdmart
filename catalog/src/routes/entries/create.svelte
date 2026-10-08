@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { goto, params } from "@roxi/routify";
+  import { goto as gotoStore, params } from "@roxi/routify";
   import HtmlEditor from "@/components/editors/HtmlEditor.svelte";
   import { sanitizeHtml } from "@/lib/utils/sanitize";
   import {
@@ -7,13 +7,10 @@
     createEntity,
     getEntityByShortname,
     getSpaceFolders,
-    getSpaces,
     getSpaceSchema,
   } from "@/lib/dmart_services";
   import {
     getTemplateFromSchemaAttachment,
-    hasTemplateAttachment,
-    hasMarkdownTemplateAttachment,
     getMarkdownTemplateFromSchemaAttachment,
   } from "@/lib/dmart_services/templates";
   import {
@@ -38,8 +35,7 @@
     TrashBinSolid,
     UploadOutline,
   } from "flowbite-svelte-icons";
-  import { _, locale } from "@/i18n";
-  import { derived as derivedStore } from "svelte/store";
+  import { _, isRTL } from "@/i18n";
   import { onMount } from "svelte";
   import { ResourceType, DmartScope } from "@edraj/tsdmart";
   import { roles } from "@/stores/user";
@@ -59,11 +55,13 @@
   // Touch both Routify helpers at root level so Svelte 5 binds the
   // routify context before any async work (onMount, $effect) reads them.
   // Without this Routify logs "Unable to access context" on navigation.
-  $goto;
-  $params;
+  // Routify's helpers read the fragment context when first subscribed, and
+  // Svelte 5 subscribes to a `$store` lazily on first read — so a `$gotoStore`
+  // first touched inside an async callback logs "Unable to access context".
+  // Capture the navigate function once, during component init.
+  const goto = $gotoStore;
 
   let isLoading = $state(false);
-  let content = "";
   let resource_type = $state(ResourceType.content);
   let itemResourceType: any;
   let isAdmin = $state(false);
@@ -89,7 +87,7 @@
   let shortname = $state("");
   let slug = $state("");
   let shortnameError = $state("");
-  const shortnamePattern = "^[a-zA-Z\\u0621-\\u064a0-9\\u0660-\\u0669\\u064b-\\u065f_]{1,64}$";
+  const shortnamePattern = "^[\\u064b-\\u065fa-zA-Z\\u0621-\\u064a0-9\\u0660-\\u0669_]{1,64}$";
 
   function validateShortnameInput(value: string): boolean {
     if (!value || value === "auto") return true;
@@ -107,11 +105,8 @@
   }
 
   let selectedSpace = $state("");
-  let spaces = $state<any[]>([]);
   let subpathHierarchy = $state<any[]>([]);
   let currentPath = $state("");
-  let loadingSpaces = $state(false);
-  let loadingSubpaths = $state(false);
 
   const canCreateEntry = $derived(
     shortname.trim().length > 0 && !shortnameError
@@ -152,17 +147,10 @@
   let markdownEditorRef: any = $state(null);
   let htmlEditorRef: any = $state(null);
   let markdownContent = $state("");
-  let schemas: any;
   let entity: any;
 
-  const isRTL = derivedStore(
-    locale,
-    ($locale: any) => $locale === "ar" || $locale === "ku",
-  );
 
-  let rolesValue: any;
   roles.subscribe((value: any) => {
-    rolesValue = value;
     isAdmin = isSuperAdmin(value);
   });
 
@@ -239,16 +227,6 @@
     }
   }
 
-  async function handleSpaceChange(event: any) {
-    selectedSpace = event.target.value;
-    if (selectedSpace) {
-      await initializeSubpathHierarchy(selectedSpace);
-      if (entryType === "structured") {
-        await loadSchemasForSpace();
-      }
-    }
-  }
-
   function handleSchemaChange(event: any) {
     const schemaShortname = event.target.value;
     schema_shortname = schemaShortname; // Assign to module-level variable
@@ -290,23 +268,13 @@
   });
 
   async function loadSpaces() {
-    loadingSpaces = true;
     try {
-      const response = await getSpaces(false, DmartScope.managed, ["management"]);
-
-      spaces = (response?.records ?? []).map((space: any) => ({
-        value: space?.shortname,
-        name: space?.attributes?.displayname?.en || space?.shortname,
-      }));
-
       if (selectedSpace) {
         await initializeSubpathHierarchy(selectedSpace);
       }
     } catch (error) {
       errorToastMessage($_("create_entry.error.load_spaces_failed"));
       console.error("Error loading spaces:", error);
-    } finally {
-      loadingSpaces = false;
     }
   }
 
@@ -337,7 +305,6 @@
   async function loadSubpathLevel(spaceName: any, parentPath: any, level: any) {
     if (!spaceName) return;
 
-    loadingSubpaths = true;
     try {
       // Fetch the parent folder ITSELF in parallel with its children. The
       // children query (getSpaceFolders) feeds the next-level dropdown; the
@@ -410,8 +377,6 @@
     } catch (error) {
       errorToastMessage($_("create_entry.error.load_subpaths_failed"));
       console.error("Error loading subpaths:", error);
-    } finally {
-      loadingSubpaths = false;
     }
   }
 
@@ -423,26 +388,6 @@
     schema_shortname = lastLevel.schema_shortname;
     allowedSchemaShortnames = lastLevel.content_schema_shortnames || [];
     currentPath = lastLevel.path;
-  }
-
-  async function handleSubpathChange(level: any, folderValue: any) {
-    const levelData = subpathHierarchy[level];
-    if (!levelData) return;
-
-    levelData.selectedFolder = folderValue;
-
-    if (folderValue) {
-      const selectedFolder = levelData.folders.find(
-        (f: any) => f.value === folderValue,
-      );
-      if (selectedFolder) {
-        const newPath = selectedFolder.fullPath;
-        await loadSubpathLevel(selectedSpace, `/${newPath}`, level + 1);
-      }
-    } else {
-      subpathHierarchy = subpathHierarchy.slice(0, level + 1);
-      updateCanCreateEntry();
-    }
   }
 
   let tags = $state<any[]>([]);
@@ -487,14 +432,8 @@
 
   let attachments = $state<AttachmentEntry[]>([]);
 
-  const uploadingCount = $derived(
-    attachments.filter((a) => a.status === "uploading").length,
-  );
   const uploadedCount = $derived(
     attachments.filter((a) => a.status === "success").length,
-  );
-  const isUploadingAttachments = $derived(
-    attachments.some((a) => a.status === "uploading"),
   );
   const showUploadBanner = $derived(
     attachments.length > 0 &&
@@ -899,7 +838,7 @@
           } else {
             attachments[i] = { ...attachments[i], status: "success" };
           }
-        } catch (err) {
+        } catch {
           attachments[i] = { ...attachments[i], status: "error" };
           errorToastMessage(
             $_("create_entry.error.attachment_failed", {
@@ -975,7 +914,7 @@
       if (!seen.has(fieldName)) {
         seen.add(fieldName);
 
-        let inputType = "text";
+        let inputType: string;
         let placeholder = `Enter ${fieldName.replace(/_/g, " ")}`;
 
         switch (fieldType.toLowerCase()) {
@@ -1121,9 +1060,9 @@
   function navigateToBreadcrumb(crumb: Crumb) {
     if (!crumb.route) return;
     if (crumb.params) {
-      $goto(crumb.route, crumb.params);
+      goto(crumb.route, crumb.params);
     } else {
-      $goto(crumb.route);
+      goto(crumb.route);
     }
   }
 
@@ -1131,7 +1070,7 @@
     if (parentCrumb) {
       navigateToBreadcrumb(parentCrumb);
     } else {
-      $goto("/entries");
+      goto("/entries");
     }
   }
 
@@ -1157,7 +1096,7 @@
         // but also overwrites selectedSubpath — restore the correct value after
         updateCanCreateEntry();
         currentPath = normalizedSubpath;
-      } catch (e) {
+      } catch {
         currentPath = normalizedSubpath;
       }
     }
@@ -1202,7 +1141,7 @@
             aria-label="Breadcrumb"
           >
             <ol class="inline-flex items-center space-x-2">
-              {#each breadcrumbs as crumb, index}
+              {#each breadcrumbs as crumb, index (index)}
                 <li class="inline-flex items-center">
                   {#if index > 0}
                     <svg
@@ -1372,7 +1311,7 @@
                   <option value=""
                     >{$_("create_entry.schema.choose_option")}</option
                   >
-                  {#each filteredSchemas as schema}
+                  {#each filteredSchemas as schema (schema.shortname)}
                     <option value={schema.shortname}>{schema.title}</option>
                   {/each}
                 </select>
@@ -1486,7 +1425,7 @@
 
             {#if tags.length > 0}
               <div class="tags-container">
-                {#each tags as tag, index}
+                {#each tags as tag, index (index)}
                   <div class="tag-item">
                     <TagOutline class="tag-icon" />
                     <span class="tag-text">{tag}</span>
@@ -1543,7 +1482,6 @@
                 bind:content={htmlEditor}
                 uid="main-editor"
                 {attachments}
-                {resource_type}
                 subpath={$params.subpath}
                 space_name={selectedSpace}
                 parent_shortname={shortname}
@@ -1582,7 +1520,7 @@
                 <option value=""
                   >{$_("create_entry.schema.choose_option")}</option
                 >
-                {#each filteredSchemas as schema}
+                {#each filteredSchemas as schema (schema.shortname)}
                   <option value={schema.shortname}>{schema.title}</option>
                 {/each}
               </select>
@@ -1647,7 +1585,7 @@
               </div>
               <div class="template-data-card-body">
                 <div class="template-form">
-                  {#each parseTemplateFields(schemaBasedTemplate.schema) as field}
+                  {#each parseTemplateFields(schemaBasedTemplate.schema) as field (field.name)}
                     <div class="form-field">
                       <label for="schema-template-{field.name}" class="field-label">
                         {field.label}
@@ -1662,7 +1600,7 @@
                           {#if !templateFormData[field.name]}
                             {templateFormData[field.name] = [''], ''}
                           {/if}
-                          {#each templateFormData[field.name] as item, index (index)}
+                          {#each templateFormData[field.name] as _item, index (index)}
                             <div class="list-input-row">
                               <input
                                 type="text"
@@ -1792,7 +1730,7 @@
                     </div>
                     <div class="template-data-card-body">
                       <div class="template-form">
-                        {#each parseTemplateFields(schemaBasedTemplate.schema) as field}
+                        {#each parseTemplateFields(schemaBasedTemplate.schema) as field (field.name)}
                           <div class="form-field">
                             <label for="structured-template-{field.name}" class="field-label">
                               {field.label}
@@ -1806,7 +1744,7 @@
                                 {#if !templateFormData[field.name]}
                                   {templateFormData[field.name] = [''], ''}
                                 {/if}
-                                {#each templateFormData[field.name] as item, index (index)}
+                                {#each templateFormData[field.name] as _item, index (index)}
                                   <div class="list-input-row">
                                     <input
                                       type="text"
@@ -1973,7 +1911,7 @@
         <div class="section-content">
           {#if attachments.length > 0}
             <div class="attachments-list">
-              {#each attachments as attachment, index}
+              {#each attachments as attachment, index (index)}
                 <div class="attachment-row" data-status={attachment.status}>
                   <div class="attachment-preview">
                     {#if getPreviewUrl(attachment.file)}

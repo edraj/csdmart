@@ -1,23 +1,12 @@
-import { hydrate } from "svelte";
+import { mount } from "svelte";
 import App from "./App.svelte";
 import "./app.css";
 import { loadFontsLazily } from "./lib/performance";
-import {configReady} from './config';
+import { configReady } from "./config";
 
-
-configReady.then(async () => {
-  const isClient = typeof window !== "undefined";
-  const isHydrating =
-      isClient && document.body.hasAttribute("data-svelte-hydrated");
-
-  if (isClient) {
-    const target = document.body;
-
-    hydrate(App, { target });
-
-    document.body.setAttribute("data-svelte-hydrated", "true");
-
-    loadFontsLazily();
-  }
+// The page ships no server-rendered markup (render.ssr is off in
+// vite.config.ts), so this is a plain client mount, not a hydration.
+configReady.then(() => {
+  mount(App, { target: document.body });
+  loadFontsLazily();
 });
-

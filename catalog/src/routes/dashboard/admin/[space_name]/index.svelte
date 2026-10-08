@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { Modal } from "flowbite-svelte";
-  import { goto, params } from "@roxi/routify";
+  import { goto as gotoStore, params } from "@roxi/routify";
   import {
     deleteEntity,
     editSpace,
@@ -10,8 +10,8 @@
     buildHideFoldersSearch,
     mergeSearch,
   } from "@/lib/dmart_services";
-  import { _, locale } from "@/i18n";
-  import { derived as derivedStore } from "svelte/store";
+  import { _, locale, isRTL } from "@/i18n";
+  import { formatDate } from "@/lib/format";
   import { Dmart, RequestType, DmartScope, ResourceType, QueryType, SortType } from "@edraj/tsdmart";
   import FolderForm from "@/components/forms/FolderForm.svelte";
   import MetaForm from "@/components/forms/MetaForm.svelte";
@@ -21,12 +21,12 @@
   } from "@/lib/toasts_messages";
   import DeleteConfirmationDialog from "@/components/DeleteConfirmationDialog.svelte";
 
-  $goto;
+  // Routify's helpers read the fragment context when first subscribed, and
+  // Svelte 5 subscribes to a `$store` lazily on first read — so a `$gotoStore`
+  // first touched inside an async callback logs "Unable to access context".
+  // Capture the navigate function once, during component init.
+  const goto = $gotoStore;
 
-  const isRTL = derivedStore(
-    locale,
-    (val: any) => val === "ar" || val === "ku",
-  );
 
   let isLoading = $state(false);
   let allContents = $state<any[]>([]);
@@ -36,7 +36,6 @@
   let spaceHideFolders = $state<string[]>([]);
   let actualSubpath = $state("");
   let isEditMode = $state(false);
-  let selectedFolderForEdit: any = $state(null);
 
   // Search and Filter State
   let searchQuery = $state("");
@@ -394,7 +393,7 @@
         item.subpath === "/"
           ? item.shortname
           : `${item.subpath}/${item.shortname}`;
-      $goto(`/dashboard/admin/[space_name]/[subpath]`, {
+      goto(`/dashboard/admin/[space_name]/[subpath]`, {
         space_name: spaceName,
         subpath: subpath,
       });
@@ -403,7 +402,6 @@
 
   function handleCreateFolder() {
     isEditMode = false;
-    selectedFolderForEdit = null;
     folderContent = {
       title: "",
       content: "",
@@ -432,7 +430,6 @@
 
   function handleEditFolder(item: any) {
     isEditMode = true;
-    selectedFolderForEdit = item;
 
     metaContent = {
       shortname: item.shortname,
@@ -620,25 +617,6 @@
     }
   }
 
-  // function getResourceTypeColor(resourceType: string): string {
-  //   switch (resourceType) {
-  //     case "folder":
-  //       return "bg-blue-100 text-blue-800";
-  //     case "content":
-  //       return "bg-green-100 text-green-800";
-  //     case "post":
-  //       return "bg-purple-100 text-purple-800";
-  //     case "ticket":
-  //       return "bg-orange-100 text-orange-800";
-  //     case "user":
-  //       return "bg-indigo-100 text-indigo-800";
-  //     case "media":
-  //       return "bg-pink-100 text-pink-800";
-  //     default:
-  //       return "bg-gray-100 text-gray-800";
-  //   }
-  // }
-
   function getDisplayName(item: any): string {
     if (item.attributes?.displayname) {
       return (
@@ -663,13 +641,8 @@
     return "No description available";
   }
 
-  function formatDate(dateString: string): string {
-    if (!dateString) return $_("common.not_available");
-    return new Date(dateString).toLocaleDateString($locale ?? "");
-  }
-
   function goBack() {
-    $goto("/dashboard/admin");
+    goto("/dashboard/admin");
   }
 </script>
 
@@ -894,7 +867,7 @@
               title="Type"
               aria-label="Type"
             >
-              {#each typeOptions as option}
+              {#each typeOptions as option (option.value)}
                 <option value={option.value}>{option.label}</option>
               {/each}
             </select>
@@ -907,7 +880,7 @@
               title={$_("catalog_contents.filters.status")}
               aria-label={$_("catalog_contents.filters.status")}
             >
-              {#each statusOptions as option}
+              {#each statusOptions as option (option.value)}
                 <option value={option.value}>{option.label}</option>
               {/each}
             </select>
@@ -920,7 +893,7 @@
               title={$_("catalog_contents.filters.sort_by")}
               aria-label={$_("catalog_contents.filters.sort_by")}
             >
-              {#each sortOptions as option}
+              {#each sortOptions as option (option.value)}
                 <option value={option.value}>{option.label}</option>
               {/each}
             </select>
@@ -982,7 +955,7 @@
         </div>
       {:else}
         <div class="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
-          {#each displayedContents as item}
+          {#each displayedContents as item (`${item.subpath}/${item.shortname}`)}
             <div
               class="bg-white rounded-[20px] shadow-[0_2px_8px_rgba(0,0,0,0.04)] border border-gray-100 p-6 hover:shadow-[0_8px_24px_rgba(0,0,0,0.06)] hover:border-indigo-100 cursor-pointer transition-all duration-300 group flex flex-col h-full"
               onclick={() => handleItemClick(item)}
@@ -1095,7 +1068,7 @@
 
                 {#if item.attributes?.created_at}
                   <span class="text-xs text-gray-400 font-medium">
-                    {formatDate(item.attributes.created_at)}
+                    {formatDate(item.attributes.created_at, "date", $locale)}
                   </span>
                 {/if}
               </div>
@@ -1155,7 +1128,6 @@
     <FolderForm
       bind:content={folderContent}
       space_name={spaceName}
-      on:foo={handleSaveFolder}
       fullWidth={true}
     />
   </div>
@@ -1442,9 +1414,4 @@
     }
   }
 
-  @keyframes spin {
-    to {
-      transform: rotate(360deg);
-    }
-  }
 </style>

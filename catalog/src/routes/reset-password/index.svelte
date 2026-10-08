@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { goto } from "@roxi/routify";
-  import { _, locale } from "@/i18n";
+  import { goto as gotoStore } from "@roxi/routify";
+  import { _, isRTL } from "@/i18n";
   import { EnvelopeSolid, LockSolid } from "flowbite-svelte-icons";
   import {
     clearResetTarget,
@@ -12,7 +12,11 @@
     setResetTarget,
   } from "@/lib/dmart_services/password_reset";
 
-  $goto;
+  // Routify's helpers read the fragment context when first subscribed, and
+  // Svelte 5 subscribes to a `$store` lazily on first read — so a `$gotoStore`
+  // first touched inside an async callback logs "Unable to access context".
+  // Capture the navigate function once, during component init.
+  const goto = $gotoStore;
 
   let rawIdentifier = $state("");
   let isSubmitting = $state(false);
@@ -20,7 +24,6 @@
   let formError = $state("");
   let startOver = $state(false);
 
-  const isRTL = $derived($locale === "ar" || $locale === "ku");
 
   onMount(() => {
     startOver = consumeResetStartOver();
@@ -51,7 +54,7 @@
       // Stamp the issue time so step 2's resend countdown reflects the
       // server's cooldown rather than restarting on every mount.
       markResetCodeIssued();
-      $goto("/reset-password/confirm");
+      goto("/reset-password/confirm");
     } catch {
       // Transport failure or the auth-by-ip rate limiter.
       formError = $_("ResetFailed");
@@ -70,16 +73,16 @@
     </div>
 
     {#if startOver}
-      <div class="notice-message" class:rtl={isRTL} role="status">{$_("ResetStartOver")}</div>
+      <div class="notice-message" class:rtl={$isRTL} role="status">{$_("ResetStartOver")}</div>
     {/if}
 
     {#if formError}
-      <div class="error-message" class:rtl={isRTL} role="alert">{formError}</div>
+      <div class="error-message" class:rtl={$isRTL} role="alert">{formError}</div>
     {/if}
 
     <form onsubmit={handleSubmit} class="auth-form">
       <div class="form-group">
-        <label for="identifier" class="form-label" class:rtl={isRTL}>
+        <label for="identifier" class="form-label" class:rtl={$isRTL}>
           <EnvelopeSolid class="label-icon" />
           {$_("EmailOrPhone")}
         </label>
@@ -90,20 +93,20 @@
           placeholder={$_("EmailOrPhone")}
           class="form-input"
           class:error={fieldError}
-          class:rtl={isRTL}
+          class:rtl={$isRTL}
           disabled={isSubmitting}
           autocomplete="username"
           aria-invalid={!!fieldError}
           aria-describedby={fieldError ? "identifier-error" : undefined}
         />
         {#if fieldError}
-          <p id="identifier-error" class="error-text-small" class:rtl={isRTL} role="alert">
+          <p id="identifier-error" class="error-text-small" class:rtl={$isRTL} role="alert">
             {fieldError}
           </p>
         {/if}
       </div>
 
-      <button type="submit" class="submit-button" class:rtl={isRTL} disabled={isSubmitting}>
+      <button type="submit" class="submit-button" class:rtl={$isRTL} disabled={isSubmitting}>
         {#if isSubmitting}
           <div class="loading-spinner"></div>
         {/if}
@@ -111,8 +114,8 @@
       </button>
     </form>
 
-    <div class="back-link" class:rtl={isRTL}>
-      <button class="link-button" onclick={() => $goto("/login")}>
+    <div class="back-link" class:rtl={$isRTL}>
+      <button class="link-button" onclick={() => goto("/login")}>
         {$_("BackToLogin")}
       </button>
     </div>
@@ -249,11 +252,6 @@
     border-top-color: #fff;
     border-radius: 9999px;
     animation: spin 0.7s linear infinite;
-  }
-  @keyframes spin {
-    to {
-      transform: rotate(360deg);
-    }
   }
   .back-link {
     text-align: center;

@@ -1,7 +1,6 @@
 <script lang="ts">
     import { resolveSchemaDef } from "@/lib/jsonSchema";
 
-    // @ts-ignore - $props is a Svelte 5 rune
     let { content = {} }: { content?: any } = $props();
 
     // Normalise: content can be a JSON string or an object
@@ -127,7 +126,7 @@
                     </tr>
                 </thead>
                 <tbody>
-                    {#each props as prop}
+                    {#each props as prop (prop.name)}
                         <tr class="prop-row">
                             <td class="prop-name-cell">
                                 <span class="prop-name">{prop.name}</span>
@@ -158,7 +157,7 @@
                                 {/if}
                                 {#if prop.constraints.length > 0}
                                     <div class="constraints">
-                                        {#each prop.constraints as c}
+                                        {#each prop.constraints as c (c)}
                                             <code class="constraint">{c}</code>
                                         {/each}
                                     </div>
@@ -167,7 +166,7 @@
                                     <details class="nested-schema">
                                         <summary>Nested properties</summary>
                                         <div class="nested-list">
-                                            {#each Object.entries(prop.properties) as [subName, subDef]}
+                                            {#each Object.entries(prop.properties) as [subName, subDef] (subName)}
                                                 <div class="nested-row">
                                                     <span class="prop-name"
                                                         >{subName}</span
@@ -223,7 +222,7 @@
         {/if}
     {:else}
         <div class="variants-container">
-            {#each variants as variant, i}
+            {#each variants as variant, i (i)}
                 <details class="variant-block" open={i === 0}>
                     <summary class="variant-summary">
                         <span class="variant-title">{variant.title}</span>

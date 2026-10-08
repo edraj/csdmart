@@ -1,10 +1,7 @@
 <script lang="ts">
-  import { createEventDispatcher } from "svelte";
   import { Dmart, QueryType } from "@edraj/tsdmart";
   import { _ } from "svelte-i18n";
   import { applyFolderContentDefaults } from "@/lib/folder_defaults";
-
-  const dispatch = createEventDispatcher();
 
   let {
     content = $bindable({}),
@@ -17,56 +14,6 @@
   } = $props();
 
   content = applyFolderContentDefaults(content);
-
-  let errors: Record<string, any> = $state({});
-
-  function validateForm() {
-    errors = {};
-
-    if (!content.index_attributes || content.index_attributes.length === 0) {
-      errors["index_attributes"] = $_("validation.index_attributes_required");
-    }
-
-    return Object.keys(errors).length === 0;
-  }
-
-  function onSave() {
-    if (validateForm()) {
-      dispatch("save", content);
-    }
-  }
-
-  function addItem(path: any, template: any = {}) {
-    let target = content;
-    const parts = path.split(".");
-
-    for (let i = 0; i < parts.length - 1; i++) {
-      if (!target[parts[i]]) target[parts[i]] = {};
-      target = target[parts[i]];
-    }
-
-    const lastPart = parts[parts.length - 1];
-    if (!target[lastPart]) target[lastPart] = [];
-
-    target[lastPart] = [...target[lastPart], structuredClone(template)];
-    content = { ...content };
-  }
-
-  function removeItem(path: any, index: any) {
-    let target = content;
-    const parts = path.split(".");
-
-    for (let i = 0; i < parts.length - 1; i++) {
-      if (!target[parts[i]]) return;
-      target = target[parts[i]];
-    }
-
-    const lastPart = parts[parts.length - 1];
-    if (!target[lastPart]) return;
-
-    target[lastPart] = target[lastPart].filter((_: any, i: any) => i !== index);
-    content = { ...content };
-  }
 
   function handleResourceTypeChange(e: any) {
     const target = e.target as HTMLSelectElement;
@@ -182,17 +129,17 @@
         <select class="select-field" onchange={addSchemaShortname}>
           <option value="">{$_("options.select_schema_to_add")}</option>
           {#await Dmart.query( { space_name: space_name, type: QueryType.search, subpath: "/schema", search: "", retrieve_json_payload: true, limit: 99 } ) then schemas}
-            {#each schemas!.records.map((e: any) => e.shortname) as schema}
+            {#each schemas!.records.map((e: any) => e.shortname) as schema (schema)}
               <option value={schema}>{schema}</option>
             {/each}
-          {:catch error}
+          {:catch}
             <option disabled>{$_("errors.loading_schemas")}</option>
           {/await}
         </select>
 
         {#if content.content_schema_shortnames.length > 0}
           <div class="tags-container">
-            {#each content.content_schema_shortnames as schema}
+            {#each content.content_schema_shortnames as schema (schema)}
               <span class="tag">
                 {schema}
                 <button
@@ -217,17 +164,17 @@
         <select class="select-field" onchange={addWorkflowShortname}>
           <option value="">{$_("options.select_workflow_to_add")}</option>
           {#await Dmart.query( { space_name: "management", type: QueryType.search, subpath: "/workflow", search: "", retrieve_json_payload: true, limit: 99 } ) then workflows}
-            {#each workflows!.records.map((e: any) => e.shortname) as workflow}
+            {#each workflows!.records.map((e: any) => e.shortname) as workflow (workflow)}
               <option value={workflow}>{workflow}</option>
             {/each}
-          {:catch error}
+          {:catch}
             <option disabled>{$_("errors.loading_workflows")}</option>
           {/await}
         </select>
 
         {#if content.workflow_shortnames.length > 0}
           <div class="tags-container">
-            {#each content.workflow_shortnames as workflow}
+            {#each content.workflow_shortnames as workflow (workflow)}
               <span class="tag">
                 {workflow}
                 <button

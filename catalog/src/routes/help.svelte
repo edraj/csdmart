@@ -1,5 +1,5 @@
 <script lang="ts">
-    import {goto} from "@roxi/routify";
+    import {goto as gotoStore} from "@roxi/routify";
     import {
         BookOpenSolid,
         ChevronDownOutline,
@@ -10,7 +10,11 @@
     import {_} from "@/i18n";
 
     let openFaq: any = $state(null);
-  $goto;
+  // Routify's helpers read the fragment context when first subscribed, and
+  // Svelte 5 subscribes to a `$store` lazily on first read — so a `$gotoStore`
+  // first touched inside an async callback logs "Unable to access context".
+  // Capture the navigate function once, during component init.
+  const goto = $gotoStore;
   const faqs = [
     {
       question: $_("help.faq.create_catalog.question"),
@@ -43,15 +47,15 @@
   }
 
   function handleContactSupport() {
-    $goto("/contact");
+    goto("/contact");
   }
 
   function handleJoinCommunity() {
-    $goto("/community");
+    goto("/community");
   }
 
   function handleExploreCatalogs() {
-    $goto("/");
+    goto("/");
   }
 </script>
 
@@ -112,7 +116,7 @@
     <div class="faq-content">
       <h2 class="section-title">{$_("help.faq.title")}</h2>
       <div class="faq-list">
-        {#each faqs as faq, index}
+        {#each faqs as faq, index (index)}
           <div class="faq-item">
             <button
               aria-label={$_("route_labels.aria_toggle_faq") + " " + (index + 1)}

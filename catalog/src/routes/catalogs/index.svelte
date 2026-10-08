@@ -8,16 +8,20 @@
     searchInCatalog,
   } from "@/lib/dmart_services";
   import { getAllUsers } from "@/lib/dmart_services/users";
-  import { goto } from "@roxi/routify";
-  import { _, locale } from "@/i18n";
-  import { derived as derivedStore } from "svelte/store";
+  import { goto as gotoStore } from "@roxi/routify";
+  import { _, locale, isRTL } from "@/i18n";
+  import { formatDate } from "@/lib/format";
   import { formatNumber, formatNumberInText } from "@/lib/helpers";
   import { QueryType, type DmartScope } from "@edraj/tsdmart";
-  import { user, getCurrentScope } from "@/stores/user";
+  import { getCurrentScope } from "@/stores/user";
   import { website } from "@/config";
   import { catalogPath } from "@/lib/paths";
 
-  $goto;
+  // Routify's helpers read the fragment context when first subscribed, and
+  // Svelte 5 subscribes to a `$store` lazily on first read — so a `$gotoStore`
+  // first touched inside an async callback logs "Unable to access context".
+  // Capture the navigate function once, during component init.
+  const goto = $gotoStore;
 
   interface SpaceTag {
     name: string;
@@ -53,10 +57,6 @@
   let totalUsers = $state(0);
   let spaceTags = $state<Record<string, SpaceTag[]>>({});
 
-  const isRTL = derivedStore(
-    locale,
-    ($locale: any) => $locale === "ar" || $locale === "ku",
-  );
 
   // Every tag seen across the loaded spaces, most used first — the real
   // values behind the Tags filter.
@@ -150,12 +150,12 @@
       website.use_admin_space_view === true
         ? "/dashboard/admin/[space_name]"
         : "/catalogs/[space_name]";
-    $goto(target, { space_name: space.shortname });
+    goto(target, { space_name: space.shortname });
   }
 
   function handleRecordClick(record: any) {
     // searchInCatalog tags each hit with the space it came from.
-    $goto(
+    goto(
       catalogPath({
         space: record.space_name ?? record.attributes?.space_name,
         subpath: record.subpath || "/",
@@ -290,16 +290,6 @@
     return $_("catalogs.no_description");
   }
 
-  function formatDate(dateString: string): string {
-    if (!dateString) return $_("common.not_available");
-    // `undefined`, not "": an empty locale string throws a RangeError.
-    return new Date(dateString).toLocaleDateString($locale || undefined, {
-      year: "numeric",
-      month: "short",
-      day: "numeric",
-    });
-  }
-
   async function performSearch(query: string) {
     const seq = ++searchSeq;
     searchError = null;
@@ -384,10 +374,6 @@
       performSearch(searchQuery);
     }, 500);
   }
-
-  // function handleContactUs() {
-  //   $goto("/contact");
-  // }
 
   $effect(() => {
     if (!searchQuery.trim()) {
@@ -648,7 +634,7 @@
     {#if isLoading}
       <!-- Skeleton cards while spaces load -->
       <div class="spaces-grid">
-        {#each Array(4) as _, i}
+        {#each Array(4) as _, i (i)}
           <div class="space-card skeleton-card" style="animation-delay: {i * 80}ms">
             <div class="card-thumbnail skeleton-thumb"></div>
             <div class="card-body">
@@ -754,7 +740,7 @@
         </div>
 
         <div class="spaces-grid">
-          {#each searchResults as record, index}
+          {#each searchResults as record, index (`${record.space_name}/${record.subpath}/${record.shortname}`)}
             <!-- svelte-ignore a11y_no_noninteractive_element_to_interactive_role -->
             <article
               class="space-card"
@@ -792,7 +778,7 @@
                 <p class="card-description">{getRecordDescription(record)}</p>
                 {#if record.attributes?.tags && record.attributes.tags.length > 0}
                   <div class="card-tags">
-                    {#each record.attributes.tags.slice(0, 3) as tag}
+                    {#each record.attributes.tags.slice(0, 3) as tag (tag)}
                       <span class="tag-pill">{tag}</span>
                     {/each}
                     {#if record.attributes.tags.length > 3}
@@ -818,7 +804,7 @@
                       <line x1="8" y1="2" x2="8" y2="6"></line>
                       <line x1="3" y1="10" x2="21" y2="10"></line>
                     </svg>
-                    {formatDate(record.attributes?.created_at)}
+                    {formatDate(record.attributes?.created_at, "date", $locale)}
                   </span>
                 </div>
               </div>
@@ -872,7 +858,7 @@
 
       <!-- Space Cards Grid -->
       <div class="spaces-grid">
-        {#each filteredSpaces as space, index}
+        {#each filteredSpaces as space, index (space.shortname)}
           <div
             class="space-card"
             onclick={() => handleSpaceClick(space)}
@@ -927,7 +913,7 @@
                 </div>
               {:else if getTagsSpaces(space.shortname).length > 0}
                 <div class="card-tags">
-                  {#each getTagsSpaces(space.shortname).slice(0, 3) as tag}
+                  {#each getTagsSpaces(space.shortname).slice(0, 3) as tag (tag.name)}
                     <span class="tag-pill">{tag.name}</span>
                   {/each}
                   {#if getTagsSpaces(space.shortname).length > 3}

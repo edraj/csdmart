@@ -47,7 +47,7 @@ export function ensureUploadSize(file: File): File {
  * Length: 1 to 64 characters
  */
 export function validateShortname(shortname: string): boolean {
-    const shortnamePattern = /^[a-zA-Z\u0621-\u064a0-9\u0660-\u0669\u064b-\u065f_]{1,64}$/;
+    const shortnamePattern = /^[\u064b-\u065fa-zA-Z\u0621-\u064a0-9\u0660-\u0669_]{1,64}$/;
     return shortnamePattern.test(shortname);
 }
 

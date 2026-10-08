@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { _, locale } from "@/i18n";
-  import { derived as derivedStore } from "svelte/store";
+  import { _, locale, isRTL } from "@/i18n";
+  import { formatDate } from "@/lib/format";
   import { getPolls, userVote } from "@/lib/dmart_services";
   import { DmartScope } from "@edraj/tsdmart";
 
@@ -34,10 +34,6 @@
 
   let showCreateModal = $state(false);
 
-  const isRTL = derivedStore(
-    locale,
-    (val: any) => val === "ar" || val === "ku",
-  );
 
   let userValue: any = null;
   user.subscribe((value: any) => {
@@ -256,39 +252,6 @@
     }
   }
 
-  // function formatDate(date: any) {
-  //   if (!date) return "";
-  //   return date.toLocaleDateString($locale, {
-  //     year: "numeric",
-  //     month: "short",
-  //     day: "numeric",
-  //     hour: "2-digit",
-  //     minute: "2-digit",
-  //   });
-  // }
-
-  function formatTimeAgo(date: any) {
-    if (!date) return "";
-    const seconds = Math.floor((new Date().getTime() - date.getTime()) / 1000);
-    const intervals = {
-      y: 31536000,
-      mo: 2592000,
-      w: 604800,
-      d: 86400,
-      h: 3600,
-      m: 60,
-    };
-    for (const [unit, secondsInUnit] of Object.entries(intervals)) {
-      const interval = Math.floor(seconds / secondsInUnit);
-      if (interval >= 1) {
-        if (unit === "d" || unit === "w" || unit === "mo" || unit === "y") {
-          return `${interval}${unit} ago`;
-        }
-        return `${interval}${unit} ago`; // like 5m ago, 2h ago
-      }
-    }
-    return "Just now";
-  }
 </script>
 
 <div class="polls-container min-h-screen bg-white" class:rtl={$isRTL}>
@@ -367,7 +330,7 @@
         </div>
       {:else}
         <div class="grid grid-cols-1 md:grid-cols-2 gap-6 pb-20">
-          {#each filteredPolls as poll}
+          {#each filteredPolls as poll (poll.shortname)}
             <div class="bg-white rounded-2xl p-8 border border-gray-100 shadow-sm hover:shadow-md transition-shadow relative shadow-[0_0_0_1px_rgba(0,0,0,0.04)]">
               
               <!-- Card Top -->
@@ -378,7 +341,7 @@
                   </div>
                   <div>
                     <h4 class="text-sm font-semibold text-gray-800 tracking-tight">{poll.createdBy}</h4>
-                    <p class="text-[11px] text-gray-400 font-medium">{formatTimeAgo(poll.createdAt)}</p>
+                    <p class="text-[11px] text-gray-400 font-medium">{formatDate(poll.createdAt, "relative", $locale)}</p>
                   </div>
                 </div>
                 <div class="px-3 py-1 rounded-full text-[11px] font-bold tracking-wide uppercase {poll.isActive ? 'bg-green-50 text-green-600' : 'bg-gray-100 text-gray-500'}">
@@ -454,7 +417,7 @@
 
     {#if showResults}
       <div class="space-y-6">
-        {#each selectedPoll.candidates as candidate}
+        {#each selectedPoll.candidates as candidate (candidate.key)}
           <div>
             <div class="flex justify-between items-end mb-2">
               <span class="text-[13px] text-gray-800 font-semibold">{candidate.name}</span>
@@ -469,7 +432,7 @@
       </div>
     {:else if selectedPoll.isActive && !selectedPoll.hasVoted}
       <div class="space-y-3">
-        {#each selectedPoll.candidates as candidate}
+        {#each selectedPoll.candidates as candidate (candidate.key)}
           <button class="w-full flex items-center gap-4 p-5 rounded-2xl border-2 transition-all text-left {selectedCandidate === candidate.key ? 'border-indigo-600 bg-indigo-50/30' : 'border-gray-100 hover:border-indigo-200'}" onclick={() => selectCandidate(candidate.key)}>
             <div class="shrink-0">
               {#if selectedCandidate === candidate.key}
@@ -498,7 +461,7 @@
       </div>
 
       <div class="space-y-6">
-        {#each selectedPoll.candidates as candidate}
+        {#each selectedPoll.candidates as candidate (candidate.key)}
           <div>
             <div class="flex justify-between items-end mb-2">
               <span class="text-[13px] text-gray-800 font-semibold">{candidate.name}</span>
@@ -530,5 +493,5 @@
 {/if}
 
 {#if showCreateModal}
-  <CreatePollModal onClose={() => showCreateModal = false} />
+  <CreatePollModal onClose={() => (showCreateModal = false)} onSuccess={loadPolls} />
 {/if}

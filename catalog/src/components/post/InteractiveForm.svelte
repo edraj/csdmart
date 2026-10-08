@@ -1,9 +1,11 @@
 <script lang="ts">
   import { _ } from "@/i18n";
 
-  export let newComment: string;
-  export let isSubmittingComment: boolean;
-  export let onAddComment: () => void;
+  let {
+    newComment = $bindable(""),
+    isSubmittingComment = false,
+    onAddComment,
+  }: { newComment: string; isSubmittingComment: boolean; onAddComment: () => void } = $props();
 
   function handleKeydown(event: KeyboardEvent) {
     if (event.key === "Enter" && !event.shiftKey) {
@@ -16,11 +18,6 @@
 </script>
 
 <div class="comment-composer">
-  <div class="composer-avatar">
-    <!-- Placeholder for current user avatar -->
-    <div class="avatar-circle">YO</div>
-  </div>
-
   <div class="composer-body">
     <textarea
       bind:value={newComment}
@@ -86,22 +83,7 @@
     margin-bottom: 32px;
   }
 
-  .composer-avatar {
-    flex-shrink: 0;
-  }
 
-  .avatar-circle {
-    width: 36px;
-    height: 36px;
-    border-radius: 50%;
-    background-color: #f1f5f9;
-    color: #475569;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 13px;
-    font-weight: 700;
-  }
 
   .composer-body {
     flex: 1;
@@ -176,14 +158,6 @@
 
   .animate-spin {
     animation: spin 1s linear infinite;
-  }
-  @keyframes spin {
-    from {
-      transform: rotate(0deg);
-    }
-    to {
-      transform: rotate(360deg);
-    }
   }
   .opacity-25 {
     opacity: 0.25;

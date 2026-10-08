@@ -19,13 +19,8 @@
     updateRole,
   } from "@/lib/dmart_services";
   import { ResourceType, DmartScope } from "@edraj/tsdmart";
-  import { _, locale } from "@/i18n";
-  import { derived as derivedStore } from "svelte/store";
+  import { _, isRTL } from "@/i18n";
 
-  const isRTL = derivedStore(
-    locale,
-    ($locale: any) => $locale === "ar" || $locale === "ku",
-  );
 
   let roleTypes = $state<any[]>([]);
   let selectedRoleType = $state("");
@@ -35,7 +30,6 @@
   let isSaving = $state(false);
   let isLoadingRoles = $state(true);
   let lastSaved: any = $state(null);
-  let spaces = $state<any[]>([]);
   let roleExists = $state(false);
   let currentRoleShortname = $state("");
   let isDeleting = $state(false);
@@ -75,10 +69,10 @@
     }
   }
 
+  // Nothing renders the list yet; the call only surfaces a load failure.
   async function loadSpaces() {
     try {
-      const spacesResponse = await getSpaces();
-      spaces = spacesResponse.records || [];
+      await getSpaces();
     } catch (error) {
       console.error("Error loading spaces:", error);
       errorToastMessage($_("failed_to_load_spaces"));
@@ -264,7 +258,7 @@
       <div class="header-actions">
         {#if $can("create", "management", "roles", ResourceType.role)}
         <button
-          aria-label={`Add role`}
+          aria-label="Add role"
           class="btn btn-primary"
           onclick={() => (showAddModal = true)}
         >
@@ -321,7 +315,7 @@
       <div class="role-selector-container">
         <div>
           <select class="form-select" bind:value={selectedRoleType}>
-            {#each roleTypes as type}
+            {#each roleTypes as type (type.value)}
               <option value={type.value}>{type.name}</option>
             {/each}
           </select>
@@ -389,9 +383,9 @@
           <div class="action-buttons">
             {#if $can(roleExists ? "update" : "create", "management", "roles", ResourceType.role)}
             <button
-              aria-label={`Save role`}
+              aria-label="Save role"
               class="btn btn-primary"
-              onclick={preventDefault((e) => {
+              onclick={preventDefault(() => {
                 saveRole();
               })}
               disabled={isSaving}
@@ -446,16 +440,16 @@
   />
   {#snippet footer()}
     <button
-      aria-label={`Cancel adding role`}
+      aria-label="Cancel adding role"
       class="btn btn-secondary"
       onclick={() => (showAddModal = false)}
     >
       {$_("cancel")}
     </button>
     <button
-      aria-label={`Create new role`}
+      aria-label="Create new role"
       class="btn btn-primary"
-      onclick={preventDefault((e) => {
+      onclick={preventDefault(() => {
         createNewRole();
       })}
       disabled={isCreating || !newRoleName.trim()}
@@ -486,7 +480,7 @@
   <p class="text-danger">{$_("action_cannot_be_undone")}</p>
   {#snippet footer()}
     <button
-      aria-label={`Cancel deleting role`}
+      aria-label="Cancel deleting role"
       class="btn btn-secondary"
       onclick={() => (showDeleteConfirm = false)}
     >
@@ -495,7 +489,7 @@
     <button
       aria-label={`Delete role ${selectedRoleType}`}
       class="btn btn-danger"
-      onclick={preventDefault((e) => {
+      onclick={preventDefault(() => {
         deleteRole();
       })}
       disabled={isDeleting}
@@ -656,14 +650,6 @@
     margin-right: 8px;
   }
 
-  @keyframes spin {
-    0% {
-      transform: rotate(0deg);
-    }
-    100% {
-      transform: rotate(360deg);
-    }
-  }
 
   .btn {
     padding: 12px 24px;

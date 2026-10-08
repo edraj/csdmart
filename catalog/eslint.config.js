@@ -29,6 +29,12 @@ export default ts.config(
         { argsIgnorePattern: "^_", varsIgnorePattern: "^_", caughtErrorsIgnorePattern: "^_" },
       ],
       "svelte/no-at-html-tags": "warn",
+      // Off: every one of its 14 hits was correct code — a plain Map/Set built
+      // inside a function or $derived.by to compute a value (never rendered),
+      // non-reactive module caches, or a $state Set updated with the
+      // `x = new Set(x)` reassignment idiom, which Svelte 5 tracks. The rule
+      // cannot tell those from a mutated reactive collection.
+      "svelte/prefer-svelte-reactivity": "off",
     },
   },
   {

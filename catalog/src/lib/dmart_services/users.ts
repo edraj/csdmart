@@ -13,7 +13,6 @@ import {
 } from "@edraj/tsdmart";
 import { getEntity, createEntity, updateEntity } from "./core";
 import { log } from "@/lib/logger";
-import { getCurrentScope } from "@/stores/user";
 import { checkAccess } from "@/stores/permissions";
 import { MANAGEMENT_SPACE, APPLICATIONS_SPACE } from "@/lib/constants";
 import { website } from "@/config";
@@ -211,7 +210,7 @@ export async function setDefaultUserRole(
         if (existingConfig) {
             const payload = existingConfig.payload?.body;
             if (!payload) return false;
-            let updatedItems = payload.items || [];
+            const updatedItems = payload.items || [];
 
             const existingItemIndex = updatedItems.findIndex(
                 (item: any) => item.key === "default_user_role"
@@ -304,7 +303,6 @@ export async function fetchOnlineUsers(): Promise<Set<string>> {
         }
 
         const json = await res.json();
-        console.log("[fetchOnlineUsers] raw response:", JSON.stringify(json));
 
         // csdmart shape: { status, data: { connected_clients, channels: { ch: [users] } } }
         const channels = json?.data?.channels;
@@ -320,7 +318,6 @@ export async function fetchOnlineUsers(): Promise<Set<string>> {
                 }
             }
         }
-        console.log("[fetchOnlineUsers] online:", [...onlineUsers]);
         return onlineUsers;
     } catch (error) {
         console.error("[fetchOnlineUsers] error:", error);

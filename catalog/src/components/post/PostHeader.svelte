@@ -1,27 +1,11 @@
 <script lang="ts">
   import { _ } from "@/i18n";
-  import {
-    formatDate,
-    getAuthorInfo,
-    getPostTitle,
-  } from "@/lib/utils/postUtils";
+  import { formatDate } from "@/lib/format";
+  import { getAuthorInfo, getPostTitle } from "@/lib/utils/postUtils";
 
-  export let postData: any;
-  export let locale: string;
+  let { postData, locale }: { postData: any; locale: string } = $props();
 
-  $: authorInfo = getAuthorInfo(postData, $_("common.unknown"));
-
-  // Estimate read time based on text length, generic fallback
-  function estimateReadTime(text: string) {
-    if (!text) return "1 min";
-    const words = text.split(" ").length;
-    const minutes = Math.ceil(words / 200);
-    return `${minutes} min`;
-  }
-
-  $: readTime = estimateReadTime(
-    postData.content_en || postData.content_ar || postData.content_ku || "",
-  );
+  const authorInfo = $derived(getAuthorInfo(postData, $_("common.unknown")));
 </script>
 
 <header class="post-header mb-6">
@@ -30,7 +14,6 @@
       <div class="author-avatar">
         {authorInfo ? authorInfo.substring(0, 2).toUpperCase() : "U"}
       </div>
-      <div class="status-dot"></div>
     </div>
 
     <div class="author-details-container">
@@ -55,7 +38,7 @@
           />
         </svg>
         <span class="post-time">
-          {formatDate(postData.created_at, locale, $_("common.not_available"))}
+          {formatDate(postData.created_at, "date", locale) || $_("common.not_available")}
         </span>
         <span class="separator">·</span>
         <span class="folder-badge">
@@ -75,42 +58,15 @@
           {postData.payload?.schema_shortname ||
             $_("post_detail.content_type.content")}
         </span>
-        <span class="separator">·</span>
-        <svg
-          class="eye-icon"
-          fill="none"
-          viewBox="0 0 24 24"
-          stroke="currentColor"
-        >
-          <path
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            stroke-width="2"
-            d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"
-          />
-          <path
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            stroke-width="2"
-            d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"
-          />
-        </svg>
-        <span class="read-time">{readTime} read</span>
       </div>
     </div>
-  </div>
-
-  <div class="hot-badge-wrapper mb-3">
-    <span class="hot-badge">
-      <span class="fire-emoji">🔥</span> Hot
-    </span>
   </div>
 
   <h1 class="post-title break-words">{getPostTitle(postData)}</h1>
 
   <div class="post-tags">
     {#if postData.tags && postData.tags.length > 0}
-      {#each postData.tags as tag}
+      {#each postData.tags as tag (tag)}
         {#if tag && tag.trim()}
           <span class="badge badge-tag">#{tag}</span>
         {/if}
@@ -156,16 +112,6 @@
     border: 1px solid #e2e8f0;
   }
 
-  .status-dot {
-    position: absolute;
-    bottom: 0px;
-    right: 0px;
-    width: 12px;
-    height: 12px;
-    background-color: #10b981; /* green */
-    border: 2px solid white;
-    border-radius: 50%;
-  }
 
   .author-details-container {
     display: flex;
@@ -206,11 +152,6 @@
 
   .clock-icon,
   .folder-icon,
-  .eye-icon {
-    width: 14px;
-    height: 14px;
-    color: #94a3b8;
-  }
 
   .folder-badge {
     display: inline-flex;
@@ -224,26 +165,8 @@
     font-weight: 600;
   }
 
-  .hot-badge-wrapper {
-    margin-bottom: 12px;
-  }
 
-  .hot-badge {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    background-color: #fff7ed;
-    color: #f97316;
-    padding: 4px 10px;
-    border-radius: 9999px;
-    font-size: 12px;
-    font-weight: 700;
-    border: 1px solid #ffedd5;
-  }
 
-  .fire-emoji {
-    font-size: 14px;
-  }
 
   .post-title {
     font-size: 32px;

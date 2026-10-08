@@ -11,6 +11,12 @@ export const MANAGEMENT_SPACE = "management";
 export const PERSONAL_SPACE = "personal";
 export const MESSAGES_SPACE = "messages";
 
+// --- Well-known subpaths ---
+// Contact-form submissions live under applications/contacts; author profiles
+// under <space>/authors.
+export const CONTACTS_SUBPATH = "contacts";
+export const AUTHORS_SUBPATH = "authors";
+
 // --- Default Query Limits ---
 export const DEFAULT_QUERY_LIMIT = 100;
 export const MAX_QUERY_LIMIT = 1000;

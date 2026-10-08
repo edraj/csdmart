@@ -2,17 +2,17 @@
   import { _ } from "@/i18n";
   import type { Breadcrumb } from "@/lib/utils/postUtils";
 
-  export let breadcrumbs: Breadcrumb[];
-  export let onGoBack: () => void;
+  let { breadcrumbs, onGoBack }: { breadcrumbs: Breadcrumb[]; onGoBack: () => void } = $props();
 
   function copyLink() {
     navigator.clipboard.writeText(window.location.href);
   }
 
-  $: parentCrumb =
+  const parentCrumb = $derived(
     breadcrumbs && breadcrumbs.length > 1
       ? breadcrumbs[breadcrumbs.length - 2]
-      : null;
+      : null,
+  );
 </script>
 
 <header class="page-header">

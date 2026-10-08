@@ -266,14 +266,14 @@
             bind:value={selectedDefaultRole}
           >
             <option value="">{$_("selectRoleOption")}</option>
-            {#each availableRoles as role}
+            {#each availableRoles as role (role.shortname)}
               <option value={role.shortname}>{role.displayname}</option>
             {/each}
           </select>
 
           {#if selectedDefaultRole}
             <div class="role-info">
-              {#each availableRoles as role}
+              {#each availableRoles as role (role.shortname)}
                 {#if role.shortname === selectedDefaultRole}
                   <div class="role-details">
                     <h4>{role.displayname}</h4>
@@ -402,14 +402,6 @@
     height: 14px;
   }
 
-  @keyframes spin {
-    0% {
-      transform: rotate(0deg);
-    }
-    100% {
-      transform: rotate(360deg);
-    }
-  }
   .container {
     max-width: 1200px;
     margin: 0 auto;
@@ -480,14 +472,6 @@
     margin-right: 8px;
   }
 
-  @keyframes spin {
-    0% {
-      transform: rotate(0deg);
-    }
-    100% {
-      transform: rotate(360deg);
-    }
-  }
 
   .alert {
     padding: 16px;

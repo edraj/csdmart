@@ -47,13 +47,12 @@ function guess_locale(): Locale {
   return fallback_locale;
 }
 
-let signedout: User = { signedin: false, locale: guess_locale() };
-export let user: Writable<User>;
+const signedout: User = { signedin: false, locale: guess_locale() };
 
-export let roles: Writable<string[]> = writable(storage.getJson("roles", []));
+export const roles: Writable<string[]> = writable(storage.getJson("roles", []));
 
 // Load the user information from store, if it exists
-user = writable<User>(storage.getJson(KEY, signedout));
+export const user: Writable<User> = writable<User>(storage.getJson(KEY, signedout));
 
 /**
  * Handles successful login response: sets auth token, user state, and localStorage
@@ -153,11 +152,11 @@ export async function requestOtp(email: string): Promise<string> {
     }
   } catch (error: any) {
     if (error.response?.data?.error?.message) {
-      throw new Error(error.response.data.error.message);
+      throw new Error(error.response.data.error.message, { cause: error });
     } else if (error.message) {
-      throw new Error(error.message);
+      throw new Error(error.message, { cause: error });
     } else {
-      throw new Error("OTP request failed. Please try again.");
+      throw new Error("OTP request failed. Please try again.", { cause: error });
     }
   }
 }
@@ -171,11 +170,11 @@ export async function checkExisting(
     return (response as any).attributes.unique;
   } catch (error: any) {
     if (error.response?.data?.error?.message) {
-      throw new Error(error.response.data.error.message);
+      throw new Error(error.response.data.error.message, { cause: error });
     } else if (error.message) {
-      throw new Error(error.message);
+      throw new Error(error.message, { cause: error });
     } else {
-      throw new Error("Check existing failed. Please try again.");
+      throw new Error("Check existing failed. Please try again.", { cause: error });
     }
   }
 }
@@ -224,11 +223,11 @@ export async function register(
     return response;
   } catch (error: any) {
     if (error.response?.data?.error?.message) {
-      throw new Error(error.response.data.error.message);
+      throw new Error(error.response.data.error.message, { cause: error });
     } else if (error.message) {
-      throw new Error(error.message);
+      throw new Error(error.message, { cause: error });
     } else {
-      throw new Error("Registration failed. Please try again.");
+      throw new Error("Registration failed. Please try again.", { cause: error });
     }
   }
 }
@@ -311,11 +310,11 @@ export async function contactUs(
     }
   } catch (error: any) {
     if (error.response?.data?.error?.message) {
-      throw new Error(error.response.data.error.message);
+      throw new Error(error.response.data.error.message, { cause: error });
     } else if (error.message) {
-      throw new Error(error.message);
+      throw new Error(error.message, { cause: error });
     } else {
-      throw new Error("Sending message failed. Please try again.");
+      throw new Error("Sending message failed. Please try again.", { cause: error });
     }
   }
 }

@@ -13,9 +13,9 @@
     errorToastMessage,
     successToastMessage,
   } from "@/lib/toasts_messages";
-  import { _, locale } from "@/i18n";
+  import { _, locale, isRTL } from "@/i18n";
   import { formatNumber } from "@/lib/helpers";
-  import { derived as derivedStore } from "svelte/store";
+  import { MANAGEMENT_SPACE } from "@/lib/constants";
   import AppModal from "@/components/Modal.svelte";
   import { ResourceType, Dmart, RequestType, DmartScope } from "@edraj/tsdmart";
   import { createEntity } from "@/lib/dmart_services/core";
@@ -31,10 +31,6 @@
   import MetaUserForm from "@/components/management/forms/MetaUserForm.svelte";
   import DataTable from "@/components/DataTable.svelte";
 
-  const isRTL = derivedStore(
-    locale,
-    ($locale) => $locale === "ar" || $locale === "ku",
-  );
 
   let users = $state<any[]>([]);
   let availableRoles = $state<any[]>([]);
@@ -118,16 +114,6 @@
 
   let selectedItems = $state(new Set<string>());
 
-  // function toggleAllItems(e: Event) {
-  //   const checked = (e.target as HTMLInputElement).checked;
-  //   if (checked) {
-  //     filteredUsers.forEach((u) => selectedItems.add(u.shortname));
-  //     selectedItems = new Set(selectedItems);
-  //   } else {
-  //     selectedItems = new Set();
-  //   }
-  // }
-
   function toggleItemSelection(shortname: string) {
     if (selectedItems.has(shortname)) {
       selectedItems.delete(shortname);
@@ -202,7 +188,7 @@
   async function loadRoles() {
     try {
       const rolesResponse = await getSpaceContents(
-        "management",
+        MANAGEMENT_SPACE,
         "roles",
         DmartScope.managed,
       );
@@ -319,7 +305,7 @@
     isSavingColumns = true;
     try {
       const response = await Dmart.request({
-        space_name: "management",
+        space_name: MANAGEMENT_SPACE,
         request_type: RequestType.update,
         records: [
           {
@@ -381,7 +367,7 @@
       });
 
       const response = await Dmart.request({
-        space_name: "management",
+        space_name: MANAGEMENT_SPACE,
         request_type: (RequestType as any).merge,
         records: parsedFromCSV,
       });
@@ -479,7 +465,7 @@
       }
 
       const response = await Dmart.request({
-        space_name: "management",
+        space_name: MANAGEMENT_SPACE,
         request_type: RequestType.update,
         records,
       });
@@ -544,20 +530,6 @@
     }
   }
 
-  // function nextPage() {
-  //   if (currentPage < totalPages) {
-  //     currentPage++;
-  //     loadUsers();
-  //   }
-  // }
-  //
-  // function previousPage() {
-  //   if (currentPage > 1) {
-  //     currentPage--;
-  //     loadUsers();
-  //   }
-  // }
-
   async function handleRoleFilterChange() {
     currentPage = 1;
     await loadUsers();
@@ -566,7 +538,7 @@
   async function loadPermissions() {
     try {
       const permissionsResponse = await getSpaceContents(
-        "management",
+        MANAGEMENT_SPACE,
         "permissions",
         DmartScope.managed,
       );
@@ -646,7 +618,7 @@
 
       if (isEditingUserMode) {
         const response = await Dmart.request({
-          space_name: "management",
+          space_name: MANAGEMENT_SPACE,
           request_type: RequestType.update,
           records: [{
             resource_type: ResourceType.user,
@@ -665,7 +637,7 @@
         }
       } else {
         const result = await createEntity(
-          "management",
+          MANAGEMENT_SPACE,
           "users",
           ResourceType.user,
           _metaContent,
@@ -759,7 +731,7 @@
         {/if}
       </div>
       <div class="filters-container">
-        {#if $can("create", "management", "users", ResourceType.user)}
+        {#if $can("create", MANAGEMENT_SPACE, "users", ResourceType.user)}
         <button class="btn btn-primary" onclick={() => {
           isEditingUserMode = false;
           metaContent = {};
@@ -789,7 +761,7 @@
             aria-label={$_("all_roles")}
           >
             <option value="">{$_("all_roles")}</option>
-            {#each availableRoles as role}
+            {#each availableRoles as role (role.shortname)}
               <option value={role.shortname}>{role.displayname}</option>
             {/each}
           </select>
@@ -821,7 +793,7 @@
     {:else}
       <DataTable
         items={filteredUsers}
-        indexAttributes={visibleColumns(indexAttributes, $permissions, "management", "/users", "user")}
+        indexAttributes={visibleColumns(indexAttributes, $permissions, MANAGEMENT_SPACE, "/users", "user")}
         selectable={true}
         selectedItems={selectedItems}
         onSelectAll={(checked) => {
@@ -863,7 +835,7 @@
           {:else if attr.key === 'roles'}
             {#if user.roles.length > 0}
               <div class="flex flex-wrap gap-1">
-                {#each user.roles as role}
+                {#each user.roles as role (role)}
                   <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-50 text-blue-700">{getRoleDisplayName(role)}</span>
                 {/each}
               </div>
@@ -881,7 +853,7 @@
         {/snippet}
 
         {#snippet actions({ item: user })}
-          {#if $can("update", "management", "/users", "user")}
+          {#if $can("update", MANAGEMENT_SPACE, "/users", "user")}
           <button
             onclick={(e) => {
               e.stopPropagation();
@@ -905,7 +877,7 @@
           {/if}
         {/snippet}
 
-        {#snippet bulkActions({ selectedCount })}
+        {#snippet bulkActions()}
           <button
             onclick={clearSelection}
             class="bulk-btn bulk-btn-secondary"
@@ -967,7 +939,7 @@
         </div>
       {:else}
         <div class="space-y-2">
-          {#each filteredRoles as role}
+          {#each filteredRoles as role (role.shortname)}
             <label class="flex items-start gap-3 p-4 bg-white border border-gray-200 rounded-xl hover:bg-gray-50 cursor-pointer transition-colors">
               <input
                 type="checkbox"
@@ -993,7 +965,7 @@
       >
         {$_("cancel")}
       </button>
-      {#if $can("update", "management", "users", ResourceType.user)}
+      {#if $can("update", MANAGEMENT_SPACE, "users", ResourceType.user)}
       <button
         onclick={saveUserRoles}
         disabled={isUpdating || availableRoles.length === 0}
@@ -1134,7 +1106,7 @@
         <div class="bg-white rounded-2xl border border-gray-200 p-5">
           <h3 class="text-sm font-semibold text-gray-900 mb-3">{$_("view_user.groups")}</h3>
           <div class="flex flex-wrap gap-2">
-            {#each userAttrs.groups as group}
+            {#each userAttrs.groups as group (group)}
               <span class="inline-flex items-center px-2.5 py-1 rounded-md text-xs font-medium bg-gray-100 text-gray-700">{group}</span>
             {/each}
           </div>
@@ -1147,7 +1119,7 @@
           <p class="text-sm text-gray-500 italic">{$_("view_user.no_roles_assigned")}</p>
         {:else}
           <div class="space-y-3">
-            {#each viewUserData.roles as roleShortname}
+            {#each viewUserData.roles as roleShortname (roleShortname)}
               {@const rolePerms = getRolePermissions(roleShortname)}
               <details class="group bg-gray-50/60 rounded-xl border border-gray-200 overflow-hidden" open>
                 <summary class="flex items-center justify-between px-4 py-3 cursor-pointer hover:bg-gray-100 transition-colors">
@@ -1167,7 +1139,7 @@
                     <p class="text-xs text-gray-500 italic">{$_("view_user.no_permissions")}</p>
                   {:else}
                     <ul class="space-y-2">
-                      {#each rolePerms as perm}
+                      {#each rolePerms as perm (perm.shortname)}
                         <li class="text-sm">
                           <div class="flex items-start gap-2">
                             <svg class="w-4 h-4 text-emerald-500 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1180,7 +1152,7 @@
                               {/if}
                               {#if Array.isArray(perm.actions) && perm.actions.length > 0}
                                 <div class="flex flex-wrap gap-1 mt-1.5">
-                                  {#each perm.actions as action}
+                                  {#each perm.actions as action (action)}
                                     <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-blue-50 text-blue-700">{action}</span>
                                   {/each}
                                 </div>
@@ -1221,14 +1193,14 @@
 {/if}
 
 {#if isCSVUploadModalOpen}
-  {@const _csvUploadProps = { space_name: "management", subpath: "users", isOpen: isCSVUploadModalOpen, onClose: () => (isCSVUploadModalOpen = false), onUpload: handleCSVUpload } as any}
+  {@const _csvUploadProps = { space_name: MANAGEMENT_SPACE, subpath: "users", isOpen: isCSVUploadModalOpen, onClose: () => (isCSVUploadModalOpen = false), onUpload: handleCSVUpload } as any}
   <ModalCSVUpload
     {..._csvUploadProps}
   />
 {/if}
 
 {#if isCSVDownloadModalOpen}
-  {@const _csvDownloadProps = { space_name: "management", subpath: "users", indexAttributes, isOpen: isCSVDownloadModalOpen, onClose: () => (isCSVDownloadModalOpen = false), onDownload: handleCSVDownload, contents: users } as any}
+  {@const _csvDownloadProps = { space_name: MANAGEMENT_SPACE, subpath: "users", indexAttributes, isOpen: isCSVDownloadModalOpen, onClose: () => (isCSVDownloadModalOpen = false), onDownload: handleCSVDownload, contents: users } as any}
   <ModalCSVDownload
     {..._csvDownloadProps}
   />
@@ -1256,7 +1228,7 @@
 
       <div class="p-6 max-h-[60vh] overflow-y-auto bg-gray-50/30 modal-content">
         <div class="space-y-4">
-          {#each editingIndexAttributes as attr, i}
+          {#each editingIndexAttributes as attr, i (i)}
             <div class="flex items-center gap-3 p-4 bg-white rounded-2xl border border-gray-100 shadow-sm">
               <div class="flex-1 grid grid-cols-2 gap-4">
                 <div class="space-y-1.5">
@@ -1316,16 +1288,16 @@
            <thead>
              <tr>
                <th class="px-4 py-3 bg-gray-50 border-b border-gray-200 text-xs font-semibold text-gray-500 uppercase tracking-wider sticky top-0 z-10 w-48 shrink-0">Item</th>
-               {#each (indexAttributes.length > 0 ? indexAttributes : [{key:'displayname',name:'User'},{key:'email',name:'Email'},{key:'roles',name:'Roles'},{key:'status',name:'Status'}]) as attr}
+               {#each (indexAttributes.length > 0 ? indexAttributes : [{key:'displayname',name:'User'},{key:'email',name:'Email'},{key:'roles',name:'Roles'},{key:'status',name:'Status'}]) as attr (attr.key)}
                  <th class="px-4 py-3 bg-gray-50 border-b border-gray-200 text-xs font-semibold text-gray-500 uppercase tracking-wider sticky top-0 z-10 min-w-50 whitespace-nowrap">{attr.name}</th>
                {/each}
              </tr>
            </thead>
            <tbody class="divide-y divide-gray-200 text-left">
-             {#each Object.entries(bulkEditData) as [shortname, editData]}
+             {#each Object.entries(bulkEditData) as [shortname, editData] (shortname)}
                <tr>
                  <td class="px-4 py-3 bg-gray-50/50 font-mono text-xs text-gray-500 border-r border-gray-200 truncate" title={shortname}>{shortname}</td>
-                 {#each (indexAttributes.length > 0 ? indexAttributes : [{key:'displayname',name:'User'},{key:'email',name:'Email'},{key:'roles',name:'Roles'},{key:'status',name:'Status'}]) as attr}
+                 {#each (indexAttributes.length > 0 ? indexAttributes : [{key:'displayname',name:'User'},{key:'email',name:'Email'},{key:'roles',name:'Roles'},{key:'status',name:'Status'}]) as attr (attr.key)}
                    <td class="px-4 py-3">
                      <input type="text" class="w-full px-3 py-1.5 text-sm border font-medium text-gray-700 bg-white border-gray-300 rounded focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
                         value={editData[attr.key] !== undefined ? editData[attr.key] : ""}
@@ -1470,14 +1442,6 @@
     margin-right: 8px;
   }
 
-  @keyframes spin {
-    0% {
-      transform: rotate(0deg);
-    }
-    100% {
-      transform: rotate(360deg);
-    }
-  }
 
   .empty-state {
     text-align: center;

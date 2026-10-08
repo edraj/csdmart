@@ -9,6 +9,7 @@
 
     let {
         formData = $bindable(),
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars, no-useless-assignment -- $bindable() prop: assigned here, read by the parent through bind:validateFn
         validateFn = $bindable(),
         isCreate = false,
         fullWidth = false
@@ -350,7 +351,7 @@
                 <div class="field-group">
                     <label for="user_type" class="field-label">User Type</label>
                     <select id="user_type" class="input-field" bind:value={formData.type}>
-                        {#each userTypeOptions as option}
+                        {#each userTypeOptions as option (option.value)}
                             <option value={option.value}>{option.name}</option>
                         {/each}
                     </select>
@@ -396,7 +397,7 @@
 
                                     {#if showRolesDropdown && filteredRoles.length > 0}
                                         <div class="dropdown-menu">
-                                            {#each filteredRoles as role}
+                                            {#each filteredRoles as role (role.value)}
                                                 <button
                                                     type="button"
                                                     class="dropdown-item"
@@ -414,7 +415,7 @@
 
                                 <div class="tags-container">
                                     {#if formData.roles.length > 0}
-                                        {#each formData.roles as role}
+                                        {#each formData.roles as role (role)}
                                             <span class="tag">
                                                 {role}
                                                 <button type="button" class="tag-remove" onclick={() => removeRole(role)}>×</button>
@@ -448,7 +449,7 @@
 
                                     {#if showGroupsDropdown && filteredGroups.length > 0}
                                         <div class="dropdown-menu">
-                                            {#each filteredGroups as group}
+                                            {#each filteredGroups as group (group.value)}
                                                 <button
                                                     type="button"
                                                     class="dropdown-item"
@@ -466,7 +467,7 @@
 
                                 <div class="tags-container">
                                     {#if formData.groups.length > 0}
-                                        {#each formData.groups as group}
+                                        {#each formData.groups as group (group)}
                                             <span class="tag tag-gray">
                                                 {group}
                                                 <button type="button" class="tag-remove" onclick={() => removeGroup(group)}>×</button>

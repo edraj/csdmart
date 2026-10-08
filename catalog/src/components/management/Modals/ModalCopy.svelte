@@ -1,6 +1,6 @@
 <script lang="ts">
   import Modal from "@/components/Modal.svelte";
-  import { _, locale } from "@/i18n";
+  import { _, isRTL } from "@/i18n";
   import { onMount } from "svelte";
   import {
     Dmart,
@@ -14,7 +14,6 @@
     successToastMessage,
     errorToastMessage,
   } from "@/lib/toasts_messages";
-  import { derived as derivedStore } from "svelte/store";
 
   type CopyMoveAction = "copy" | "move";
 
@@ -42,10 +41,6 @@
     onDone,
   }: Props = $props();
 
-  const isRTL = derivedStore(
-    locale,
-    ($locale) => $locale === "ar" || $locale === "ku",
-  );
 
   let spacesList = $state<any[]>([]);
   let folderList = $state<string[]>(["/"]);
@@ -266,7 +261,7 @@
         {#if spacesList.length === 0}
           <option value="">Loading…</option>
         {/if}
-        {#each spacesList as space}
+        {#each spacesList as space (space.shortname)}
           <option value={space.shortname}>{space.shortname}</option>
         {/each}
       </select>
@@ -282,7 +277,7 @@
         bind:value={selectedSubpath}
         disabled={isSubmitting || folderList.length === 0}
       >
-        {#each folderList as folder}
+        {#each folderList as folder (folder)}
           <option value={folder}>{folder}</option>
         {/each}
       </select>
@@ -292,7 +287,7 @@
   <div class="rounded-xl border border-gray-100 bg-gray-50 px-4 py-3 text-xs text-gray-600 max-h-40 overflow-y-auto">
     <div class="font-semibold text-gray-700 mb-1">Items ({records.length})</div>
     <ul class="space-y-0.5 font-mono {$isRTL ? 'text-right' : ''}">
-      {#each records as r}
+      {#each records as r (r.shortname)}
         <li class="truncate">
           <span class="text-gray-400">[{r.resource_type}]</span>
           {r.shortname}

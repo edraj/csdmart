@@ -1,102 +1,69 @@
 <script lang="ts">
-  import { createEventDispatcher, onMount } from "svelte";
+  import { onMount } from "svelte";
   import { getTemplates } from "@/lib/dmart_services";
-  import { derived as derivedStore, writable } from "svelte/store";
 
-  const dispatch = createEventDispatcher();
-  export let content: any = "";
-  export let space_name = "";
+  let {
+    content = $bindable(""),
+    space_name = "",
+    onContentChange = () => {},
+  }: {
+    content?: any;
+    space_name?: string;
+    onContentChange?: (content: string) => void;
+  } = $props();
 
-  let onContentChange = (newContent: any) => {
-    content = newContent;
-  };
+  let templates: any[] = $state([]);
+  let originalTemplate: any = $state(null);
+  let templateFields: any[] = $state([]);
+  let fieldValues: Record<string, any> = $state({});
 
-  let templates: any[] = [];
-  let originalTemplate: any = null;
-  let templateFields: any[] = [];
-  let fieldValues: Record<string, any> = {};
-
-  const originalTemplateStore = writable(originalTemplate);
-  const templateFieldsStore = writable(templateFields);
-  const fieldValuesStore = writable(fieldValues);
-
-  const previewContentStore = derivedStore(
-    [originalTemplateStore, templateFieldsStore, fieldValuesStore],
-    ([$originalTemplate, $templateFields, $fieldValues]: [any, any[], any]) => {
-      if (!$originalTemplate) return "";
-
-      let newContent = $originalTemplate?.attributes?.payload?.body;
-      if (typeof newContent === "object" && newContent?.content) {
-        newContent = newContent.content;
-      }
-
-      if (typeof newContent !== "string") {
-        newContent = String(newContent ?? "");
-      }
-
-      $templateFields.forEach((field: any) => {
-        const placeholder = `{{${field.name}:${field.type}}}`;
-        const value = $fieldValues[field.name] || "";
-        newContent = newContent.replace(placeholder, value);
-      });
-
-      return newContent;
+  // The template body with every {{name:type}} placeholder replaced by the
+  // value typed for it.
+  const previewContent = $derived.by(() => {
+    if (!originalTemplate) return "";
+    let next = originalTemplate?.attributes?.payload?.body;
+    if (typeof next === "object" && next?.content) {
+      next = next.content;
     }
-  );
+    if (typeof next !== "string") {
+      next = String(next ?? "");
+    }
+    for (const field of templateFields) {
+      const placeholder = `{{${field.name}:${field.type}}}`;
+      next = next.replace(placeholder, fieldValues[field.name] || "");
+    }
+    return next;
+  });
 
-  $: if ($previewContentStore) {
-    onContentChange($previewContentStore);
-    dispatch("contentChange", $previewContentStore);
-  }
+  $effect(() => {
+    if (previewContent) {
+      content = previewContent;
+      onContentChange(previewContent);
+    }
+  });
 
   onMount(async () => {
     const response = await getTemplates(space_name);
     templates = response.records;
-
-    await detectAndParseTemplate();
+    detectAndParseTemplate();
   });
 
-  async function detectAndParseTemplate() {
+  // Find the template whose placeholders all have a value in `content`, and
+  // seed the form from it.
+  function detectAndParseTemplate() {
     if (!content || templates.length === 0) return;
-
-    let actualContent = content;
-
-    if (typeof content === "object" && content) {
-      actualContent = content;
-    } else if (typeof content === "string") {
-      try {
-        actualContent = content;
-      } catch (e) {
-        actualContent = content;
-      }
-    }
 
     for (const template of templates) {
       const templateContent = template?.attributes?.payload?.body.content;
-
       const fields = extractFields(templateContent);
+      if (fields.length === 0) continue;
 
-      if (fields.length > 0) {
-        const filledValues = extractValuesFromContent(
-          actualContent,
-          templateContent,
-          fields
-        );
-
-        if (
-          filledValues &&
-          Object.keys(filledValues).length === fields.length
-        ) {
-          originalTemplate = template;
-          templateFields = fields;
-          fieldValues = filledValues;
-
-          originalTemplateStore.set(template);
-          templateFieldsStore.set(fields);
-          fieldValuesStore.set(filledValues);
-
-          break;
-        }
+      const filledValues = extractValuesFromContent(content, templateContent, fields);
+      if (filledValues && Object.keys(filledValues).length === fields.length) {
+        originalTemplate = template;
+        templateFields = fields;
+        fieldValues = filledValues;
+        break;
       }
     }
   }
@@ -117,7 +84,7 @@
   function extractValuesFromContent(filledContent: any, templateContent: any, fields: any) {
     const values: Record<string, any> = {};
 
-    const plainContent = filledContent.replace(/<[^>]+>/g, "");
+    const plainContent = String(filledContent).replace(/<[^>]+>/g, "");
 
     for (const field of fields) {
       const placeholder = `{{${field.name}:${field.type}}}`;
@@ -137,7 +104,7 @@
 
       const match = plainContent.match(regex);
       if (match) {
-        let value = match[1].trim();
+        let value: any = match[1].trim();
 
         if (field.type === "number") {
           value = Number(value);
@@ -204,7 +171,6 @@
 
   function handleFieldChange(fieldName: any, value: any) {
     fieldValues = { ...fieldValues, [fieldName]: value };
-    fieldValuesStore.set(fieldValues);
   }
 </script>
 
@@ -221,7 +187,7 @@
     </div>
 
     <div class="template-fields">
-      {#each templateFields as field}
+      {#each templateFields as field (field.name)}
         <div class="field-group">
           <label for={field.name} class="field-label">
             {field.name} ({field.type})
@@ -230,7 +196,7 @@
             <textarea
               id={field.name}
               value={fieldValues[field.name] || ""}
-              on:input={(e) => handleFieldChange(field.name, (e.target as HTMLInputElement).value)}
+              oninput={(e) => handleFieldChange(field.name, (e.target as HTMLInputElement).value)}
               class="field-textarea"
               placeholder={getFieldPlaceholder(field.type, field.name)}
               rows={field.type === "list" || field.type === "object" || field.type === "list_object" ? 5 : 3}
@@ -247,7 +213,7 @@
               id={field.name}
               type="checkbox"
               checked={fieldValues[field.name] || false}
-              on:change={(e) => handleFieldChange(field.name, (e.target as HTMLInputElement).checked)}
+              onchange={(e) => handleFieldChange(field.name, (e.target as HTMLInputElement).checked)}
               class="field-checkbox"
             />
           {:else}
@@ -255,7 +221,7 @@
               id={field.name}
               type={getFieldType(field.type)}
               value={fieldValues[field.name] || ""}
-              on:input={(e) => handleFieldChange(field.name, (e.target as HTMLInputElement).value)}
+              oninput={(e) => handleFieldChange(field.name, (e.target as HTMLInputElement).value)}
               class="field-input"
               placeholder={getFieldPlaceholder(field.type, field.name)}
             />
@@ -264,11 +230,11 @@
       {/each}
     </div>
 
-    {#if $previewContentStore}
+    {#if previewContent}
       <div class="template-preview">
         <h5>Preview</h5>
         <div class="preview-content">
-          {$previewContentStore}
+          {previewContent}
         </div>
       </div>
     {/if}

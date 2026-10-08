@@ -7,20 +7,26 @@
     getTemplates,
   } from "@/lib/dmart_services";
   import { ContentType, ResourceType } from "@edraj/tsdmart";
-  import { goto, params } from "@roxi/routify";
+  import { goto as gotoStore, params } from "@roxi/routify";
   import { _ } from "@/i18n";
 
-  let templates: any[] = [];
-  let selectedTemplate: any = null;
-  let templateFields: any[] = [];
-  let fieldValues: Record<string, any> = {};
-  let previewContent = "";
+  // Routify's helpers read the fragment context when first subscribed, and
+  // Svelte 5 subscribes to a `$store` lazily on first read — so a `$gotoStore`
+  // first touched inside an async callback logs "Unable to access context".
+  // Capture the navigate function once, during component init.
+  const goto = $gotoStore;
 
-  let entityShortname = "";
-  let entityTags: any[] = [];
-  let newTag = "";
-  let isCreating = false;
-  let createMessage = "";
+  let templates: any[] = $state([]);
+  let selectedTemplate: any = $state(null);
+  let templateFields: any[] = $state([]);
+  let fieldValues: Record<string, any> = $state({});
+  let previewContent = $state("");
+
+  let entityShortname = $state("");
+  let entityTags: any[] = $state([]);
+  let newTag = $state("");
+  let isCreating = $state(false);
+  let createMessage = $state("");
 
   onMount(async () => {
     const response = await getTemplates();
@@ -212,7 +218,7 @@
 
       if (result) {
         createMessage = `Entity created successfully with shortname: ${result}`;
-        $goto(`/dashboard/admin/${$params.space_name}/templates`);
+        goto(`/dashboard/admin/${$params.space_name}/templates`);
         resetForm();
       } else {
         createMessage = "Failed to create entity";
@@ -235,9 +241,11 @@
     newTag = "";
   }
 
-  $: if (selectedTemplate && Object.keys(fieldValues).length > 0) {
-    updatePreview();
-  }
+  $effect(() => {
+    if (selectedTemplate && Object.keys(fieldValues).length > 0) {
+      updatePreview();
+    }
+  });
 </script>
 
 <div class="container">
@@ -249,10 +257,10 @@
       <select
         id="template-select"
         bind:value={selectedTemplate}
-        on:change={handleTemplateSelect}
+        onchange={handleTemplateSelect}
       >
         <option value="">-- Choose a template --</option>
-        {#each templates as template}
+        {#each templates as template (template.uuid)}
           <option value={template.uuid}>
             {template.attributes.payload.body.title}
           </option>
@@ -262,7 +270,7 @@
 
     {#if templateFields.length > 0}
       <h3>Fill Template Fields</h3>
-      {#each templateFields as field}
+      {#each templateFields as field (field.name)}
         <div class="field-group">
           <label for={field.name}>
             {field.name} ({field.type})
@@ -318,11 +326,15 @@
         <!-- svelte-ignore a11y_label_has_associated_control -->
         <label>Tags</label>
         <div class="tags-container">
-          {#each entityTags as tag}
+          {#each entityTags as tag (tag)}
             <span class="tag">
               {tag}
-              <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-              <span class="remove-tag" on:click={() => removeTag(tag)}>×</span>
+              <button
+                type="button"
+                class="remove-tag"
+                aria-label={$_("entry_edit.remove_tag")}
+                onclick={() => removeTag(tag)}>×</button
+              >
             </span>
           {/each}
         </div>
@@ -331,12 +343,12 @@
             class="tag-input"
             type="text"
             bind:value={newTag}
-            on:keypress={handleTagKeypress}
+            onkeypress={handleTagKeypress}
             placeholder={$_("route_labels.placeholder_add_tag")}
           />
           <button
             class="add-tag-btn"
-            on:click={addTag}
+            onclick={addTag}
             disabled={!newTag.trim()}
           >
             Add Tag
@@ -346,7 +358,7 @@
 
       <button
         class="create-button"
-        on:click={handleCreate}
+        onclick={handleCreate}
         disabled={isCreating || !selectedTemplate}
       >
         {#if isCreating}
@@ -527,7 +539,12 @@
   }
 
   .tag .remove-tag {
-    margin-left: 6px;
+    margin-inline-start: 6px;
+    padding: 0;
+    border: none;
+    background: none;
+    color: inherit;
+    font: inherit;
     cursor: pointer;
     font-weight: bold;
   }

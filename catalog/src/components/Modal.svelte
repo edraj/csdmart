@@ -1,7 +1,6 @@
 <script lang="ts">
   import type { Snippet } from "svelte";
-  import { locale, _ } from "@/i18n";
-  import { derived as derivedStore } from "svelte/store";
+  import { _, isRTL } from "@/i18n";
 
   type ModalSize = "sm" | "md" | "lg" | "xl" | "2xl" | "3xl" | "4xl";
 
@@ -33,10 +32,6 @@
     children,
   }: Props = $props();
 
-  const isRTL = derivedStore(
-    locale,
-    (val: any) => val === "ar" || val === "ku",
-  );
 
   const SIZE_MAX_WIDTH: Record<ModalSize, string> = {
     sm: "24rem",
@@ -77,8 +72,6 @@
   );
 </script>
 
-<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-<!-- svelte-ignore a11y_click_events_have_key_events -->
 <div
   class="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm app-modal-backdrop"
   class:rtl={$isRTL}

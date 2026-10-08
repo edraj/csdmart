@@ -27,8 +27,8 @@
         availableSpaces = [] 
     }: Props = $props();
 
-    let selectedSpace = $state("");
-    $effect(() => { selectedSpace = space_name; });
+    // Follows the prop until the user picks another space (writable $derived).
+    let selectedSpace = $derived(space_name);
     let selectedResourceType = $state(ResourceType.content);
     let selectedSchema = $state<string | null>(null);
     let payloadFiles: File[] = $state([]);
@@ -63,11 +63,9 @@
         if (schemas === null) {
             return [];
         }
-        let result = [];
-        const _schemas = schemas.records.map((e: any) => e.shortname);
-        result = _schemas.filter(
-            (e: any) => !["meta_schema", "folder_rendering"].includes(e)
-        );
+        const result = schemas.records
+            .map((e: any) => e.shortname)
+            .filter((e: any) => !["meta_schema", "folder_rendering"].includes(e));
 
         let r = result.map((e: any) => ({
             name: e,
@@ -201,7 +199,7 @@
                         class="w-full px-4 py-2 bg-gray-50 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 text-gray-900" 
                         bind:value={selectedSpace}
                     >
-                        {#each parseSpacesForSelect(availableSpaces) as space}
+                        {#each parseSpacesForSelect(availableSpaces) as space (space.value)}
                             <option value={space.value}>{space.name}</option>
                         {/each}
                     </select>
@@ -243,7 +241,7 @@
                         bind:value={selectedSchema} 
                         onchange={() => schemaError = false}
                     >
-                        {#each parseQuerySchemaResponse(schemas) as schema}
+                        {#each parseQuerySchemaResponse(schemas) as schema (schema.value)}
                             <option value={schema.value}>{schema.name}</option>
                         {/each}
                     </select>
@@ -303,7 +301,7 @@
                             Continue from row {formatCount(result.resumeRow)}
                         </button>
                     {/if}
-                    {#each failureGroups.slice(0, MAX_GROUPS) as group}
+                    {#each failureGroups.slice(0, MAX_GROUPS) as group (group.error)}
                         <div class="mt-3">
                             <p class="text-sm font-medium break-words">
                                 {group.error}
@@ -312,7 +310,7 @@
                                 </span>
                             </p>
                             <ul class="mt-1 text-xs space-y-0.5">
-                                {#each group.rows.slice(0, MAX_ROWS_PER_GROUP) as failure}
+                                {#each group.rows.slice(0, MAX_ROWS_PER_GROUP) as failure (failure.row)}
                                     <li class="break-all">{describeCsvFailureRow(failure)}</li>
                                 {/each}
                                 {#if group.rows.length > MAX_ROWS_PER_GROUP}

@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onDestroy, onMount } from "svelte";
-  import { goto } from "@roxi/routify";
-  import { _, locale } from "@/i18n";
+  import { goto as gotoStore } from "@roxi/routify";
+  import { _, isRTL } from "@/i18n";
   import { EyeSlashSolid, EyeSolid, LockSolid } from "flowbite-svelte-icons";
   import {
     OTP_TTL_MINUTES,
@@ -19,7 +19,11 @@
     type ResetIdentifier,
   } from "@/lib/dmart_services/password_reset";
 
-  $goto;
+  // Routify's helpers read the fragment context when first subscribed, and
+  // Svelte 5 subscribes to a `$store` lazily on first read — so a `$gotoStore`
+  // first touched inside an async callback logs "Unable to access context".
+  // Capture the navigate function once, during component init.
+  const goto = $gotoStore;
 
   let target: ResetIdentifier | null = $state(null);
   let otp = $state("");
@@ -38,7 +42,6 @@
   let resendCountdown = $state(0);
   let resendTimer: any;
 
-  const isRTL = $derived($locale === "ar" || $locale === "ku");
 
   onMount(() => {
     target = getResetTarget();
@@ -46,7 +49,7 @@
       // Refreshed into a dead session, or opened the URL directly. Nothing to
       // verify against, so send them back to ask for a fresh code.
       setResetStartOver();
-      $goto("/reset-password");
+      goto("/reset-password");
       return;
     }
     startResendTimer();
@@ -133,7 +136,7 @@
     // either way — at worst the user misses the success notice.
     if (succeeded) {
       setResetDone();
-      $goto("/login");
+      goto("/login");
     }
   }
 </script>
@@ -152,12 +155,12 @@
       </div>
 
       {#if formError}
-        <div class="error-message" class:rtl={isRTL} role="alert">{formError}</div>
+        <div class="error-message" class:rtl={$isRTL} role="alert">{formError}</div>
       {/if}
 
       <form onsubmit={handleSubmit} class="auth-form">
         <div class="form-group">
-          <label for="otp" class="form-label" class:rtl={isRTL}>{$_("VerificationCode")}</label>
+          <label for="otp" class="form-label" class:rtl={$isRTL}>{$_("VerificationCode")}</label>
           <input
             id="otp"
             type="text"
@@ -172,12 +175,12 @@
             aria-describedby={errors.otp ? "otp-error" : undefined}
           />
           {#if errors.otp}
-            <p id="otp-error" class="error-text-small" class:rtl={isRTL} role="alert">{errors.otp}</p>
+            <p id="otp-error" class="error-text-small" class:rtl={$isRTL} role="alert">{errors.otp}</p>
           {/if}
         </div>
 
         <div class="form-group">
-          <label for="password" class="form-label" class:rtl={isRTL}>{$_("NewPassword")}</label>
+          <label for="password" class="form-label" class:rtl={$isRTL}>{$_("NewPassword")}</label>
           <div class="password-row">
             <input
               id="password"
@@ -185,7 +188,7 @@
               bind:value={password}
               class="form-input"
               class:error={errors.password}
-              class:rtl={isRTL}
+              class:rtl={$isRTL}
               disabled={isSubmitting}
               autocomplete="new-password"
               aria-invalid={!!errors.password}
@@ -204,7 +207,7 @@
           <p
             id="password-error"
             class="error-text-small"
-            class:rtl={isRTL}
+            class:rtl={$isRTL}
             role={errors.password ? "alert" : undefined}
           >
             {errors.password ?? $_("PasswordRequirements")}
@@ -212,7 +215,7 @@
         </div>
 
         <div class="form-group">
-          <label for="confirm" class="form-label" class:rtl={isRTL}>
+          <label for="confirm" class="form-label" class:rtl={$isRTL}>
             {$_("ConfirmNewPassword")}
           </label>
           <input
@@ -221,26 +224,26 @@
             bind:value={confirmPassword}
             class="form-input"
             class:error={errors.confirmPassword}
-            class:rtl={isRTL}
+            class:rtl={$isRTL}
             disabled={isSubmitting}
             autocomplete="new-password"
             aria-invalid={!!errors.confirmPassword}
             aria-describedby={errors.confirmPassword ? "confirm-error" : undefined}
           />
           {#if errors.confirmPassword}
-            <p id="confirm-error" class="error-text-small" class:rtl={isRTL} role="alert">
+            <p id="confirm-error" class="error-text-small" class:rtl={$isRTL} role="alert">
               {errors.confirmPassword}
             </p>
           {/if}
         </div>
 
-        <button type="submit" class="submit-button" class:rtl={isRTL} disabled={isSubmitting}>
+        <button type="submit" class="submit-button" class:rtl={$isRTL} disabled={isSubmitting}>
           {#if isSubmitting}<div class="loading-spinner"></div>{/if}
           {$_("UpdatePassword")}
         </button>
       </form>
 
-      <div class="back-link" class:rtl={isRTL}>
+      <div class="back-link" class:rtl={$isRTL}>
         <button class="link-button" onclick={handleResend} disabled={!canResend}>
           {canResend
             ? $_("ResendCode")
@@ -370,11 +373,6 @@
     border-top-color: #fff;
     border-radius: 9999px;
     animation: spin 0.7s linear infinite;
-  }
-  @keyframes spin {
-    to {
-      transform: rotate(360deg);
-    }
   }
   .back-link {
     text-align: center;

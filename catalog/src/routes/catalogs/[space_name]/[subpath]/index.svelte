@@ -2,12 +2,13 @@
   import { isTotalUnknown, resolveTotal } from "@shared/query-total";
     import {onDestroy} from "svelte";
     import { sanitizeHtml } from "@/lib/utils/sanitize";
-    import {goto, params} from "@roxi/routify";
+    import {goto as gotoStore, params} from "@roxi/routify";
     import {getAvatar, getSpaceContents, getEntity, getSpaceHideFolders, buildHideFoldersSearch, mergeSearch} from "@/lib/dmart_services";
-    import {_, locale} from "@/i18n";
+    import { _, locale, isRTL } from "@/i18n";
+    import { formatDate } from "@/lib/format";
     import Avatar from "@/components/Avatar.svelte";
     import ReportModal from "@/components/ReportModal.svelte";
-    import {derived as derivedStore, get} from "svelte/store";
+    import { get } from "svelte/store";
     import {ResourceType, SortType} from "@edraj/tsdmart";
     import {getCurrentScope, user} from "@/stores/user";
     import {UploadOutline, DownloadOutline} from "flowbite-svelte-icons";
@@ -16,7 +17,11 @@
     import {absoluteUrl, catalogBreadcrumbs, catalogPath, decodeSubpath, type Breadcrumb} from "@/lib/paths";
     import {getWebSocketService} from "@/lib/services/websocket";
 
-    $goto;
+    // Routify's helpers read the fragment context when first subscribed, and
+    // Svelte 5 subscribes to a `$store` lazily on first read — so a `$gotoStore`
+    // first touched inside an async callback logs "Unable to access context".
+    // Capture the navigate function once, during component init.
+    const goto = $gotoStore;
 
   let isLoading = $state(false);
   let isLoadingMore = $state(false);
@@ -117,10 +122,6 @@
     });
   }
 
-  const isRTL = derivedStore(
-    locale,
-    ($locale: any) => $locale === "ar" || $locale === "ku"
-  );
   const itemsPerLoadOptions = [10, 25, 50];
 
   function getResourceTypes() {
@@ -267,7 +268,7 @@
       if (response && response.records) {
         const newItems = await Promise.all(
           response.records.map(async (item: any) => {
-            let avatarUrl = "";
+            let avatarUrl: string;
             try {
               const result = getAvatar(item.attributes?.owner_shortname);
               avatarUrl = (result instanceof Promise ? await result : result) ?? "";
@@ -355,27 +356,8 @@
   }
 
   function handleItemClick(item: any) {
-    $goto(itemPath(item));
+    goto(itemPath(item));
   }
-
-  // function getItemIcon(item: any) {
-  //   switch (item.resource_type) {
-  //     case "folder":
-  //       return "📁";
-  //     case "content":
-  //       return "📄";
-  //     case "post":
-  //       return "📝";
-  //     case "ticket":
-  //       return "🎫";
-  //     case "user":
-  //       return "👤";
-  //     case "media":
-  //       return "🖼️";
-  //     default:
-  //       return "📋";
-  //   }
-  // }
 
   function getDisplayName(item: any) {
     if (item.attributes?.displayname) {
@@ -389,29 +371,9 @@
     return item.attributes?.payload?.body?.title || item.shortname;
   }
 
-  function formatDate(dateString: any) {
-    if (!dateString) return "N/A";
-    return new Date(dateString).toLocaleDateString();
-  }
-
-  function formatRelativeTime(dateString: any) {
-    if (!dateString) return "Unknown";
-    const date = new Date(dateString);
-    const now = new Date();
-    const diffInSeconds = Math.floor((now.getTime() - date.getTime()) / 1000);
-
-    if (diffInSeconds < 60) return "Just now";
-    if (diffInSeconds < 3600) return `${Math.floor(diffInSeconds / 60)}m ago`;
-    if (diffInSeconds < 86400)
-      return `${Math.floor(diffInSeconds / 3600)}h ago`;
-    if (diffInSeconds < 2592000)
-      return `${Math.floor(diffInSeconds / 86400)}d ago`;
-    return formatDate(dateString);
-  }
-
   function navigateToBreadcrumb(path: any) {
     if (path) {
-      $goto(path);
+      goto(path);
     }
   }
 
@@ -530,7 +492,7 @@
         aria-label={$_("catalog_contents.breadcrumb_label")}
       >
         <ol class="inline-flex items-center space-x-1 md:space-x-3">
-          {#each breadcrumbs as crumb, index}
+          {#each breadcrumbs as crumb, index (index)}
             <li class="inline-flex items-center">
               {#if index > 0}
                 <svg
@@ -660,7 +622,7 @@
           </div>
 
           <div class="tags-container">
-            {#each displayedTags as tag}
+            {#each displayedTags as tag (tag)}
               <button
                 aria-label={`Filter by tag: ${tag}`}
                 onclick={() => toggleTag(tag)}
@@ -703,7 +665,7 @@
                 </button>
               </div>
               <div class="selected-tags-container">
-                {#each selectedTags as tag}
+                {#each selectedTags as tag (tag)}
                   <div class="selected-tag">
                     #{tag}
                     <button
@@ -798,7 +760,7 @@
                 title={$_("catalog_contents.filters.sort_by")}
                 aria-label={$_("catalog_contents.filters.sort_by")}
               >
-                {#each sortOptions as option}
+                {#each sortOptions as option (option.value)}
                   <option value={option.value}>{option.label}</option>
                 {/each}
               </select>
@@ -896,7 +858,7 @@
                   aria-label={$_("catalog_contents.filters.type")}
                 >
                   <option value="all">{$_("catalog_contents.filters.all_types")}</option>
-                  {#each getResourceTypes() as type}
+                  {#each getResourceTypes() as type (type)}
                     <option value={type}>{type}</option>
                   {/each}
                 </select>
@@ -927,7 +889,7 @@
                   title={$_("catalog_contents.infinite_scroll.items_per_load")}
                   aria-label={$_("catalog_contents.infinite_scroll.items_per_load")}
                 >
-                  {#each itemsPerLoadOptions as option}
+                  {#each itemsPerLoadOptions as option (option)}
                     <option value={option}>{option}</option>
                   {/each}
                 </select>
@@ -1004,7 +966,7 @@
       {:else}
         <div class="card-list-container">
           <div class="card-list">
-            {#each filteredContentsDerived as item, index}
+            {#each filteredContentsDerived as item (`${item.subpath}/${item.shortname}`)}
               <div
                 class="content-card"
                 onclick={() => handleItemClick(item)}
@@ -1051,7 +1013,7 @@
                     </span>
                     <span class="meta-separator">•</span>
                     <span class="meta-time">
-                      {formatRelativeTime(item.attributes?.created_at)}
+                      {formatDate(item.attributes?.created_at, "relative", $locale)}
                     </span>
                   </div>
 
@@ -1107,7 +1069,7 @@
 
                   {#if item.attributes?.tags && item.attributes?.tags.length > 0 && item.attributes?.tags[0] !== ""}
                     <div class="card-tags">
-                      {#each item.attributes?.tags.slice(0, 3) as tag}
+                      {#each item.attributes?.tags.slice(0, 3) as tag (tag)}
                         {#if tag && tag.trim()}
                           <button
                             aria-label={`Filter by tag: ${tag}`}

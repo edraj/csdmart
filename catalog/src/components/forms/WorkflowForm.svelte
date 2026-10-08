@@ -121,7 +121,7 @@
   <div class="card section-card">
     <h3 class="section-title">Initial States</h3>
     <div class="space-y">
-      {#each content.initial_state as initialState, index}
+      {#each content.initial_state as initialState, index (index)}
         <div class="card inner-card">
           <div class="card-header">
             <h4 class="card-title">Initial State {index + 1}</h4>
@@ -160,7 +160,7 @@
             <div class="form-group">
               <!-- svelte-ignore a11y_label_has_associated_control -->
               <label class="label">Roles</label>
-              {#each initialState.roles as role, roleIndex}
+              {#each initialState.roles as _role, roleIndex (roleIndex)}
                 <div class="input-group">
                   <input
                     class="input"
@@ -229,9 +229,8 @@
   <div class="card section-card">
     <h3 class="section-title">States</h3>
     <div class="space-y">
-      {#each content.states as state, stateIndex}
+      {#each content.states as state, stateIndex (stateIndex)}
         <div class="accordion">
-          <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
           <div
             class="accordion-header"
             role="button"
@@ -312,7 +311,7 @@
                 <!-- svelte-ignore a11y_label_has_associated_control -->
                 <label class="subsection-title">Next Transitions</label>
                 <div class="space-y">
-                  {#each state.next as transition, transitionIndex}
+                  {#each state.next as transition, transitionIndex (transitionIndex)}
                     <div class="card transition-card">
                       <div class="card-header">
                         <h5 class="card-subtitle">
@@ -364,7 +363,7 @@
                       <div class="form-group">
                         <!-- svelte-ignore a11y_label_has_associated_control -->
                         <label class="label">Roles</label>
-                        {#each transition.roles as role, roleIndex}
+                        {#each transition.roles as _role, roleIndex (roleIndex)}
                           <div class="input-group">
                             <input
                               class="input"
@@ -441,7 +440,7 @@
                 <!-- svelte-ignore a11y_label_has_associated_control -->
                 <label class="subsection-title">Resolutions</label>
                 <div class="space-y">
-                  {#each state.resolutions as resolution, resolutionIndex}
+                  {#each state.resolutions as resolution, resolutionIndex (resolutionIndex)}
                     <div class="card transition-card">
                       <div class="card-header">
                         <h5 class="card-subtitle">

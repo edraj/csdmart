@@ -1,6 +1,5 @@
 <script lang="ts">
   import { Dmart, RequestType, ResourceType } from "@edraj/tsdmart";
-  import Media from "./Media.svelte";
   import { successToastMessage } from "@/lib/toasts_messages";
   import {
     CloseOutline,
@@ -10,8 +9,8 @@
     PlaySolid,
   } from "flowbite-svelte-icons";
   import { _ } from "@/i18n";
+  import { getFileExtension } from "@shared/file-extension";
   import {
-    getFileExtension,
     getFileTypeIcon,
     isAudioFile,
     isImageFile,
@@ -19,7 +18,6 @@
     isVideoFile,
     removeFileExtension,
   } from "../lib/fileUtils";
-  import type { Attachment } from "../lib/types";
 
   let {
     attachments = [],
@@ -139,16 +137,6 @@
     });
   }
 
-  function formatFileSize(size: number) {
-    if (!size) return "Unknown size";
-    const units = ["B", "KB", "MB", "GB"];
-    let index = 0;
-    while (size >= 1024 && index < units.length - 1) {
-      size /= 1024;
-      index++;
-    }
-    return `${size.toFixed(1)} ${units[index]}`;
-  }
 </script>
 
 <div class="messenger-attachments">
@@ -159,13 +147,12 @@
     </div>
   {:else}
     <div class="attachments-container">
-      {#each attachments as attachment, index}
+      {#each attachments as attachment (attachment.shortname)}
         {@const filename = attachment.attributes?.payload?.body}
         {@const url = getAttachmentUrl(attachment)}
 
         {#if isImageFile(filename)}
           <!-- Image Attachment -->
-          <!-- svelte-ignore a11y_no_static_element_interactions -->
           <div class="image-attachment" role="button" tabindex="0" onclick={() => openPreview(attachment)} onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') openPreview(attachment); }}>
             <img src={url} alt={attachment.shortname} loading="lazy" />
             <div class="image-overlay">
@@ -197,7 +184,6 @@
           </div>
         {:else if isVideoFile(filename)}
           <!-- Video Attachment -->
-          <!-- svelte-ignore a11y_no_static_element_interactions -->
           <div class="video-attachment" role="button" tabindex="0" onclick={() => openPreview(attachment)} onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') openPreview(attachment); }}>
             <video src={url} preload="metadata">
               <track kind="captions" src="" srclang="en" label="English" />

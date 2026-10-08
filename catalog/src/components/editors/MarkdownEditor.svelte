@@ -4,7 +4,8 @@
   import { sanitizeHtml } from "@/lib/utils/sanitize";
   import { gfmHeadingId } from "marked-gfm-heading-id";
   import { Dmart } from "@edraj/tsdmart";
-  import { getFileExtension, isImageFile } from "@/lib/fileUtils";
+  import { getFileExtension } from "@shared/file-extension";
+  import { isImageFile } from "@/lib/fileUtils";
   import { attachmentMarkdown } from "@/lib/markdownInsert";
 
   marked.use(mangle());
@@ -139,7 +140,7 @@
     }
   }
 
-  function handleDragLeave(event: DragEvent) {
+  function handleDragLeave() {
     isDraggingOver = false;
   }
 
@@ -318,15 +319,6 @@
     }
   });
 
-  //   if (typeof window !== "undefined") {
-  //     window.addEventListener("click", (e) => {
-  //       const target = e.target as HTMLElement;
-  //       if (target.classList && target.classList.contains("tab-btn")) {
-  //         const tabName = target.dataset.tab;
-  //         switchTab(tabName);
-  //       }
-  //     });
-  //   }
 </script>
 
 <div class="markdown-editor-container">
@@ -438,7 +430,6 @@
           </button>
           
           {#if showDynamicMenu}
-            <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_noninteractive_element_interactions -->
             <div 
               class="dynamic-menu" 
               onclick={(e) => e.stopPropagation()}
@@ -464,7 +455,7 @@
                 <div class="field-input-group">
                   <label for="field-type">Field Type</label>
                   <select id="field-type" bind:value={selectedFieldType}>
-                    {#each fieldTypes as type}
+                    {#each fieldTypes as type (type.value)}
                       <option value={type.value} title={type.description}>
                         {type.label}
                       </option>
@@ -472,7 +463,7 @@
                   </select>
                 </div>
                 <div class="field-preview">
-                  <code>{'{{'}{dynamicFieldName ? `${dynamicFieldName}:${selectedFieldType}` : 'field_name:type'}{'}}'}</code>
+                  <code>&#123;&#123;{dynamicFieldName ? `${dynamicFieldName}:${selectedFieldType}` : 'field_name:type'}&#125;&#125;</code>
                 </div>
               </div>
               <div class="dynamic-menu-footer">
@@ -541,7 +532,7 @@
 </div>
 
 {#if showAttachments}
-  <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_noninteractive_element_interactions -->
+  <!-- svelte-ignore a11y_click_events_have_key_events -->
   <div
     class="md-attachments-overlay"
     role="dialog"
@@ -567,7 +558,7 @@
         >
       </div>
       <div class="md-attachments-grid">
-        {#each mediaAttachments as attachment}
+        {#each mediaAttachments as attachment (attachment.shortname)}
           <button
             type="button"
             class="md-attachment-item"

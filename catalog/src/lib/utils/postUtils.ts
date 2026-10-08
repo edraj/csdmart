@@ -24,19 +24,6 @@ export function getDescription(item: any, locale?: string): string {
   return "";
 }
 
-export function formatDate(
-  dateString: string,
-  locale: string,
-  fallback: string
-): string {
-  if (!dateString) return fallback;
-  return new Date(dateString).toLocaleDateString(locale, {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-  });
-}
-
 export function getAuthorInfo(item: any, fallback: string): string {
   const relationships = item.attributes?.relationships || [];
   const author = relationships.find(

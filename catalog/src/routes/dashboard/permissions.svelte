@@ -18,20 +18,14 @@
     updatePermission,
   } from "@/lib/dmart_services";
   import { ResourceType, DmartScope } from "@edraj/tsdmart";
-  import { _, locale } from "@/i18n";
-  import { derived as derivedStore } from "svelte/store";
+  import { _, isRTL } from "@/i18n";
 
-  const isRTL = derivedStore(
-    locale,
-    (val: any) => val === "ar" || val === "ku",
-  );
 
   let formData: Record<string, any> = $state({});
   let validateFn = $state(() => true);
   let isLoading = $state(false);
   let isSaving = $state(false);
   let lastSaved: any = $state(null);
-  let spaces = $state<any[]>([]);
   let permissionExists = $state(false);
   let currentPermissionShortname = $state("");
   let permissionTypes = $state<any[]>([]);
@@ -75,10 +69,10 @@
     }
   }
 
+  // Nothing renders the list yet; the call only surfaces a load failure.
   async function loadSpaces() {
     try {
-      const spacesResponse = await getSpaces();
-      spaces = spacesResponse.records || [];
+      await getSpaces();
     } catch (error) {
       console.error("Error loading spaces:", error);
       errorToastMessage($_("failed_to_load_spaces"));
@@ -298,7 +292,7 @@
       <div class="header-actions flex gap-3">
         {#if $can("create", "management", "permissions", ResourceType.permission)}
         <button
-          aria-label={`Add permission`}
+          aria-label="Add permission"
           class="btn btn-primary"
           onclick={() => (showAddModal = true)}
         >
@@ -341,7 +335,7 @@
           class="form-select bg-gray-50 border-0 rounded-lg w-full"
           bind:value={selectedPermissionType}
         >
-          {#each permissionTypes as type}
+          {#each permissionTypes as type (type.value)}
             <option value={type.value}>{type.name}</option>
           {/each}
         </select>
@@ -463,7 +457,7 @@
     <div class="action-bar flex justify-between items-center mt-8">
       {#if $can(permissionExists ? "update" : "create", "management", "permissions", ResourceType.permission)}
       <button
-        aria-label={`Save permissions`}
+        aria-label="Save permissions"
         class="btn btn-primary bg-indigo-500 hover:bg-indigo-600 text-white rounded-xl px-6 py-3"
         onclick={savePermissions}
         disabled={isSaving}
@@ -514,14 +508,14 @@
   />
   {#snippet footer()}
     <button
-      aria-label={`Cancel adding permission`}
+      aria-label="Cancel adding permission"
       class="btn btn-secondary"
       onclick={() => (showAddModal = false)}
     >
       {$_("cancel")}
     </button>
     <button
-      aria-label={`Create new permission`}
+      aria-label="Create new permission"
       class="btn btn-primary"
       onclick={createNewPermission}
       disabled={isCreating || !newPermissionName.trim()}
@@ -553,7 +547,7 @@
   <p class="text-danger">{$_("action_cannot_be_undone")}</p>
   {#snippet footer()}
     <button
-      aria-label={`Cancel deleting permission`}
+      aria-label="Cancel deleting permission"
       class="btn btn-secondary"
       onclick={() => (showDeleteConfirm = false)}
     >
@@ -708,14 +702,6 @@
     margin-right: 8px;
   }
 
-  @keyframes spin {
-    0% {
-      transform: rotate(0deg);
-    }
-    100% {
-      transform: rotate(360deg);
-    }
-  }
 
   .btn {
     padding: 12px 24px;

@@ -21,7 +21,6 @@
 
   let { postData, spaceName = "", isAdmin = false } = $props();
 
-  let schema: any = $state(null);
   let isLoadingSchema = $state(false);
   let loadedSchemaShortname = "";
   
@@ -37,12 +36,6 @@
     postData?.payload?.body?.template &&
     postData?.payload?.body?.data
   );
-  
-  // const currentTemplateKey = $derived(
-  //   isTemplateEntry 
-  //     ? `${spaceName}-${postData?.payload?.body?.template}`
-  //     : ""
-  // );
   
   // Load template content when it's a template entry
   $effect(() => {
@@ -112,7 +105,7 @@
     // Replace {{fieldName:type}} patterns with actual data
     const placeholderRegex = /\{\{(\w+)(?::(\w+))?\}\}/g;
     
-    result = result.replace(placeholderRegex, (match, fieldName, fieldType) => {
+    result = result.replace(placeholderRegex, (match, fieldName) => {
       const value = data[fieldName];
       
       if (value === undefined || value === null) {
@@ -138,44 +131,13 @@
         }
       } else if (typeof body === "object" && body !== null && !Array.isArray(body)) {
         loadedSchemaShortname = "";
-        schema = generateSimpleSchema(body);
       } else {
         loadedSchemaShortname = "";
-        schema = null;
       }
     } else {
       loadedSchemaShortname = "";
-      schema = null;
     }
   });
-
-  function generateSimpleSchema(data: any): any {
-    if (typeof data !== "object" || data === null || Array.isArray(data)) {
-      return null;
-    }
-
-    const properties: any = {};
-    for (const [key, value] of Object.entries(data)) {
-      let type = "string";
-      if (typeof value === "number") type = "number";
-      else if (typeof value === "boolean") type = "boolean";
-      else if (Array.isArray(value)) type = "array";
-      else if (typeof value === "object" && value !== null) type = "object";
-
-      properties[key] = {
-        type,
-        title: key
-          .split("_")
-          .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
-          .join(" "),
-      };
-    }
-
-    return {
-      type: "object",
-      properties,
-    };
-  }
 
   async function loadSchema(schemaShortname: string) {
     if (isLoadingSchema) return;
@@ -185,16 +147,11 @@
     try {
       const response = await getSpaceSchema(spaceName, getCurrentScope());
       if (response?.status === "success" && response?.records && response.records.length > 0) {
-        const record = response.records.find((r: any) => r.shortname === schemaShortname) || response.records[0];
-        schema = record.attributes?.payload?.body;
-      } else if (typeof postData?.payload?.body === "object" && postData?.payload?.body !== null) {
-        schema = generateSimpleSchema(postData.payload.body);
+        // Nothing consumes the schema yet; the fetch only confirms it exists.
+        response.records.find((r: any) => r.shortname === schemaShortname);
       }
     } catch (err) {
       console.error("Error loading schema for PostContent:", err);
-      if (typeof postData?.payload?.body === "object" && postData?.payload?.body !== null) {
-        schema = generateSimpleSchema(postData.payload.body);
-      }
     } finally {
       isLoadingSchema = false;
     }
@@ -251,7 +208,7 @@
                   <div class="fallback-data">
                     <h4>Template: {postData.payload.body.template}</h4>
                     <dl>
-                      {#each Object.entries(postData.payload.body.data || {}) as [key, value]}
+                      {#each Object.entries(postData.payload.body.data || {}) as [key, value] (key)}
                         <dt>{key}:</dt>
                         <dd>{value}</dd>
                       {/each}
@@ -475,11 +432,6 @@
     animation: spin 1s linear infinite;
   }
 
-  @keyframes spin {
-    to {
-      transform: rotate(360deg);
-    }
-  }
 
   .template-error {
     padding: 1rem;

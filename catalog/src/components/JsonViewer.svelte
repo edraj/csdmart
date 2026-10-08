@@ -79,7 +79,6 @@
   let {
     data = {},
     title = "View",
-    type = "json",
     isAdmin = false,
     schema = undefined,
     schemaShortname = undefined,
@@ -93,7 +92,9 @@
   }: Props = $props();
 
   /* ── State ── */
-  let editData: any = $state(null);
+  // Starts as a copy of `data` and follows it when the prop changes; edits
+  // write to it in place (writable $derived).
+  let editData: any = $derived(safeClone(data));
   let saving: boolean = $state(false);
   let saveFlash: boolean = $state(false);
   let showRawPayload: boolean = $state(false);
@@ -117,11 +118,6 @@
       }
     }
   }
-
-  // Initialize editData from data
-  $effect(() => {
-    editData = safeClone(data);
-  });
 
   // Auto-fetch schema from DMART when schemaShortname is provided
   $effect(() => {

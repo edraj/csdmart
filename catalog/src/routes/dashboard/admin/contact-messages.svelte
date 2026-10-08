@@ -1,8 +1,9 @@
 <script lang="ts">
   import { resolveTotal } from "@shared/query-total";
   import { onMount } from "svelte";
-  import { _ } from "../../../i18n";
-  import { locale } from "@/i18n";
+  import { _, locale, isRTL } from "@/i18n";
+  import { formatDate } from "@/lib/format";
+  import { APPLICATIONS_SPACE, CONTACTS_SUBPATH } from "@/lib/constants";
 
   import {
     fetchContactMessages,
@@ -25,7 +26,6 @@
   let replyContent = $state("");
   let sendingReply = $state(false);
 
-  const isRTL = $derived($locale === "ar" || $locale === "ku");
 
   function hasAttachment(message: any): boolean {
     return message.attachments && message.attachments.length > 0;
@@ -83,8 +83,8 @@
     for (const message of messagesToMark) {
       try {
         await markMessageAsReplied(
-          "applications",
-          "contacts",
+          APPLICATIONS_SPACE,
+          CONTACTS_SUBPATH,
           message.shortname,
           "Auto-replied: Message contains attachment",
         );
@@ -131,16 +131,17 @@
     try {
       const messageBody = selectedMessage.attributes.payload?.body;
       const ownerEmail = messageBody?.email || messageBody?.contact_email || "";
-      const subject =
-        `${messageBody?.subject} - ${$_("reply")}` || $_("replyToYourMessage");
+      const subject = messageBody?.subject
+        ? `${messageBody.subject} - ${$_("reply")}`
+        : $_("replyToYourMessage");
 
       window.open(
         `mailto:${ownerEmail}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(replyContent)}`,
       );
 
       const success = await markMessageAsReplied(
-        "applications",
-        "contacts",
+        APPLICATIONS_SPACE,
+        CONTACTS_SUBPATH,
         selectedMessage.shortname,
         replyContent,
       );
@@ -160,14 +161,6 @@
       closeModal();
     } finally {
       sendingReply = false;
-    }
-  }
-
-  function formatDate(dateString: string): string {
-    try {
-      return new Date(dateString).toLocaleString();
-    } catch {
-      return dateString;
     }
   }
 
@@ -274,7 +267,7 @@
         </div>
       {:else}
         <div class="space-y-4">
-          {#each messages as message}
+          {#each messages as message (message.shortname)}
             <div
               class="border border-gray-200 rounded-lg p-4 hover:shadow-md transition-shadow"
             >
@@ -289,9 +282,7 @@
                       $_("noEmailProvided")}
                   </p>
                   <p class="text-xs text-gray-500 mt-1">
-                    {$_("submitted")}: {formatDate(
-                      message.attributes.created_at,
-                    )}
+                    {$_("submitted")}: {formatDate(message.attributes.created_at, "datetime", $locale)}
                   </p>
                 </div>
                 <div class="flex space-x-2">
@@ -340,7 +331,7 @@
                 <div class="mt-2 text-sm text-gray-600">
                   <strong>{$_("attachments")}:</strong>
                   <ul class="mt-1 text-xs text-gray-500">
-                    {#each message.attributes.payload.body.attachments as attachment}
+                    {#each message.attributes.payload.body.attachments as attachment, i (i)}
                       <li>
                         • {attachment.name ||
                           attachment.filename ||
@@ -429,18 +420,18 @@
       <div
         style="width: 80%;"
         class="inline-block align-bottom bg-white rounded-lg overflow-hidden shadow-xl transform transition-all sm:my-8 sm:align-middle sm:max-w-lg sm:w-full"
-        dir={isRTL ? "rtl" : "ltr"}
+        dir={$isRTL ? "rtl" : "ltr"}
       >
         <div class="bg-white px-4 pt-5 pb-4 sm:p-6 sm:pb-4">
           <div
             class="sm:flex"
-            class:items-start={!isRTL}
-            class:items-end={isRTL}
+            class:items-start={!$isRTL}
+            class:items-end={$isRTL}
           >
             <div
               class="mt-3 text-center sm:mt-0 w-full"
-              class:sm:text-left={!isRTL}
-              class:sm:text-right={isRTL}
+              class:sm:text-left={!$isRTL}
+              class:sm:text-right={$isRTL}
             >
               <h3
                 class="text-lg leading-6 font-medium text-gray-900 mb-4"
@@ -452,8 +443,8 @@
               <div class="mb-4 p-3 bg-gray-50 rounded-md">
                 <div
                   class="text-sm text-gray-600 mb-2"
-                  class:text-left={!isRTL}
-                  class:text-right={isRTL}
+                  class:text-left={!$isRTL}
+                  class:text-right={$isRTL}
                 >
                   <strong>{$_("name")}:</strong>
                   {selectedMessage.attributes.payload.body.full_name ||
@@ -461,8 +452,8 @@
                 </div>
                 <div
                   class="text-sm text-gray-600 mb-2"
-                  class:text-left={!isRTL}
-                  class:text-right={isRTL}
+                  class:text-left={!$isRTL}
+                  class:text-right={$isRTL}
                 >
                   <strong>{$_("email")}:</strong>
                   {selectedMessage.attributes.payload.body.email ||
@@ -470,8 +461,8 @@
                 </div>
                 <div
                   class="text-sm text-gray-600 mb-2"
-                  class:text-left={!isRTL}
-                  class:text-right={isRTL}
+                  class:text-left={!$isRTL}
+                  class:text-right={$isRTL}
                 >
                   <strong>{$_("subject")}:</strong>
                   {selectedMessage.attributes.payload.body.subject ||
@@ -479,14 +470,14 @@
                 </div>
                 <div
                   class="text-sm text-gray-600"
-                  class:text-left={!isRTL}
-                  class:text-right={isRTL}
+                  class:text-left={!$isRTL}
+                  class:text-right={$isRTL}
                 >
                   <strong>{$_("originalMessage")}:</strong>
                   <div
                     class="mt-1 text-gray-700 bg-white p-2 rounded border max-h-20 overflow-y-auto"
-                    class:text-left={!isRTL}
-                    class:text-right={isRTL}
+                    class:text-left={!$isRTL}
+                    class:text-right={$isRTL}
                   >
                     {selectedMessage.attributes.payload?.body?.message ||
                       $_("noMessageContent")}
@@ -498,8 +489,8 @@
                 <label
                   for="reply-content"
                   class="block text-sm font-medium text-gray-700 mb-2"
-                  class:text-left={!isRTL}
-                  class:text-right={isRTL}
+                  class:text-left={!$isRTL}
+                  class:text-right={$isRTL}
                 >
                   {$_("yourReply")}:
                 </label>
@@ -508,11 +499,11 @@
                   bind:value={replyContent}
                   rows="6"
                   class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 resize-none"
-                  class:text-left={!isRTL}
-                  class:text-right={isRTL}
+                  class:text-left={!$isRTL}
+                  class:text-right={$isRTL}
                   placeholder={$_("typeReplyPlaceholder")}
                   disabled={sendingReply}
-                  dir={isRTL ? "rtl" : "ltr"}
+                  dir={$isRTL ? "rtl" : "ltr"}
                 ></textarea>
               </div>
             </div>
@@ -521,8 +512,8 @@
 
         <div
           class="bg-gray-50 px-4 py-3 sm:px-6 sm:flex"
-          class:sm:flex-row-reverse={!isRTL}
-          class:sm:flex-row={isRTL}
+          class:sm:flex-row-reverse={!$isRTL}
+          class:sm:flex-row={$isRTL}
         >
           <button
             aria-label={$_("route_labels.aria_send_reply")}

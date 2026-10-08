@@ -1,5 +1,5 @@
 <script>
-  import { goto } from "@roxi/routify";
+  import { goto as gotoStore } from "@roxi/routify";
   import {
     BellSolid,
     EditSolid,
@@ -12,7 +12,11 @@
   import { _ } from "@/i18n";
   import { withBase } from "@/lib/paths";
 
-  $goto;
+  // Routify's helpers read the fragment context when first subscribed, and
+  // Svelte 5 subscribes to a `$store` lazily on first read — so a `$gotoStore`
+  // first touched inside an async callback logs "Unable to access context".
+  // Capture the navigate function once, during component init.
+  const goto = $gotoStore;
 
   const features = [
     {
@@ -48,23 +52,23 @@
   ];
 
   function handleStartExploring() {
-    $goto("/dashboard");
+    goto("/dashboard");
   }
 
   function handleSignIn() {
-    $goto("/login");
+    goto("/login");
   }
 
   function handleRegister() {
-    $goto("/register");
+    goto("/register");
   }
 
   function handleExploreAsGuest() {
-    $goto("/dashboard");
+    goto("/dashboard");
   }
 
   function handleContactUs() {
-    $goto("/contact");
+    goto("/contact");
   }
 </script>
 
@@ -105,7 +109,7 @@
       </div>
 
       <div class="features-grid">
-        {#each features as feature}
+        {#each features as feature (feature.title)}
           <div class="feature-card">
             <div class="feature-icon">
               <feature.icon class="icon" color="white" />
