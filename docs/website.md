@@ -33,6 +33,17 @@ Both schemas live in the space's `/schema` folder and describe every field.
   comes from the template. The entry holds only text. `icon` and `figure`
   name files the template ships (`WebsiteTemplate/icons/*.svg`,
   `WebsiteTemplate/figures/*.svg`); an unknown name renders nothing.
+- **Section kinds:** `cards`, `steps`, `figures` (measured values),
+  `explainer`, `prose` and `banner`.
+- **The `explainer` section** plays an animated figure one scene at a time,
+  with the section's `items` as the scene captions, in order. The built-in
+  `explainer` figure tells dmart's story in five scenes. Each scene runs six
+  seconds, and the player starts when the figure scrolls into view, pauses
+  on request, and jumps to a scene when its caption is clicked. With reduced
+  motion it shows each scene's finished frame; without JavaScript it shows
+  the last scene and all the captions. A figure of your own marks each scene
+  as a `<g class="sc">`, and its animations run from an offset state to the
+  element's resting pose, so a scene with animations off still reads.
 
 ## Making the space public
 

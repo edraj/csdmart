@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### Added
+
+- **The website's home page explains dmart in 30 seconds.** A new `explainer`
+  section kind plays an animated figure one scene at a time, captioned by
+  the section's items. The built-in figure covers modelling a space and its
+  schemas, storing entries, files and tickets, permissions, search, and the
+  API, SDKs, UIs and MCP. It is an SVG animated with CSS, a few KB and no
+  player. It starts when it scrolls into view, can be paused, jumps to a
+  scene from its caption, and respects reduced motion. The
+  `landing_page` schema accepts the new kind and its `figure`.
+- **More colour on the site.** Cards, steps, stats, docs headings and the
+  sidebar's groups each take a hue from one palette, in both themes. The
+  hero's accent runs a slow spectrum, and "How it works" is a numbered
+  timeline. The measured figures keep their signal colour.
+
 ### Fixed
 
 - **The release's frontend SBOM step inventories only the workspaces the

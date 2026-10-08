@@ -45,6 +45,34 @@
   ],
   "sections": [
     {
+      "id": "in-30-seconds",
+      "kind": "explainer",
+      "title": "DMART in 30 seconds",
+      "figure": "explainer",
+      "items": [
+        {
+          "title": "Model it",
+          "body": "A **space** organizes your data into folders. A **schema** describes a valid entry, and dmart checks every write against it."
+        },
+        {
+          "title": "Store anything",
+          "body": "JSON entries, files and tickets all go in. Each one lands as a plain file on disk and as an indexed row in PostgreSQL or SQLite."
+        },
+        {
+          "title": "Control who sees what",
+          "body": "Roles and permissions are checked on every request, down to the folder, the action and the field."
+        },
+        {
+          "title": "Find it fast",
+          "body": "One query language searches everything you stored: filter on any field, sort, and page through the results."
+        },
+        {
+          "title": "Use it everywhere",
+          "body": "A REST API, SDKs for Python, TypeScript, Dart and C#, an admin UI, a catalog, and an MCP server for AI agents, all from one binary."
+        }
+      ]
+    },
+    {
       "id": "pillars",
       "kind": "cards",
       "title": "Core Pillars",

@@ -395,11 +395,141 @@
     }
   }
 
+  /* ── Explainer ───────────────────────────────────────────────────────── */
+
+  // Plays an explainer figure one scene at a time. A scene is a
+  // <g class="sc"> in the SVG; the `on` class shows it and starts its CSS
+  // animations, and removing the class resets them, so replaying a scene is
+  // remove, reflow, add. Everything animates FROM an offset state TO the
+  // element's own resting pose, so with animations off (reduced motion) a
+  // scene simply shows its finished state.
+  var SCENE_MS = 6000;
+
+  function initExplainer(box) {
+    var scenes = box.querySelectorAll('.sc');
+    var captions = box.querySelectorAll('.scene');
+    var jumps = box.querySelectorAll('.scene-jump');
+    var toggle = box.querySelector('.explainer-toggle');
+    var count = Math.min(scenes.length, captions.length);
+    if (count === 0) return;
+
+    var reduced = false;
+    try {
+      reduced = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+    } catch (e) {
+      /* animate */
+    }
+
+    var current = -1;
+    var timer = null;
+    var startedAt = 0;
+    var remaining = SCENE_MS;
+    var playing = !reduced;
+    var visible = false;
+    var started = false;
+
+    function show(index) {
+      current = index;
+      for (var i = 0; i < count; i++) {
+        scenes[i].classList.remove('on');
+        captions[i].classList.remove('is-on');
+        if (jumps[i]) jumps[i].setAttribute('aria-current', i === index ? 'step' : 'false');
+      }
+      // Reflow between remove and add, so a scene shown twice in a row
+      // restarts its animations instead of keeping their finished state.
+      void box.offsetWidth;
+      scenes[index].classList.add('on');
+      captions[index].classList.add('is-on');
+    }
+
+    function stop() {
+      if (timer !== null) {
+        window.clearTimeout(timer);
+        timer = null;
+        remaining = Math.max(0, remaining - (Date.now() - startedAt));
+      }
+    }
+
+    function run(ms) {
+      stop();
+      if (!playing || !visible) return;
+      remaining = ms;
+      startedAt = Date.now();
+      timer = window.setTimeout(function () {
+        timer = null;
+        show((current + 1) % count);
+        run(SCENE_MS);
+      }, ms);
+    }
+
+    function setPlaying(value) {
+      playing = value;
+      box.classList.toggle('is-paused', !value && !reduced);
+      if (toggle) {
+        toggle.setAttribute('aria-pressed', value ? 'false' : 'true');
+        toggle.textContent = value ? 'Pause' : 'Play';
+      }
+      if (value) run(remaining > 0 ? remaining : SCENE_MS);
+      else stop();
+    }
+
+    function jump(index) {
+      show(index);
+      remaining = SCENE_MS;
+      // Choosing a scene means watching it: resume, unless motion is off.
+      if (!reduced && !playing) setPlaying(true);
+      else run(SCENE_MS);
+    }
+
+    box.classList.add('is-live');
+    if (reduced) box.classList.add('is-reduced');
+    for (var i = 0; i < count; i++) {
+      if (!jumps[i]) continue;
+      jumps[i].disabled = false;
+      jumps[i].addEventListener('click', (function (index) {
+        return function () { jump(index); };
+      })(i));
+    }
+    if (toggle && !reduced) {
+      toggle.hidden = false;
+      toggle.addEventListener('click', function () { setPlaying(!playing); });
+    }
+    show(0);
+
+    // Start from the first scene when it first scrolls into view, and stop
+    // the clock (and the animations) while it is off screen.
+    function setVisible(value) {
+      visible = value;
+      box.classList.toggle('is-offscreen', !value);
+      if (value && !started) {
+        started = true;
+        show(0);
+        remaining = SCENE_MS;
+      }
+      if (value) run(remaining > 0 ? remaining : SCENE_MS);
+      else stop();
+    }
+
+    if ('IntersectionObserver' in window) {
+      new IntersectionObserver(function (entries) {
+        setVisible(entries[entries.length - 1].isIntersecting);
+      }, { threshold: 0.35 }).observe(box);
+    } else {
+      setVisible(true);
+    }
+  }
+
+  function initExplainers() {
+    var boxes = document.querySelectorAll('.explainer');
+    for (var i = 0; i < boxes.length; i++) initExplainer(boxes[i]);
+  }
+
   function onReady() {
     initThemeToggle();
     initDrawer();
     initCopyButtons();
     initDiagrams();
+    initExplainers();
   }
 
   if (document.readyState === 'loading') {
