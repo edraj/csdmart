@@ -936,8 +936,11 @@ jobs:
           ./.github/scripts/backup-round-trip.sh bin/Release/net10.0/linux-x64/publish "$RT_PORT"
 
   rpm-build:
-    # Runaway guard (~4 min typical); without it a hang holds a runner for 6h.
-    timeout-minutes: 20
+    # Runaway guard; without it a hang holds a runner for 6h. ~5 min once a
+    # runner has its EL9 builder and dnf cache; the cold path (first run on a
+    # runner, or the weekly recreation with an empty cache) pulls ~400 MB from
+    # AlmaLinux's mirrors, which took 14 min locally at a few hundred kB/s.
+    timeout-minutes: 35
     name: RPM build
     runs-on: self-hosted
     # Fork guard — see build-and-test-matrix.
@@ -1017,10 +1020,34 @@ jobs:
 
       - name: Build the EL9 RPM
         if: steps.scope.outputs.run == 'true'
-        # Same script, container path. `podman rm -f` first because build-rpm.sh
-        # keeps the builder container between runs.
+        # Same script, container path. The builder container is REUSED, one
+        # per runner (the runners share a podman graphroot, so the name must
+        # carry the runner), and recreated once a week so the base image and
+        # toolchain cannot drift for months. build-rpm.sh already refreshes
+        # the SDK on every reuse and recreates a container whose DNS, source
+        # mount or dotnet is broken, and the runtime CVE scan below reads the
+        # runtime out of the finished binary. Recreating on every run meant
+        # pulling ~400 MB of RPMs from AlmaLinux's mirrors each time, which at
+        # the 80-100 kB/s seen on 2026-10-08 blew the job's 20-minute budget
+        # three times in a day; the host dnf cache keeps even a recreation
+        # off the network for the packages.
         run: |
+          set -euo pipefail
+          RUNNER_KEY=$(printf '%s' "${RUNNER_NAME:-local}" | tr -c 'A-Za-z0-9' '-')
+          export EL9_BUILDER_NAME="dmart-el9-builder-${RUNNER_KEY}"
+          export HOST_DNF_CACHE="${HOME}/.cache/dmart-el9-dnf/${RUNNER_KEY}"
+          # The pre-per-runner container name is never reused; drop it if a
+          # runner still carries one so it stops taking space.
           podman rm -f dmart-el9-builder 2>/dev/null || true
+          if podman container exists "$EL9_BUILDER_NAME" 2>/dev/null; then
+            created=$(podman inspect --format '{{.Created}}' "$EL9_BUILDER_NAME" | cut -c1-19)
+            age_days=$(( ( $(date +%s) - $(date -d "$created" +%s) ) / 86400 ))
+            echo "builder $EL9_BUILDER_NAME created $created (${age_days}d ago)"
+            if [ "$age_days" -ge 7 ]; then
+              echo "older than a week — recreating"
+              podman rm -f "$EL9_BUILDER_NAME"
+            fi
+          fi
           VERSION=0.0.0 ./dist/build-rpm.sh el9
 
       - name: Assert the RPM carries what it must

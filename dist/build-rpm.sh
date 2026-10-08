@@ -99,7 +99,10 @@ if [[ "$TARGET" == "el9" || "$TARGET" == "rhel9" ]]; then
         echo "UI frontends ready (dists present or sources absent), skipping"
     fi
     mkdir -p dist/out
-    CONTAINER_NAME="dmart-el9-builder"
+    # Overridable so CI can keep one builder per runner: the self-hosted
+    # runners share a podman graphroot, and two jobs exec'ing into the same
+    # container would build on top of each other.
+    CONTAINER_NAME="${EL9_BUILDER_NAME:-dmart-el9-builder}"
     # Check if builder container exists and is usable
     NEED_CREATE=true
     if $ENGINE container exists "$CONTAINER_NAME" 2>/dev/null; then
@@ -150,6 +153,15 @@ if [[ "$TARGET" == "el9" || "$TARGET" == "rhel9" ]]; then
     # reuse each other's downloads.
     HOST_NUGET_CACHE="${HOME}/.nuget/packages"
     mkdir -p "$HOST_NUGET_CACHE"
+    # Persistent dnf package cache on the host, for the same reason. Creating
+    # the builder installs ~400 MB of RPMs (the SDK, clang, rpm-build and
+    # their dependencies); with the cache mounted and keepcache on, a
+    # recreated container installs from disk and only refreshes metadata.
+    # AlmaLinux's mirrors have been seen at 80-100 kB/s, which is over an
+    # hour for that download and was the whole 20-minute CI budget three
+    # times in one day.
+    HOST_DNF_CACHE="${HOST_DNF_CACHE:-${HOME}/.cache/dmart-el9-dnf}"
+    mkdir -p "$HOST_DNF_CACHE"
 
     if [ "$NEED_CREATE" = true ]; then
         echo "Creating $CONTAINER_NAME container (first time — installs SDK)..."
@@ -180,11 +192,13 @@ if [[ "$TARGET" == "el9" || "$TARGET" == "rhel9" ]]; then
             --network=host \
             -v "${SRCDIR}:/src:z" \
             -v "${HOST_NUGET_CACHE}:/nuget-packages:z" \
+            -v "${HOST_DNF_CACHE}:/var/cache/dnf:z" \
             -v /etc/resolv.conf:/etc/resolv.conf:ro \
             -w /src \
             almalinux:9 \
             tail -f /dev/null
         $ENGINE exec --user root "$CONTAINER_NAME" bash -c '
+            printf "keepcache=True\n" >> /etc/dnf/dnf.conf &&
             rpm -Uvh https://packages.microsoft.com/config/rhel/9/packages-microsoft-prod.rpm &&
             dnf install -y dotnet-sdk-10.0 rpm-build clang zlib-devel git --nobest &&
             dnf install -y epel-release &&
