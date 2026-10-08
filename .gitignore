@@ -41,6 +41,7 @@ cxb/node_modules/
 cxb/dist/
 cxb/.svelte-kit/
 catalog/node_modules/
+e2e/node_modules/
 catalog/dist/
 catalog/.svelte-kit/
 config.env
@@ -87,3 +88,10 @@ __pycache__/
 # Generated dataset scales: only `small` is committed (PLAN.md "Scales").
 /packs/datasets/*/medium/
 /packs/datasets/*/large/
+
+# Playwright end-to-end suite (e2e/)
+e2e/.work/
+e2e/.auth/
+e2e/test-results/
+e2e/playwright-report/
+e2e/blob-report/

@@ -60,6 +60,15 @@
   explorers, `.splice`/`.filter` on a non-array reached by path, seeding
   defaults into an array payload, and a null spaces query. The events list
   header showed the raw key `timestamp`; it reads "Timestamp".
+||||||| parent of 86550b1 (test(e2e): Playwright suite for cxb and the catalog, run in CI)
+- **A Playwright end-to-end suite drives both SPAs through a real browser**
+  (`e2e/`): sign-in, the spaces, folder, post, admin, users, My Entries,
+  entry view/edit/create, notifications/polls/surveys/messaging pages, the
+  language and theme switches, dark mode and phone width, against a server
+  seeded with the bundled sample spaces (`e2e/run-server.sh`, the same
+  script locally and in CI). Every test fails on an uncaught exception or
+  an unexpected `console.error`. CI runs it on a hosted runner as
+  `E2E browser tests (Playwright)`.
 - cxb no longer depends on `vite-plugin-static-copy`: Vite's public
   directory already ships `config.json`, and the plugin was the only
   dependent of the chokidar 3 chain that pinned `braces` <= 3.0.3

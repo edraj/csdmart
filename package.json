@@ -3,7 +3,8 @@
   "private": true,
   "workspaces": [
     "cxb",
-    "catalog"
+    "catalog",
+    "e2e"
   ],
   "resolutions": {
     "fast-uri": "^3.1.6",
