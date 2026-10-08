@@ -560,7 +560,7 @@ public static class SelfCheckCommand
     {
         var text = await resp.Content.ReadAsStringAsync();
         if (string.IsNullOrWhiteSpace(text)) return default;
-        try { return JsonDocument.Parse(text).RootElement; }
+        try { return JsonUtil.ParseElement(text); }
         catch { return default; }
     }
 

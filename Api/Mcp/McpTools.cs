@@ -623,7 +623,7 @@ public static class McpTools
     }
 
     private static JsonElement ParseBytes(byte[] bytes)
-        => JsonDocument.Parse(bytes).RootElement.Clone();
+        => JsonUtil.ParseElement(bytes);
 
     private static string GetRequiredString(JsonElement obj, string name)
     {

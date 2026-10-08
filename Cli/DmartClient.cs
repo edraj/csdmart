@@ -461,7 +461,7 @@ public sealed class DmartClient : IDisposable
             }
             w.WriteEndObject();
         }
-        return JsonDocument.Parse(ms.ToArray()).RootElement.Clone();
+        return JsonUtil.ParseElement(ms.ToArray());
     }
 
     private static JsonElement MessageJson(string message)
@@ -473,7 +473,7 @@ public sealed class DmartClient : IDisposable
             w.WriteString("message", message);
             w.WriteEndObject();
         }
-        return JsonDocument.Parse(ms.ToArray()).RootElement.Clone();
+        return JsonUtil.ParseElement(ms.ToArray());
     }
 
     private static string Truncate(string s, int max) => s.Length <= max ? s : s[..max] + "…";
@@ -643,8 +643,8 @@ public sealed class DmartClient : IDisposable
     private static async Task<JsonElement> ParseAsync(HttpResponseMessage resp)
     {
         var text = await resp.Content.ReadAsStringAsync();
-        try { return JsonDocument.Parse(text).RootElement; }
-        catch { return JsonDocument.Parse($"{{\"raw\":\"{Esc(text)}\"}}").RootElement; }
+        try { return JsonUtil.ParseElement(text); }
+        catch { return JsonUtil.ParseElement($"{{\"raw\":\"{Esc(text)}\"}}"); }
     }
 
     // Escape a string for embedding in JSON

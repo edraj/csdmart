@@ -71,6 +71,6 @@ public static class JsonMerge
             writer.WriteEndObject();
         }
 
-        return JsonDocument.Parse(ms.ToArray()).RootElement.Clone();
+        return JsonUtil.ParseElement(ms.ToArray());
     }
 }

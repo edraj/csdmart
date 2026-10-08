@@ -219,7 +219,7 @@ public sealed class CsvService(QueryService queries, EntryService entries, Schem
                 .Where(kv => !string.Equals(kv.Key, "shortname", StringComparison.OrdinalIgnoreCase))
                 .ToDictionary(kv => kv.Key, kv => kv.Value);
             var bodyJson = JsonSerializer.Serialize(bodyDict, DmartJsonContext.Default.DictionaryStringObject);
-            var bodyEl = JsonDocument.Parse(bodyJson).RootElement.Clone();
+            var bodyEl = JsonUtil.ParseElement(bodyJson);
 
             if (isUpdate)
             {
@@ -607,8 +607,8 @@ public sealed class CsvService(QueryService queries, EntryService entries, Schem
 
     // Pre-parsed JSON `true` / `false`, so a boolean cell doesn't allocate a
     // JsonDocument per row just to produce one of two constant elements.
-    private static readonly JsonElement TrueElement = JsonDocument.Parse("true").RootElement.Clone();
-    private static readonly JsonElement FalseElement = JsonDocument.Parse("false").RootElement.Clone();
+    private static readonly JsonElement TrueElement = JsonUtil.ParseElement("true");
+    private static readonly JsonElement FalseElement = JsonUtil.ParseElement("false");
 
     // The spellings a spreadsheet writes for a boolean. Null when the cell is
     // none of them, which leaves it a string for the schema to reject — an
