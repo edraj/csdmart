@@ -20,7 +20,7 @@
     fullWidth = false,
   }: {
     formData: RoleFormData;
-    validateFn: () => boolean;
+    validateFn?: (() => boolean) | null;
     fullWidth?: boolean;
   } = $props();
 

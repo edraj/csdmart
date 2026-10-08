@@ -24,7 +24,7 @@
     validateFn = $bindable(),
   }: {
     formData: Partial<PermissionFormData>;
-    validateFn: () => boolean;
+    validateFn?: (() => boolean) | null;
   } = $props();
 
   const uid = $props.id();

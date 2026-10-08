@@ -18,7 +18,7 @@ import { getSpaces } from "./spaces";
 import { log } from "@/lib/logger";
 import { MESSAGES_SPACE } from "@/lib/constants";
 import { ensureUploadSize } from "./core";
-import type { EntryRecord, JsonObject, LocalizedText } from "@/lib/types";
+import type { EntryRecord, JsonObject } from "@/lib/types";
 
 export type StreamEntitiesOptions = {
     // Restrict the fan-out to a single space (matches the "Current space:" tag chip).
@@ -297,11 +297,17 @@ export async function searchInCatalog(search: string = "", limit: number = 20, o
     return allRecordsArrays.flat();
 }
 
+/**
+ * A translation as the meta form collects it: a language left blank may be
+ * null until the user types in it.
+ */
+type TranslationInput = Record<string, string | null | undefined>;
+
 /** What the folder dialog collects for a new folder. */
 export type FolderCreateInput = {
     shortname?: string;
-    displayname?: LocalizedText;
-    description?: LocalizedText;
+    displayname?: TranslationInput | null;
+    description?: TranslationInput | null;
     is_active?: boolean;
     /** The folder's `payload.body` (listing settings). */
     folderContent?: JsonObject;

@@ -12,12 +12,23 @@
   import {
     getTemplateFromSchemaAttachment,
     getMarkdownTemplateFromSchemaAttachment,
+    type SchemaTemplate,
   } from "@/lib/dmart_services/templates";
   import {
     errorToastMessage,
     successToastMessage,
   } from "@/lib/toasts_messages";
-  import { pruneEmptyFormValues } from "@/lib/formUtils";
+  import { asFormSchema, pruneEmptyFormValues } from "@/lib/formUtils";
+  import {
+    asResourceType,
+    bodyObject,
+    isJsonObject,
+    recordsOf,
+    type EntryPayload,
+    type EntryRecord,
+    type JsonObject,
+    type Schema,
+  } from "@/lib/types";
   import {
     CheckCircleSolid,
     CloseCircleOutline,
@@ -53,27 +64,72 @@
   // Capture the navigate function once, during component init.
   const goto = $gotoStore;
 
+  /** A schema the entry can be written against, as the pickers list it. */
+  interface SchemaOption {
+    shortname: string;
+    title: string;
+    schema: Schema | null;
+    description: string;
+    /** The schema's own record, which carries its template attachments. */
+    raw?: EntryRecord;
+  }
+
+  /** What a template placeholder's input holds. */
+  type TemplateFieldValue = string | number | boolean | string[];
+
+  /** One `{{name:type}}` placeholder of a schema's template, as an input. */
+  interface TemplateFieldDef {
+    name: string;
+    label: string;
+    type: string;
+    originalType: string;
+    placeholder: string;
+    required: boolean;
+  }
+
+  /** One folder level of the location picker. */
+  interface SubpathLevel {
+    level: number;
+    path: string;
+    folders: Array<{ value: string; name: string; fullPath: string }>;
+    resource_type: ResourceType | undefined;
+    workflow_shortname: string;
+    schema_shortname: string;
+    content_schema_shortnames: string[];
+    canCreateEntry: boolean;
+    selectedFolder: string;
+  }
+
+  /** The entry being created, as the form assembled it. */
+  interface NewEntry {
+    displayname: string;
+    body: unknown;
+    tags: string[];
+    is_active: boolean;
+    shortname?: string;
+  }
+
   let isLoading = $state(false);
-  let resource_type = $state(ResourceType.content);
-  let itemResourceType: any;
+  let resource_type = $state<ResourceType | undefined>(ResourceType.content);
+  let itemResourceType: ResourceType | undefined;
   let isAdmin = $state(false);
   let selectedEditorType = $state("html");
   let contentType = $state("json");
 
   let entryType = $state("content");
-  let availableSchemas = $state<any[]>([]);
+  let availableSchemas = $state<SchemaOption[]>([]);
   let allowedSchemaShortnames = $state<string[]>([]);
-  let selectedSchema: any = $state(null);
-  let schemaBasedTemplate: any = $state(null); // Template extracted from schema attachment
+  let selectedSchema = $state<SchemaOption | null>(null);
+  let schemaBasedTemplate = $state<SchemaTemplate | null>(null); // Template extracted from schema attachment
   let loadingSchemas = $state(false);
-  let jsonFormData: Record<string, any> = $state({});
-  let templateFormData: Record<string, any> = $state({});
-  let pollFormData: Record<string, any> = $state({});
-  let pollSchema: any = $state(null);
+  let jsonFormData = $state<JsonObject>({});
+  let templateFormData = $state<Record<string, TemplateFieldValue>>({});
+  let pollFormData = $state<JsonObject>({});
+  let pollSchema = $state<SchemaOption | null>(null);
   let loadingPollSchema = $state(false);
-  let bodyContent: any;
+  let bodyContent: unknown;
   let isEmpty = false;
-  let validationResult: { isValid: boolean; missingFields: any[] } = { isValid: true, missingFields: [] };
+  let validationResult: { isValid: boolean; missingFields: string[] } = { isValid: true, missingFields: [] };
 
   let title = $state("");
   let shortname = $state("");
@@ -97,7 +153,7 @@
   }
 
   let selectedSpace = $state("");
-  let subpathHierarchy = $state<any[]>([]);
+  let subpathHierarchy = $state<SubpathLevel[]>([]);
   let currentPath = $state("");
 
   const canCreateEntry = $derived(
@@ -107,13 +163,13 @@
   const filteredSchemas = $derived.by(() => {
     if (!allowedSchemaShortnames.length) return availableSchemas;
     const allowed = new Set(allowedSchemaShortnames);
-    return availableSchemas.filter((s: any) => allowed.has(s.shortname));
+    return availableSchemas.filter((s) => allowed.has(s.shortname));
   });
 
   $effect(() => {
     if (
       selectedSchema &&
-      !filteredSchemas.some((s: any) => s.shortname === selectedSchema.shortname)
+      !filteredSchemas.some((s) => s.shortname === selectedSchema?.shortname)
     ) {
       selectedSchema = null;
       schema_shortname = "";
@@ -136,13 +192,13 @@
 
   let workflow_shortname = "";
   let schema_shortname = "";
-  let markdownEditorRef: any = $state(null);
-  let htmlEditorRef: any = $state(null);
+  let markdownEditorRef = $state<ReturnType<typeof MarkdownEditor> | null>(null);
+  let htmlEditorRef = $state<ReturnType<typeof HtmlEditor> | null>(null);
   let markdownContent = $state("");
-  let entity: any;
+  let entity: NewEntry;
 
 
-  roles.subscribe((value: any) => {
+  roles.subscribe((value) => {
     isAdmin = isSuperAdmin(value);
   });
 
@@ -167,15 +223,15 @@
     try {
       const response = await getSpaceSchema("management", DmartScope.managed);
       if (response?.status === "success" && response?.records) {
-        const pollSchemaRecord = response.records.find(
-          (record: any) => record.shortname === "poll",
+        const pollSchemaRecord = recordsOf(response).find(
+          (record) => record.shortname === "poll",
         );
 
         if (pollSchemaRecord) {
           pollSchema = {
             shortname: "poll",
             title: pollSchemaRecord.attributes?.displayname?.en || "Poll",
-            schema: pollSchemaRecord.attributes?.payload?.body,
+            schema: asFormSchema(pollSchemaRecord.attributes?.payload?.body),
             description: pollSchemaRecord.attributes?.description?.en || "",
           };
           pollFormData = {};
@@ -200,10 +256,10 @@
     try {
       const response = await getSpaceSchema(selectedSpace, DmartScope.managed);
       if (response?.status === "success" && response?.records) {
-        availableSchemas = response.records.map((record: any) => ({
+        availableSchemas = recordsOf(response).map((record) => ({
           shortname: record.shortname,
           title: record.attributes?.displayname?.en || record.shortname,
-          schema: record.attributes?.payload?.body,
+          schema: asFormSchema(record.attributes?.payload?.body),
           description: record.attributes?.description?.en || "",
           raw: record, // Keep raw record to access attachments
         }));
@@ -219,13 +275,13 @@
     }
   }
 
-  function handleSchemaChange(event: any) {
-    const schemaShortname = event.target.value;
+  function handleSchemaChange(event: Event) {
+    const schemaShortname = (event.target as HTMLSelectElement).value;
     schema_shortname = schemaShortname; // Assign to module-level variable
     const schemaRecord = availableSchemas.find(
-      (s: any) => s.shortname === schemaShortname,
+      (s) => s.shortname === schemaShortname,
     );
-    selectedSchema = schemaRecord;
+    selectedSchema = schemaRecord ?? null;
     jsonFormData = {};
     
     // Check if schema has a template attachment
@@ -270,7 +326,7 @@
     }
   }
 
-  async function initializeSubpathHierarchy(spaceName: any) {
+  async function initializeSubpathHierarchy(spaceName: string) {
     subpathHierarchy = [];
     currentPath = "";
     await loadSubpathLevel(spaceName, "", 0);
@@ -294,7 +350,12 @@
         };
   }
 
-  async function loadSubpathLevel(spaceName: any, parentPath: any, level: any) {
+  /** The first entry of a list field when it is a string. */
+  function firstString(value: unknown): string | undefined {
+    return Array.isArray(value) && typeof value[0] === "string" ? value[0] : undefined;
+  }
+
+  async function loadSubpathLevel(spaceName: string, parentPath: string, level: number) {
     if (!spaceName) return;
 
     try {
@@ -323,28 +384,30 @@
       // The server returns records: null when the queried subpath has no
       // children — coerce to [] so the .filter/.some calls below don't blow
       // up on a freshly created (or genuinely empty) folder.
-      const records: any[] = response?.records ?? [];
+      const records = recordsOf(response);
       const folders = records.filter(
-        (item: any) => item.resource_type === "folder",
+        (item) => item.resource_type === "folder",
       );
       const hasNonFolderContent = records.some(
-        (item: any) => item.resource_type !== "folder",
+        (item) => item.resource_type !== "folder",
       );
-      const parentBody: any = (parentEntry as any)?.payload?.body ?? null;
-      itemResourceType = parentBody?.content_resource_types?.[0];
+      const parentBody = bodyObject(parentEntry?.payload);
+      const contentResourceType = firstString(parentBody?.content_resource_types);
+      itemResourceType = contentResourceType ? asResourceType(contentResourceType) : undefined;
 
+      const contentSchemaShortnames = parentBody?.content_schema_shortnames;
       const folderContentSchemaShortnames: string[] = Array.isArray(
-        parentBody?.content_schema_shortnames,
+        contentSchemaShortnames,
       )
-        ? parentBody.content_schema_shortnames.filter(
-            (s: any) => typeof s === "string" && s.trim().length > 0,
+        ? contentSchemaShortnames.filter(
+            (s): s is string => typeof s === "string" && s.trim().length > 0,
           )
         : [];
 
-      const levelData = {
+      const levelData: SubpathLevel = {
         level,
         path: parentPath,
-        folders: folders.map((folder: any) => ({
+        folders: folders.map((folder) => ({
           value: folder.shortname,
           name: folder.attributes?.displayname?.en || folder.shortname,
           fullPath: parentPath
@@ -352,9 +415,9 @@
             : folder.shortname,
         })),
         resource_type: itemResourceType,
-        workflow_shortname: parentBody?.workflow_shortnames?.[0] || "",
+        workflow_shortname: firstString(parentBody?.workflow_shortnames) || "",
         schema_shortname:
-          (parentEntry as any)?.payload?.schema_shortname ||
+          parentEntry?.payload?.schema_shortname ||
           folderContentSchemaShortnames[0] ||
           "",
         content_schema_shortnames: folderContentSchemaShortnames,
@@ -382,7 +445,7 @@
     currentPath = lastLevel.path;
   }
 
-  let tags = $state<any[]>([]);
+  let tags = $state<string[]>([]);
   let newTag = $state("");
 
   function addTag() {
@@ -392,8 +455,8 @@
     }
   }
 
-  function removeTag(index: any) {
-    tags = tags.filter((_: any, i: any) => i !== index);
+  function removeTag(index: number) {
+    tags = tags.filter((_, i) => i !== index);
   }
 
   type AttachmentTranslation = { en: string; ar: string; ku: string };
@@ -432,10 +495,10 @@
       attachments.some((a) => a.status !== "pending"),
   );
 
-  function handleFileChange(event: any) {
-    const input = event.target;
+  function handleFileChange(event: Event) {
+    const input = event.target as HTMLInputElement;
     if (input.files) {
-      const newEntries: AttachmentEntry[] = Array.from(input.files as FileList).map(
+      const newEntries: AttachmentEntry[] = Array.from(input.files).map(
         (file) => ({
           file,
           shortname: "",
@@ -448,11 +511,11 @@
     }
   }
 
-  function removeAttachment(index: any) {
-    attachments = attachments.filter((_: any, i: any) => i !== index);
+  function removeAttachment(index: number) {
+    attachments = attachments.filter((_, i) => i !== index);
   }
 
-  function getPreviewUrl(file: any) {
+  function getPreviewUrl(file: File) {
     if (
       file.type.startsWith("image/") ||
       file.type.startsWith("video/") ||
@@ -463,7 +526,16 @@
     return null;
   }
 
-  function isContentEmpty(content: any, type: any = "html") {
+  /** True for a value the user left blank: null, whitespace, `[]` or `{}`. */
+  function isEmptyValue(value: unknown): boolean {
+    if (value === null || value === undefined || value === "") return true;
+    if (typeof value === "string") return value.trim() === "";
+    if (Array.isArray(value)) return value.length === 0;
+    if (typeof value === "object") return Object.keys(value).length === 0;
+    return false;
+  }
+
+  function isContentEmpty(content: unknown, type: string = "html") {
     if (content === null || content === undefined) {
       return true;
     }
@@ -497,65 +569,47 @@
       }
     }
 
-    if (typeof content === "object") {
-      if (Array.isArray(content)) {
-        return content.length === 0;
-      }
-      const keys = Object.keys(content);
-      if (keys.length === 0) return true;
+    if (Array.isArray(content)) {
+      return content.length === 0;
+    }
+    if (isJsonObject(content)) {
+      const values = Object.values(content);
+      if (values.length === 0) return true;
 
-      return keys.every((key: any) => {
-        const value = content[key];
-        if (value === null || value === undefined || value === "") return true;
-        if (typeof value === "string") return value.trim() === "";
-        if (Array.isArray(value)) return value.length === 0;
-        if (typeof value === "object") return Object.keys(value).length === 0;
-        return false;
-      });
+      return values.every(isEmptyValue);
     }
 
     return false;
   }
 
-  function isJsonFormDataEmpty(formData: any) {
+  function isJsonFormDataEmpty(formData: JsonObject | null | undefined) {
     if (!formData || Object.keys(formData).length === 0) {
       return true;
     }
 
-    return Object.values(formData).every((value: any) => {
-      if (value === null || value === undefined || value === "") return true;
-      if (typeof value === "string") return value.trim() === "";
-      if (Array.isArray(value)) return value.length === 0;
-      if (typeof value === "object") return Object.keys(value).length === 0;
-      return false;
-    });
+    return Object.values(formData).every(isEmptyValue);
   }
 
-  function validateRequiredFields(formData: any, schema: any) {
+  function validateRequiredFields(
+    formData: JsonObject,
+    schema: Schema | null,
+  ): { isValid: boolean; missingFields: string[] } {
     if (!schema || !schema.required || !Array.isArray(schema.required)) {
       return { isValid: true, missingFields: [] };
     }
 
     const requiredFields = schema.required.filter(
-      (field: any) => field && field.trim() !== "",
+      (field) => field && field.trim() !== "",
     );
 
     if (requiredFields.length === 0) {
       return { isValid: true, missingFields: [] };
     }
 
-    const missingFields: any[] = [];
+    const missingFields: string[] = [];
 
     for (const fieldName of requiredFields) {
-      const value = formData[fieldName];
-
-      if (value === null || value === undefined || value === "") {
-        missingFields.push(fieldName);
-      } else if (typeof value === "string" && value.trim() === "") {
-        missingFields.push(fieldName);
-      } else if (Array.isArray(value) && value.length === 0) {
-        missingFields.push(fieldName);
-      } else if (typeof value === "object" && Object.keys(value).length === 0) {
+      if (isEmptyValue(formData[fieldName])) {
         missingFields.push(fieldName);
       }
     }
@@ -566,7 +620,7 @@
     };
   }
 
-  async function handlePublish(isPublish: any) {
+  async function handlePublish(isPublish: boolean) {
     // Validate shortname before proceeding
     if (shortname && shortname !== "auto" && !validateShortnameInput(shortname)) {
       errorToastMessage($_("validation.shortname_invalid"));
@@ -574,19 +628,20 @@
     }
 
     if (entryType === "poll") {
-      if (!pollSchema || !pollSchema.schema) {
+      const pollFormSchema = pollSchema?.schema;
+      if (!pollFormSchema) {
         errorToastMessage("Poll schema not loaded");
         return;
       }
 
       const validationResult = validateRequiredFields(
         pollFormData,
-        pollSchema.schema,
+        pollFormSchema,
       );
 
       if (!validationResult.isValid) {
         const fieldNames = validationResult.missingFields
-          .map((field: any) => pollSchema.schema.properties[field]?.title || field)
+          .map((field) => pollFormSchema.properties[field]?.title || field)
           .join(", ");
 
         errorToastMessage(
@@ -598,8 +653,8 @@
       }
 
       if (isJsonFormDataEmpty(pollFormData)) {
-        const hasRequiredFields = pollSchema?.schema?.required?.some(
-          (field: any) => field && field.trim() !== "",
+        const hasRequiredFields = pollFormSchema.required?.some(
+          (field) => field && field.trim() !== "",
         );
         if (hasRequiredFields) {
           errorToastMessage($_("create_entry.error.content_required"));
@@ -621,7 +676,7 @@
         ...(isAdmin && shortname ? { shortname } : {}),
       };
 
-      const attributes: any = {
+      const attributes: JsonObject = {
         displayname: { en: entity.displayname || "" },
         description: { en: "", ar: "", ku: "" },
         is_active: entity.is_active !== false,
@@ -673,17 +728,18 @@
     }
 
     if (entryType === "structured") {
-      if (selectedSchema && selectedSchema.schema) {
+      const entrySchema = selectedSchema?.schema;
+      if (entrySchema) {
         validationResult = validateRequiredFields(
           jsonFormData,
-          selectedSchema.schema,
+          entrySchema,
         );
 
         if (!validationResult.isValid) {
           const fieldNames = validationResult.missingFields
             .map(
-              (field: any) =>
-                selectedSchema.schema.properties[field]?.title || field,
+              (field) =>
+                entrySchema.properties[field]?.title || field,
             )
             .join(", ");
 
@@ -699,8 +755,8 @@
       // Check if schema has a template attachment - validate template fields
       if (schemaBasedTemplate && schemaBasedTemplate.schema) {
         const fields = parseTemplateFields(schemaBasedTemplate.schema);
-        const requiredFields = fields.filter((f: any) => f.required);
-        const missingFields = requiredFields.filter((f: any) => {
+        const requiredFields = fields.filter((f) => f.required);
+        const missingFields = requiredFields.filter((f) => {
           const value = templateFormData[f.name];
           if (value == null) return true;
           if (typeof value === "string") return !value.trim();
@@ -775,21 +831,22 @@
       ...(shortname ? { shortname } : {}),
     };
 
-    const attributes: any = {
+    const payload: EntryPayload = {
+      content_type: contentType || "json",
+      body: entity.body,
+    };
+    const attributes: JsonObject = {
       displayname: { en: entity.displayname || "" },
       description: { en: "", ar: "", ku: "" },
       is_active: entity.is_active !== false,
       tags: entity.tags || [],
       relationships: [],
       ...(slug.trim() ? { slug: slug.trim() } : {}),
-      payload: {
-        content_type: contentType || "json",
-        body: entity.body,
-      },
+      payload,
     };
     if (workflow_shortname) attributes.workflow_shortname = workflow_shortname;
     if (schema_shortname)
-      attributes.payload.schema_shortname = schema_shortname;
+      payload.schema_shortname = schema_shortname;
 
     const response = await createEntity(
       selectedSpace,
@@ -875,14 +932,14 @@
         `\\{\\{${key}(?::[^}]+)?\\}\\}`,
         "g",
       );
-      let value = templateFormData[key];
-      
+      const raw = templateFormData[key];
+
       // Handle list/array type - join non-empty items
-      if (Array.isArray(value)) {
-        value = value.filter((item: any) => item && item.trim()).join(", ");
-      }
-      
-      content = content.replace(placeholderPattern, value || "");
+      const value = Array.isArray(raw)
+        ? raw.filter((item) => typeof item === "string" && item.trim()).join(", ")
+        : raw;
+
+      content = content.replace(placeholderPattern, String(value || ""));
     });
 
     // Remove any remaining placeholders that don't have values
@@ -891,13 +948,24 @@
     return content;
   }
 
-  function parseTemplateFields(templateContent: any) {
+  /** A list placeholder's items, or [] while it has none. */
+  function templateList(name: string): string[] {
+    const value = templateFormData[name];
+    return Array.isArray(value) ? value : [];
+  }
+
+  function setTemplateListItem(name: string, index: number, value: string) {
+    const list = templateFormData[name];
+    if (Array.isArray(list)) list[index] = value;
+  }
+
+  function parseTemplateFields(templateContent: string | null | undefined): TemplateFieldDef[] {
     if (!templateContent) return [];
 
     const placeholderRegex = /\{\{([^:}]+)(?::([^}]+))?\}\}/g;
-    const fields = [];
-    const seen = new Set();
-    let match;
+    const fields: TemplateFieldDef[] = [];
+    const seen = new Set<string>();
+    let match: RegExpExecArray | null;
 
     while ((match = placeholderRegex.exec(templateContent)) !== null) {
       const fieldName = match[1].trim();
@@ -1593,11 +1661,12 @@
                           {#if !templateFormData[field.name]}
                             {templateFormData[field.name] = [''], ''}
                           {/if}
-                          {#each templateFormData[field.name] as _item, index (index)}
+                          {#each templateList(field.name) as item, index (index)}
                             <div class="list-input-row">
                               <input
                                 type="text"
-                                bind:value={templateFormData[field.name][index]}
+                                value={item}
+                                oninput={(e) => setTemplateListItem(field.name, index, e.currentTarget.value)}
                                 class="field-input list-input"
                                 placeholder={$_("labels.item_n", { values: { n: index + 1 } })}
                               />
@@ -1605,7 +1674,7 @@
                                 type="button"
                                 class="list-btn list-btn-remove"
                                 onclick={() => {
-                                  templateFormData[field.name] = templateFormData[field.name].filter((_: any, i: any) => i !== index);
+                                  templateFormData[field.name] = templateList(field.name).filter((_, i) => i !== index);
                                 }}
                                 title={$_("labels.remove_item")}
                                 aria-label={$_("labels.remove_item")}
@@ -1618,7 +1687,7 @@
                             type="button"
                             class="list-btn list-btn-add"
                             onclick={() => {
-                              templateFormData[field.name] = [...templateFormData[field.name], ''];
+                              templateFormData[field.name] = [...templateList(field.name), ''];
                             }}
                           >
                             + Add Item
@@ -1649,7 +1718,8 @@
                           <input
                             id="schema-template-{field.name}"
                             type="checkbox"
-                            bind:checked={templateFormData[field.name]}
+                            checked={templateFormData[field.name] === true}
+                            onchange={(e) => (templateFormData[field.name] = e.currentTarget.checked)}
                             class="field-checkbox"
                           />
                           <span class="checkbox-label">Yes</span>
@@ -1738,11 +1808,12 @@
                                 {#if !templateFormData[field.name]}
                                   {templateFormData[field.name] = [''], ''}
                                 {/if}
-                                {#each templateFormData[field.name] as _item, index (index)}
+                                {#each templateList(field.name) as item, index (index)}
                                   <div class="list-input-row">
                                     <input
                                       type="text"
-                                      bind:value={templateFormData[field.name][index]}
+                                      value={item}
+                                      oninput={(e) => setTemplateListItem(field.name, index, e.currentTarget.value)}
                                       class="field-input list-input"
                                       placeholder={$_("labels.item_n", { values: { n: index + 1 } })}
                                     />
@@ -1750,7 +1821,7 @@
                                       type="button"
                                       class="list-btn list-btn-remove"
                                       onclick={() => {
-                                        templateFormData[field.name] = templateFormData[field.name].filter((_: any, i: any) => i !== index);
+                                        templateFormData[field.name] = templateList(field.name).filter((_, i) => i !== index);
                                       }}
                                       title={$_("labels.remove_item")}
                                 aria-label={$_("labels.remove_item")}
@@ -1763,7 +1834,7 @@
                                   type="button"
                                   class="list-btn list-btn-add"
                                   onclick={() => {
-                                    templateFormData[field.name] = [...templateFormData[field.name], ''];
+                                    templateFormData[field.name] = [...templateList(field.name), ''];
                                   }}
                                 >
                                   + Add Item
@@ -1788,7 +1859,8 @@
                                 <input
                                   id="structured-template-{field.name}"
                                   type="checkbox"
-                                  bind:checked={templateFormData[field.name]}
+                                  checked={templateFormData[field.name] === true}
+                                  onchange={(e) => (templateFormData[field.name] = e.currentTarget.checked)}
                                   class="field-checkbox"
                                 />
                                 <span class="checkbox-label">Yes</span>
