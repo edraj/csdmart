@@ -16,7 +16,8 @@
   interface Props {
     /** The form's data bag: one entry per schema property. */
     content: JsonObject;
-    schema: Schema;
+    /** The schema to render; without one the form shows its empty state. */
+    schema: Schema | null | undefined;
     readOnly?: boolean;
     space?: string;
     subpath?: string;
@@ -115,7 +116,7 @@
       setNestedProperty(content, path, target);
     }
 
-    const schemaProp = getSchemaPropertyByPath(schema, path);
+    const schemaProp = schema ? getSchemaPropertyByPath(schema, path) : null;
     let newItem: unknown = schemaProp?.items ? createArrayItemFromSchema(schemaProp.items) : '';
 
     // If existing items are objects, ensure the new item has the same keys
@@ -148,7 +149,7 @@
   }
 
   function isRequired(propertyName: string) {
-    return isPropertyRequired(schema, propertyName);
+    return schema ? isPropertyRequired(schema, propertyName) : false;
   }
 </script>
 

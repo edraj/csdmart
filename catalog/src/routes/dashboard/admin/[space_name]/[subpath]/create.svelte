@@ -10,6 +10,8 @@
   import { ContentType, ResourceType } from "@edraj/tsdmart";
   import { goto as gotoStore, params } from "@roxi/routify";
   import { _ } from "@/i18n";
+  import { errorMessage } from "@/lib/apiError";
+  import { bodyAs, recordsOf, type EntryRecord, type TemplateBody } from "@/lib/types";
 
   // Routify's helpers read the fragment context when first subscribed, and
   // Svelte 5 subscribes to a `$store` lazily on first read — so a `$gotoStore`
@@ -17,28 +19,48 @@
   // Capture the navigate function once, during component init.
   const goto = $gotoStore;
 
-  let templates: any[] = $state([]);
+  /** A `{{name:type}}` placeholder of a template. */
+  interface TemplateField {
+    name: string;
+    type: string;
+  }
+
+  /** What a placeholder is filled with: text, or a flag for a checkbox field. */
+  type FieldValue = string | boolean;
+
+  let templates: EntryRecord[] = $state([]);
 
   $effect(() => setTitle($_("template_generator.title")));
-  let selectedTemplate: any = $state(null);
-  let templateFields: any[] = $state([]);
-  let fieldValues: Record<string, any> = $state({});
+  /** The uuid of the chosen template ("" / null for none). */
+  let selectedTemplate: string | null = $state(null);
+  let templateFields: TemplateField[] = $state([]);
+  let fieldValues: Record<string, FieldValue> = $state({});
   let previewContent = $state("");
 
   let entityShortname = $state("");
-  let entityTags: any[] = $state([]);
+  let entityTags: string[] = $state([]);
   let newTag = $state("");
   let isCreating = $state(false);
   let createMessage = $state("");
 
   onMount(async () => {
     const response = await getTemplates();
-    templates = response.records;
+    templates = recordsOf(response);
   });
 
-  function extractFields(content: any) {
+  /** A template entry's body fields (`title`, `content`). */
+  function templateBody(template: EntryRecord): TemplateBody {
+    return bodyAs<TemplateBody>(template.attributes?.payload) ?? {};
+  }
+
+  /** A field's value as the text its input shows (empty for a blank or false). */
+  function textOf(name: string): string {
+    return String(fieldValues[name] || "");
+  }
+
+  function extractFields(content: string): TemplateField[] {
     const fieldRegex = /\{\{(\w+):(\w+)\}\}/g;
-    const fields = [];
+    const fields: TemplateField[] = [];
     let match;
 
     while ((match = fieldRegex.exec(content)) !== null) {
@@ -53,7 +75,7 @@
     if (selectedTemplate) {
       const template = templates.find((t) => t.uuid === selectedTemplate);
       if (template) {
-        const content = template.attributes.payload.body.content;
+        const content = templateBody(template).content ?? "";
         templateFields = extractFields(content);
         fieldValues = {};
         templateFields.forEach((field) => {
@@ -68,24 +90,28 @@
     }
   }
 
+  /** The template's content with every placeholder replaced by its typed value. */
+  function fillTemplate(template: EntryRecord): string {
+    let content = templateBody(template).content ?? "";
+
+    templateFields.forEach((field) => {
+      const placeholder = `{{${field.name}:${field.type}}}`;
+      content = content.replace(placeholder, textOf(field.name));
+    });
+
+    return content;
+  }
+
   function updatePreview() {
     if (selectedTemplate) {
       const template = templates.find((t) => t.uuid === selectedTemplate);
       if (template) {
-        let content = template.attributes.payload.body.content;
-
-        templateFields.forEach((field) => {
-          const placeholder = `{{${field.name}:${field.type}}}`;
-          const value = fieldValues[field.name] || "";
-          content = content.replace(placeholder, value);
-        });
-
-        previewContent = content;
+        previewContent = fillTemplate(template);
       }
     }
   }
 
-  function getFieldType(type: any) {
+  function getFieldType(type: string) {
     switch (type) {
       case "string":
         return "text";
@@ -115,18 +141,18 @@
     }
   }
 
-  function removeTag(tagToRemove: any) {
+  function removeTag(tagToRemove: string) {
     entityTags = entityTags.filter((tag) => tag !== tagToRemove);
   }
 
-  function handleTagKeypress(event: any) {
+  function handleTagKeypress(event: KeyboardEvent) {
     if (event.key === "Enter") {
       event.preventDefault();
       addTag();
     }
   }
 
-  function getFieldPlaceholder(type: any, name: any) {
+  function getFieldPlaceholder(type: string, name: string) {
     switch (type) {
       case "string":
         return `Enter ${name}...`;
@@ -164,14 +190,9 @@
     const emptyFields = templateFields.filter(
       (field) => {
         const value = fieldValues[field.name];
-        // Handle different field types - only string fields should use trim()
+        // A text field is empty when blank; a checkbox always counts as filled.
         if (value === undefined || value === null) return true;
         if (typeof value === "string") return !value.trim();
-        // For arrays (like multi-select), check if array is empty
-        if (Array.isArray(value)) return value.length === 0;
-        // For objects, check if it has any keys
-        if (typeof value === "object") return Object.keys(value).length === 0;
-        // For non-string primitives (number, boolean), consider filled
         return false;
       },
     );
@@ -184,12 +205,7 @@
     createMessage = "";
 
     try {
-      let content = template.attributes.payload.body.content;
-      templateFields.forEach((field) => {
-        const placeholder = `{{${field.name}:${field.type}}}`;
-        const value = fieldValues[field.name] || "";
-        content = content.replace(placeholder, value);
-      });
+      const content = fillTemplate(template);
 
       const entityData = {
         shortname: entityShortname.trim() || "auto",
@@ -198,7 +214,7 @@
         body: content,
       };
 
-      const attributes: any = {
+      const attributes = {
         displayname: { en: entityData.shortname || "auto" },
         description: { en: "", ar: "", ku: "" },
         is_active: true,
@@ -228,7 +244,7 @@
       }
     } catch (error) {
       log.error("Error creating entity:", error);
-      createMessage = "Error creating entity: " + (error as any).message;
+      createMessage = "Error creating entity: " + errorMessage(error);
     } finally {
       isCreating = false;
     }
@@ -265,7 +281,7 @@
         <option value="">{$_("template_generator.choose_template")}</option>
         {#each templates as template (template.uuid)}
           <option value={template.uuid}>
-            {template.attributes.payload.body.title}
+            {templateBody(template).title}
           </option>
         {/each}
       </select>
@@ -281,7 +297,8 @@
           {#if getFieldType(field.type) === "textarea"}
             <textarea
               id={field.name}
-              bind:value={fieldValues[field.name]}
+              value={textOf(field.name)}
+              oninput={(e) => (fieldValues[field.name] = e.currentTarget.value)}
               placeholder={getFieldPlaceholder(field.type, field.name)}
               rows={field.type === "list" || field.type === "object" || field.type === "list_object" ? 5 : 3}
             ></textarea>
@@ -296,13 +313,15 @@
             <input
               id={field.name}
               type="checkbox"
-              bind:checked={fieldValues[field.name]}
+              checked={fieldValues[field.name] === true}
+              onchange={(e) => (fieldValues[field.name] = e.currentTarget.checked)}
             />
           {:else}
             <input
               id={field.name}
               type={getFieldType(field.type)}
-              bind:value={fieldValues[field.name]}
+              value={textOf(field.name)}
+              oninput={(e) => (fieldValues[field.name] = e.currentTarget.value)}
               placeholder={getFieldPlaceholder(field.type, field.name)}
             />
           {/if}

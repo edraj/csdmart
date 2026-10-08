@@ -70,7 +70,7 @@
     },
   );
 
-  Dmart.setAxiosInstance(dmartAxios as any);
+  Dmart.setAxiosInstance(dmartAxios);
 
   // The bearer token reaches the server through the request interceptor
   // above (and the HttpOnly cookie), never through Dmart.setToken(), so the

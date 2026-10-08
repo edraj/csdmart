@@ -13,7 +13,7 @@
   import FolderForm from "@/components/forms/FolderForm.svelte";
   import MetaForm, { type MetaFormData } from "@/components/forms/MetaForm.svelte";
   import { applyFolderContentDefaults } from "@/lib/folder_defaults";
-  import type { LocalizedText } from "@/lib/types";
+  import { recordsOf, type LocalizedText, type SpaceAttributes } from "@/lib/types";
   import Modal from "@/components/Modal.svelte";
   import PageHeader from "@/components/ui/PageHeader.svelte";
   import CatalogToolbar, { type SortOrder } from "@/components/ui/CatalogToolbar.svelte";
@@ -199,14 +199,14 @@
     showSpaceConfigModal = true;
     try {
       const response = await getSpaces(true, DmartScope.managed);
-      const match = response.records.find((record) => record.shortname === spaceName);
-      const attrs = (match?.attributes ?? {}) as Record<string, any>;
+      const match = recordsOf<SpaceAttributes>(response).find((record) => record.shortname === spaceName);
+      const attrs: SpaceAttributes = match?.attributes ?? {};
       spaceConfig = {
         is_active: attrs.is_active ?? true,
         displayname: { en: attrs.displayname?.en ?? "", ar: attrs.displayname?.ar ?? "", ku: attrs.displayname?.ku ?? "" },
         description: { en: attrs.description?.en ?? "", ar: attrs.description?.ar ?? "", ku: attrs.description?.ku ?? "" },
         slug: attrs.slug ?? null,
-        ordinal: Number.isFinite(attrs.ordinal) ? attrs.ordinal : 0,
+        ordinal: typeof attrs.ordinal === "number" && Number.isFinite(attrs.ordinal) ? attrs.ordinal : 0,
         icon: attrs.icon ?? "",
         root_registration_signature: attrs.root_registration_signature ?? "",
         primary_website: attrs.primary_website ?? "",

@@ -101,11 +101,20 @@ export type EntryAttributes = {
   relationships?: Relationship[];
 };
 
-/** A space's attributes (the `spaces` query). */
+/** A space's attributes (the `spaces` query), including its configuration. */
 export type SpaceAttributes = EntryAttributes & {
   hide_space?: boolean;
   hide_folders?: string[];
   ordinal?: number | null;
+  icon?: string;
+  root_registration_signature?: string;
+  primary_website?: string;
+  indexing_enabled?: boolean;
+  capture_misses?: boolean;
+  check_health?: boolean;
+  languages?: string[];
+  mirrors?: string[];
+  active_plugins?: string[];
 };
 
 /** A user's attributes (`management/users`). */
@@ -202,6 +211,12 @@ export type TemplateBody = {
   content?: string;
   space_name?: string;
   schema_shortname?: string;
+};
+
+/** Body of an entry written from a template: which template, and the values for its placeholders. */
+export type TemplateInstanceBody = {
+  template?: string;
+  data?: JsonObject;
 };
 
 /** Body of a direct message, stored in the recipient's protected folder. */

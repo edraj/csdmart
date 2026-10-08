@@ -41,7 +41,15 @@
   import { confirm } from "@/lib/confirm";
   import JsonViewer from "@/components/JsonViewer.svelte";
   import { getTemplate } from "@/lib/dmart_services/templates";
-  import { bodyAs, type TemplateBody as TemplateEntryBody } from "@/lib/types";
+  import {
+    bodyAs,
+    bodyObject,
+    type EntryDetail,
+    type JsonObject,
+    type TemplateBody as TemplateEntryBody,
+    type TemplateInstanceBody,
+  } from "@/lib/types";
+  import { isJsonValue } from "@/components/json-table/types";
   import { getAvatarsCached } from "@/lib/dmart_services/avatars";
   import { setTitle } from "@/lib/title";
   import { log } from "@/lib/logger";
@@ -54,36 +62,40 @@
   // Capture the navigate function once, during component init.
   const goto = $gotoStore;
 
-  let entity: any = $state(null);
+  let entity = $state<EntryDetail | null>(null);
   let isLoading = $state(false);
   let isLoadingPage: boolean = $state(true);
   let isOwner = $state(false);
-  let userReactionEntry: any = $state(null);
-  let counts: any = $state({});
+  /** The shortname of the current user's reaction on this entry, when they left one. */
+  let userReactionEntry = $state<string | null>(null);
+  let counts = $state({ reaction: 0, reply: 0, comment: 0, media: 0 });
   // One cached lookup per distinct commenter instead of an {#await} per row.
   let commentAvatars = $state<Map<string, string | null>>(new Map());
 
   $effect(() => {
     if (entity) setTitle(getLocalizedDisplayName(entity), $params.space_name);
   });
-  
+
   // Template rendering state
   let templateRenderedContent = $state("");
   let isLoadingTemplate = $state(false);
   let templateError = $state("");
   let loadedTemplateKey: string = $state(""); // Track which template was loaded
-  
+
+  // A template-based entry's body: which template and the values for it.
+  const templateBody = $derived(bodyAs<TemplateInstanceBody>(entity?.payload));
+
   // Check if this is a template-based entry
   const isTemplateEntry = $derived(
     entity?.payload?.schema_shortname === "templates" &&
-    entity?.payload?.body?.template &&
-    entity?.payload?.body?.data
+    !!templateBody?.template &&
+    !!templateBody?.data
   );
-  
+
   // Generate a unique key for the current template entry to prevent duplicate loads
   const currentTemplateKey = $derived(
     isTemplateEntry && $params.space_name
-      ? `${$params.space_name}-${entity?.payload?.body?.template}`
+      ? `${$params.space_name}-${templateBody?.template}`
       : ""
   );
 
@@ -91,12 +103,12 @@
   onMount(async () => {
     isLoadingPage = true;
     await refreshIdea();
-    isOwner = $user.shortname === entity.owner_shortname;
+    isOwner = $user.shortname === entity?.owner_shortname;
     await refreshCounts();
     isLoadingPage = false;
   });
 
-  function handleEdit(entity: any) {
+  function handleEdit(entity: EntryDetail) {
     goto("/entries/[space_name]/[subpath]/[shortname]/[resource_type]/edit", {
       shortname: entity.shortname,
       space_name: $params.space_name,
@@ -128,6 +140,7 @@
   }
 
   async function deleteComment(shortname: string) {
+    if (!entity) return;
     const response = await deleteReactionComment(
       ResourceType.comment,
       `${$params.subpath}/${entity.shortname}`,
@@ -145,6 +158,7 @@
   }
 
   async function handleReaction() {
+    if (!entity) return;
     if (userReactionEntry) {
       const response = await deleteReactionComment(
         ResourceType.reaction,
@@ -176,7 +190,7 @@
     }
   }
 
-  async function handleDeleteItem(entity: any) {
+  async function handleDeleteItem(entity: EntryDetail) {
     const confirmed = await confirm({
       title: $_("admin_item_detail.delete_modal.title"),
       body: $_("admin_item_detail.delete_modal.message", {
@@ -218,7 +232,7 @@
         media: entity.attachments?.media?.length || 0,
       };
 
-      const commenters = (entity.attachments?.comment ?? []).map((c: any) => c.attributes?.owner_shortname);
+      const commenters = (entity.attachments?.comment ?? []).map((c) => c.attributes?.owner_shortname);
       commentAvatars = await getAvatarsCached(commenters);
 
       userReactionEntry = await checkCurrentUserReactedIdea(
@@ -227,14 +241,11 @@
         $params.space_name,
         $params.subpath,
       );
-      
+
       // Load template content if this is a template-based entry
-      if (entity.payload?.schema_shortname === "templates" && 
-          entity.payload?.body?.template && 
-          entity.payload?.body?.data) {
-        const templateShortname = entity.payload.body.template;
-        const templateData = entity.payload.body.data;
-        const contentKey = `${$params.space_name}-${templateShortname}-${templateData ? Object.values(templateData).join(',') : ''}`;
+      const instance = bodyAs<TemplateInstanceBody>(entity.payload);
+      if (entity.payload?.schema_shortname === "templates" && instance?.template && instance.data) {
+        const contentKey = `${$params.space_name}-${instance.template}-${Object.values(instance.data).join(',')}`;
         await loadTemplateContent(contentKey);
       }
     }
@@ -252,19 +263,19 @@
   }
 
   // Load and render template content
-  async function loadTemplateContent(contentKey?: any) {
+  async function loadTemplateContent(contentKey?: string) {
     if (!isTemplateEntry || isLoadingTemplate) return;
-    
+
     // Prevent duplicate loads of the same template
     const keyToUse = contentKey || currentTemplateKey;
     if (keyToUse === loadedTemplateKey) return;
-    
+
     isLoadingTemplate = true;
     templateError = "";
-    
+
     try {
-      const templateShortname = entity.payload.body.template;
-      const templateData = entity.payload.body.data;
+      const templateShortname = templateBody?.template ?? "";
+      const templateData = templateBody?.data ?? {};
       
       // Try to get template from current space first
       let template = await getTemplate($params.space_name, templateShortname, DmartScope.managed);
@@ -300,7 +311,7 @@
     }
   }
   
-  function renderTemplateWithData(templateContent: string, data: Record<string, any>): string {
+  function renderTemplateWithData(templateContent: string, data: JsonObject): string {
     if (!templateContent || !data) return templateContent;
     
     let result = templateContent;
@@ -321,7 +332,7 @@
     return result;
   }
 
-  function getStatusInfo(entity: any) {
+  function getStatusInfo(entity: EntryDetail) {
     if (!entity.is_active) {
       return {
         text: $_("entry_detail.status.draft"),
@@ -360,7 +371,7 @@
     }
   }
 
-  function getLocalizedDisplayName(entity: any) {
+  function getLocalizedDisplayName(entity: EntryDetail | null): string {
     if (!entity?.displayname)
       return entity?.shortname || $_("entry_detail.untitled");
 
@@ -378,7 +389,7 @@
     );
   }
 
-  function renderContent(entity: any) {
+  function renderContent(entity: EntryDetail): string {
     if (!entity?.payload?.body) {
       return $_("entry_detail.no_content");
     }
@@ -418,6 +429,7 @@
     </div>
   </div>
 {:else if entity}
+  {@const current = entity}
   <div class="page-container">
     <div class="content-wrapper">
       <BreadcrumbNavigation
@@ -433,11 +445,11 @@
 
       {#if isOwner}
         <div class="entry-actions">
-          <button type="button" class="app-btn app-btn-secondary app-btn-sm" onclick={() => handleEdit(entity)}>
+          <button type="button" class="app-btn app-btn-secondary app-btn-sm" onclick={() => handleEdit(current)}>
             <EditOutline size="sm" aria-hidden="true" />
             {$_("entry_detail.edit_entry")}
           </button>
-          <button type="button" class="app-btn app-btn-danger app-btn-sm" onclick={() => handleDeleteItem(entity)}>
+          <button type="button" class="app-btn app-btn-danger app-btn-sm" onclick={() => handleDeleteItem(current)}>
             <TrashBinOutline size="sm" aria-hidden="true" />
             {$_("entry_detail.delete_entry")}
           </button>
@@ -510,10 +522,10 @@
               {#each entity.relationships as relationship, i (i)}
                 <div class="relationship-item">
                   <span class="relationship-role"
-                    >{relationship.attributes.relation}:</span
+                    >{relationship.attributes?.relation}:</span
                   >
                   <span class="relationship-name"
-                    >{relationship.related_to.shortname}</span
+                    >{relationship.related_to?.shortname}</span
                   >
                 </div>
               {/each}
@@ -530,22 +542,22 @@
               <div class="template-error">
                 <ErrorState compact message={templateError} />
                 <div class="fallback-data">
-                  <h4>{$_("templates._val")}: {entity.payload.body.template}</h4>
+                  <h4>{$_("templates._val")}: {templateBody?.template}</h4>
                   <dl>
-                    {#each Object.entries(entity.payload.body.data || {}) as [key, value] (key)}
+                    {#each Object.entries(templateBody?.data ?? {}) as [key, value] (key)}
                       <dt>{key}:</dt>
                       <dd>{value}</dd>
                     {/each}
                   </dl>
                 </div>
-                <pre class="fallback-content">{JSON.stringify(entity.payload.body, null, 2)}</pre>
+                <pre class="fallback-content">{JSON.stringify(entity.payload?.body, null, 2)}</pre>
               </div>
             {:else}
               {@html sanitizeHtml(renderContent(entity))}
             {/if}
           {:else if entity?.payload?.content_type === "json"}
-            <JsonViewer 
-              data={entity.payload.body} 
+            <JsonViewer
+              data={isJsonValue(entity.payload.body) ? entity.payload.body : null}
               title={getLocalizedDisplayName(entity)}
               schemaShortname={entity.payload?.schema_shortname}
               spaceName={$params.space_name}
@@ -566,7 +578,7 @@
               space_name={$params.space_name}
               subpath={$params.subpath}
               parent_shortname={entity.shortname}
-              attachments={entity.attachments.media}
+              attachments={entity.attachments?.media ?? []}
               {isOwner}
             />
           </div>
@@ -671,10 +683,10 @@
         <!-- Comments List -->
         {#if (entity.attachments?.comment?.length ?? 0) > 0}
           <div class="comments-list">
-            {#each entity.attachments.comment as reply (reply.shortname)}
+            {#each entity.attachments?.comment ?? [] as reply (reply.shortname)}
               <div class="comment-item">
                 <div class="comment-avatar">
-                  <Avatar src={commentAvatars.get(reply.attributes.owner_shortname)} size="40" />
+                  <Avatar src={commentAvatars.get(reply.attributes.owner_shortname ?? "")} size="40" />
                 </div>
                 <div class="comment-content">
                   <div class="comment-header">
@@ -698,8 +710,8 @@
                     {/if}
                   </div>
                   <p class="comment-text">
-                    {reply.attributes.payload?.body?.embedded ||
-                      reply.attributes.payload?.body?.body ||
+                    {bodyObject(reply.attributes.payload)?.embedded ||
+                      bodyObject(reply.attributes.payload)?.body ||
                       $_("entry_detail.no_content")}
                   </p>
                 </div>

@@ -30,6 +30,24 @@ export function initializeContentFromSchema(properties: Record<string, SchemaPro
 }
 
 /**
+ * A schema entry's body read as the object schema the dynamic form renders,
+ * or null when it has no `properties` bag. The one place the stored document
+ * is given that shape.
+ */
+export function asFormSchema(value: unknown): Schema | null {
+    if (!isJsonObject(value) || !isJsonObject(value.properties)) return null;
+    return {
+        type: typeof value.type === 'string' ? value.type : 'object',
+        // The properties bag is read as the dynamic form's own property shape.
+        properties: value.properties as Record<string, SchemaProperty>,
+        title: typeof value.title === 'string' ? value.title : undefined,
+        description: typeof value.description === 'string' ? value.description : undefined,
+        required: Array.isArray(value.required) ? value.required.filter((r): r is string => typeof r === 'string') : undefined,
+        additionalProperties: typeof value.additionalProperties === 'boolean' ? value.additionalProperties : undefined,
+    };
+}
+
+/**
  * Get default value for a schema property based on its type
  * @param property - Schema property definition
  * @returns Default value for the property
