@@ -13,6 +13,8 @@ import { log } from "@/lib/logger";
 import { APPLICATIONS_SPACE, DEFAULT_SPACE_ORDINAL } from "@/lib/constants";
 import { getCurrentScope } from "@/stores/user";
 import { buildFieldFilterClause } from "@/lib/searchFilters";
+import { errorMessage, errorStatus } from "@/lib/apiError";
+import { recordsOf, type JsonObject, type SpaceAttributes } from "@/lib/types";
 import { getSpacesCached, invalidateSpacesCache } from "./spacesCache";
 
 export { getSpacesCached, invalidateSpacesCache } from "./spacesCache";
@@ -25,28 +27,35 @@ export async function getSpaces(
     // One request per scope for the session (lib/dmart_services/spacesCache);
     // the filters below run on a copy so no caller can trim the cached list.
     const cached = await getSpacesCached(scope);
-    let records: any[] = [...(cached.records ?? [])];
+    let records = [...recordsOf<SpaceAttributes>(cached)];
 
     if (ignoreFilter === false) {
-        records = records.filter((e: any) => !e.attributes.hide_space);
+        records = records.filter((e) => !e.attributes.hide_space);
         hiddenspaces.forEach((space) => {
-            records = records.filter((e: any) => !e.shortname.includes(space));
+            records = records.filter((e) => !e.shortname.includes(space));
         });
         records = records.filter(
-            (e: any) => !e.shortname.includes(APPLICATIONS_SPACE)
+            (e) => !e.shortname.includes(APPLICATIONS_SPACE)
         );
     }
 
-    records = records.map((e: any) => {
-        if (e.attributes.ordinal === null) {
+    // A space without an ordinal (null, or stripped from the response) sorts
+    // at the default position; subtracting an undefined ordinal gave NaN and
+    // an unstable order.
+    records = records.map((e) => {
+        if (e.attributes.ordinal == null) {
             e.attributes.ordinal = DEFAULT_SPACE_ORDINAL;
         }
         return e;
     });
 
-    records.sort((a: any, b: any) => a.attributes.ordinal - b.attributes.ordinal);
+    records.sort(
+        (a, b) =>
+            (a.attributes.ordinal ?? DEFAULT_SPACE_ORDINAL) -
+            (b.attributes.ordinal ?? DEFAULT_SPACE_ORDINAL)
+    );
 
-    return { ...cached, records } as ApiQueryResponse;
+    return { ...cached, records };
 }
 
 /**
@@ -60,10 +69,10 @@ export async function getSpaceHideFolders(
 ): Promise<string[]> {
     try {
         const response = await getSpaces(false, scope);
-        const match = response.records.find(
-            (record: any) => record.shortname === spaceName
+        const match = recordsOf<SpaceAttributes>(response).find(
+            (record) => record.shortname === spaceName
         );
-        const hide = (match as any)?.attributes?.hide_folders;
+        const hide = match?.attributes?.hide_folders;
         return Array.isArray(hide) ? hide : [];
     } catch (error) {
         log.debug("Could not resolve space hide_folders:", error);
@@ -267,13 +276,13 @@ export async function getChildren(
     limit: number = 20,
     offset: number = 0,
     restrict_types: Array<ResourceType> = [],
-    spaces: any = null,
+    spaces: ApiQueryResponse | null = null,
     ignoreFilter = false
 ): Promise<ApiQueryResponse> {
     let hideSearch = "";
     if (!ignoreFilter && spaces !== null) {
-        const selectedSpace = spaces.records.find(
-            (record: any) => record.shortname === space_name
+        const selectedSpace = recordsOf<SpaceAttributes>(spaces).find(
+            (record) => record.shortname === space_name
         );
         hideSearch = buildHideFoldersSearch(
             selectedSpace?.attributes?.hide_folders ?? [],
@@ -303,13 +312,17 @@ export async function getChildren(
     return folders!;
 }
 
+/**
+ * Walks the folder tree under `base`, pushing every folder's path (deepest
+ * first) onto `subpathsPTR`.
+ */
 export async function getChildrenAndSubChildren(
-    subpathsPTR: any,
+    subpathsPTR: string[],
     spacename: string,
     base: string,
-    _subpaths: any
+    _subpaths: ApiQueryResponse | null
 ) {
-    for (const _subpath of _subpaths.records) {
+    for (const _subpath of recordsOf(_subpaths)) {
         if (_subpath.resource_type === "folder") {
             const childSubpaths = await getChildren(spacename, _subpath.shortname);
             await getChildrenAndSubChildren(
@@ -380,7 +393,7 @@ export async function deleteSpace(shortname: string) {
 
 export async function editSpace(
     shortname: string,
-    attributes: Record<string, any>
+    attributes: JsonObject
 ) {
     try {
         await Dmart.request({
@@ -405,14 +418,21 @@ export async function editSpace(
 /**
  * Helper function to check if an error indicates "not found"
  */
-function isNotFoundError(error: any): boolean {
+function isNotFoundError(error: unknown): boolean {
     // Check for various indicators of "not found" errors
-    if (error?.status === 404) return true;
-    if (error?.status === 400 && error?.message?.includes("not found")) return true;
-    if (error?.message?.includes("entry not found")) return true;
-    if (error?.message?.includes("does not exist")) return true;
-    if (error?.message?.includes("not_found")) return true;
+    const status = errorStatus(error);
+    const message = errorMessage(error);
+    if (status === 404) return true;
+    if (status === 400 && message.includes("not found")) return true;
+    if (message.includes("entry not found")) return true;
+    if (message.includes("does not exist")) return true;
+    if (message.includes("not_found")) return true;
     return false;
+}
+
+/** A 403, or a server message that names a permission problem. */
+function isPermissionError(error: unknown): boolean {
+    return errorStatus(error) === 403 || errorMessage(error).includes("permission");
 }
 
 /**
@@ -437,7 +457,7 @@ async function ensureEntryExists(
         spaceName: string;
         subpath: string;
         shortname: string;
-        attributes: Record<string, any>;
+        attributes: JsonObject;
     },
     label: string,
     scope: DmartScope = DmartScope.managed
@@ -460,7 +480,7 @@ async function ensureEntryExists(
             // Entry already exists
             log.debug(`${label} already exists, skipping creation`);
             return true;
-        } catch (error: any) {
+        } catch (error) {
             // Entry not found, proceed to create
             if (!isNotFoundError(error)) {
                 log.error(`Error checking ${label} existence:`, error);
@@ -513,8 +533,8 @@ export async function checkApplicationsFolders(
                     },
                     scope
                 );
-            } catch (error: any) {
-                if (error?.status === 403 || error?.message?.includes("permission")) {
+            } catch (error) {
+                if (isPermissionError(error)) {
                     return { exists: true, missing: [], error: "permission_denied" };
                 }
                 if (isNotFoundError(error)) {
@@ -537,8 +557,8 @@ export async function checkApplicationsFolders(
                     },
                     scope
                 );
-            } catch (error: any) {
-                if (error?.status === 403 || error?.message?.includes("permission")) {
+            } catch (error) {
+                if (isPermissionError(error)) {
                     missingWorkflowSchema = false;
                 } else if (isNotFoundError(error)) {
                     missingWorkflowSchema = true;
@@ -555,11 +575,16 @@ export async function checkApplicationsFolders(
         };
         log.debug("checkApplicationsFolders result:", result);
         return result;
-    } catch (error: any) {
-        if (error?.status === 403 || error?.message?.includes("permission")) {
+    } catch (error) {
+        if (isPermissionError(error)) {
             return { exists: true, missing: [], error: "permission_denied" };
         }
-        return { exists: false, missing: requiredFolders, missingWorkflowSchema: true, error: error?.message };
+        return {
+            exists: false,
+            missing: requiredFolders,
+            missingWorkflowSchema: true,
+            error: errorMessage(error) || undefined,
+        };
     }
 }
 
@@ -591,7 +616,7 @@ export async function createFolder(
             // Folder already exists, return success
             log.debug(`Folder ${folderShortname} already exists, skipping creation`);
             return true;
-        } catch (error: any) {
+        } catch (error) {
             // Entry not found, proceed to create
             if (!isNotFoundError(error)) {
                 log.error(`Error checking folder ${folderShortname} existence:`, error);

@@ -17,6 +17,8 @@ import { checkAccess } from "@/stores/permissions";
 import { MANAGEMENT_SPACE, APPLICATIONS_SPACE } from "@/lib/constants";
 import { website } from "@/config";
 import { resolveBackendBase } from "@shared/backend-url";
+import { errorStatus } from "@/lib/apiError";
+import { bodyObject, type UserAttributes } from "@/lib/types";
 
 export async function getAllUsers(
     limit: number = 100,
@@ -39,8 +41,8 @@ export async function getAllUsers(
             retrieve_json_payload: true,
             exact_subpath: false,
         }))!;
-    } catch (error: any) {
-        if (error?.response?.status !== 401 && error?.status !== 401) {
+    } catch (error) {
+        if (errorStatus(error) !== 401) {
             log.error("Error fetching users:", error);
         }
         return { status: "failed", records: [], attributes: { total: 0, returned: 0 } } as ApiQueryResponse;
@@ -115,7 +117,7 @@ export async function assignRoleToUser(
     roleName: string,
 ): Promise<boolean> {
     try {
-        const userRecord = await getEntity(
+        const userRecord = await getEntity<UserAttributes>(
             userShortname,
             MANAGEMENT_SPACE,
             "users",
@@ -124,7 +126,11 @@ export async function assignRoleToUser(
             true,
             false,
         );
-        const existing: string[] = (userRecord as any)?.attributes?.roles ?? [];
+        // A retrieved entry is flat: its roles sit at the top level, not under
+        // `attributes` (which only query records have). Reading
+        // `attributes.roles` here always gave [] and replaced the user's roles
+        // with the one being added.
+        const existing: string[] = userRecord?.roles ?? [];
         if (existing.includes(roleName)) return true;
         return updateUserRoles(userShortname, [...existing, roleName]);
     } catch (error) {
@@ -208,12 +214,14 @@ export async function setDefaultUserRole(
         );
 
         if (existingConfig) {
-            const payload = existingConfig.payload?.body;
+            const payload = bodyObject(existingConfig.payload);
             if (!payload) return false;
-            const updatedItems = payload.items || [];
+            const updatedItems: Array<{ key?: string; value?: unknown }> = Array.isArray(payload.items)
+                ? payload.items
+                : [];
 
             const existingItemIndex = updatedItems.findIndex(
-                (item: any) => item.key === "default_user_role"
+                (item) => item.key === "default_user_role"
             );
 
             if (existingItemIndex !== -1) {
@@ -245,7 +253,7 @@ export async function setDefaultUserRole(
 
             return result !== null;
         } else {
-            const attributes: any = {
+            const attributes = {
                 displayname: { en: "Default User Role Configuration" },
                 description: { en: `Default role assigned to new users: ${roleShortname}`, ar: "", ku: "" },
                 is_active: true,

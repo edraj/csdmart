@@ -3,9 +3,14 @@ import {
   type ActionRequestRecord,
   Dmart,
   DmartScope,
+  type LoginResponse,
+  type LoginResponseRecord,
   ResourceType,
+  type ResponseEntry,
 } from "@edraj/tsdmart";
 import { authToken } from "@/stores/auth";
+import { errorMessage } from "@/lib/apiError";
+import type { JsonObject } from "@/lib/types";
 import { getLocaleFromNavigator } from "svelte-i18n";
 import { storage } from "@/lib/storage";
 import { log } from "@/lib/logger";
@@ -29,7 +34,7 @@ export interface User {
   locale: Locale;
   shortname?: string;
   localized_displayname?: string;
-  account?: Record<string, any>;
+  account?: LoginResponseRecord;
 }
 
 const KEY = "user";
@@ -59,7 +64,7 @@ export const user: Writable<User> = writable<User>(storage.getJson(KEY, signedou
 /**
  * Handles successful login response: sets auth token, user state, and localStorage
  */
-async function handleLoginResponse(response: { status: string; records: any[] }) {
+async function handleLoginResponse(response: LoginResponse) {
   if (response.status === "success" && response.records.length > 0) {
     const account = response.records[0];
     const auth = account.attributes.access_token;
@@ -152,14 +157,8 @@ export async function requestOtp(email: string): Promise<string> {
     } else {
       throw new Error(response?.error?.message || "OTP request failed");
     }
-  } catch (error: any) {
-    if (error.response?.data?.error?.message) {
-      throw new Error(error.response.data.error.message, { cause: error });
-    } else if (error.message) {
-      throw new Error(error.message, { cause: error });
-    } else {
-      throw new Error("OTP request failed. Please try again.", { cause: error });
-    }
+  } catch (error) {
+    throw new Error(errorMessage(error, "OTP request failed. Please try again."), { cause: error });
   }
 }
 
@@ -169,15 +168,12 @@ export async function checkExisting(
 ): Promise<boolean> {
   try {
     const response = await Dmart.checkExisting(prop, value);
-    return (response as any).attributes.unique;
-  } catch (error: any) {
-    if (error.response?.data?.error?.message) {
-      throw new Error(error.response.data.error.message, { cause: error });
-    } else if (error.message) {
-      throw new Error(error.message, { cause: error });
-    } else {
-      throw new Error("Check existing failed. Please try again.", { cause: error });
-    }
+    // The SDK declares a ResponseEntry here, but /user/check-existing answers
+    // a plain envelope whose `attributes.unique` says whether the value is free.
+    const { attributes } = response as ResponseEntry & { attributes?: { unique?: boolean } };
+    return attributes?.unique === true;
+  } catch (error) {
+    throw new Error(errorMessage(error, "Check existing failed. Please try again."), { cause: error });
   }
 }
 
@@ -187,13 +183,13 @@ export async function register(
   password: string,
   confirmPassword: string,
   role: string,
-  data: any
+  data: JsonObject & { description?: string }
 ) {
   if (password !== confirmPassword) {
     throw new Error("Passwords do not match");
   }
 
-  const attributes: Record<string, any> = {
+  const attributes: JsonObject = {
     email: email,
     email_otp: otp,
     password: password,
@@ -223,14 +219,8 @@ export async function register(
     }
 
     return response;
-  } catch (error: any) {
-    if (error.response?.data?.error?.message) {
-      throw new Error(error.response.data.error.message, { cause: error });
-    } else if (error.message) {
-      throw new Error(error.message, { cause: error });
-    } else {
-      throw new Error("Registration failed. Please try again.", { cause: error });
-    }
+  } catch (error) {
+    throw new Error(errorMessage(error, "Registration failed. Please try again."), { cause: error });
   }
 }
 
@@ -313,13 +303,7 @@ export async function contactUs(
     } else {
       throw new Error(response.error?.message || "Registration failed");
     }
-  } catch (error: any) {
-    if (error.response?.data?.error?.message) {
-      throw new Error(error.response.data.error.message, { cause: error });
-    } else if (error.message) {
-      throw new Error(error.message, { cause: error });
-    } else {
-      throw new Error("Sending message failed. Please try again.", { cause: error });
-    }
+  } catch (error) {
+    throw new Error(errorMessage(error, "Sending message failed. Please try again."), { cause: error });
   }
 }

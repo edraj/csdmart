@@ -38,6 +38,7 @@
   } from "@/lib/catalogItems";
   import { getCurrentScope, user } from "@/stores/user";
   import { getWebSocketService } from "@/lib/services/websocket";
+  import { isJsonObject } from "@/lib/types";
   import CatalogToolbar, { type SortOption, type SortOrder } from "@/components/ui/CatalogToolbar.svelte";
   import type { MenuItem } from "@/components/ui/DropdownMenu.svelte";
   import EmptyState from "@/components/ui/EmptyState.svelte";
@@ -249,10 +250,11 @@
     if (!subscribed) return;
     streamSubscribedKey = key;
     removeStreamListener = ws.addMessageListener((data) => {
+      const action = isJsonObject(data.message) ? data.message.action_type : undefined;
       if (
         data.type === "notification_subscription" &&
-        data.message?.action_type &&
-        ["create", "update", "delete"].includes(data.message.action_type)
+        typeof action === "string" &&
+        ["create", "update", "delete"].includes(action)
       ) {
         void loadContents(true);
       }

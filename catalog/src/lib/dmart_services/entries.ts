@@ -18,6 +18,7 @@ import { getSpaces } from "./spaces";
 import { log } from "@/lib/logger";
 import { MESSAGES_SPACE } from "@/lib/constants";
 import { ensureUploadSize } from "./core";
+import type { EntryRecord, JsonObject, LocalizedText } from "@/lib/types";
 
 export type StreamEntitiesOptions = {
     // Restrict the fan-out to a single space (matches the "Current space:" tag chip).
@@ -50,7 +51,7 @@ export type StreamEntitiesOptions = {
  */
 export function streamEntitiesAcrossSpaces(
     search: string,
-    onBatch: (records: any[], space: string) => void,
+    onBatch: (records: EntryRecord[], space: string) => void,
     options: StreamEntitiesOptions = {}
 ): { done: Promise<void>; cancel: () => void } {
     let cancelled = false;
@@ -210,7 +211,7 @@ export async function attachAttachmentsToEntity(
         ? metadata.description
         : undefined;
 
-    const attributes: Record<string, any> = { is_active: true };
+    const attributes: JsonObject = { is_active: true };
     if (displaynamePayload) attributes.displayname = displaynamePayload;
     if (descriptionPayload) attributes.description = descriptionPayload;
 
@@ -296,10 +297,20 @@ export async function searchInCatalog(search: string = "", limit: number = 20, o
     return allRecordsArrays.flat();
 }
 
+/** What the folder dialog collects for a new folder. */
+export type FolderCreateInput = {
+    shortname?: string;
+    displayname?: LocalizedText;
+    description?: LocalizedText;
+    is_active?: boolean;
+    /** The folder's `payload.body` (listing settings). */
+    folderContent?: JsonObject;
+};
+
 export async function createFolder(
     spaceName: string,
     subpath: string,
-    data: any
+    data: FolderCreateInput
 ) {
     const actionRequest: ActionRequest = {
         space_name: spaceName,

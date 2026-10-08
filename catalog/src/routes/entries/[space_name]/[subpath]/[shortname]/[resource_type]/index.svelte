@@ -41,6 +41,7 @@
   import { confirm } from "@/lib/confirm";
   import JsonViewer from "@/components/JsonViewer.svelte";
   import { getTemplate } from "@/lib/dmart_services/templates";
+  import { bodyAs, type TemplateBody as TemplateEntryBody } from "@/lib/types";
   import { getAvatarsCached } from "@/lib/dmart_services/avatars";
   import { setTitle } from "@/lib/title";
   import { log } from "@/lib/logger";
@@ -279,8 +280,9 @@
         return;
       }
       
-      // Get the template content
-      let content = template.attributes?.payload?.body?.content || "";
+      // Get the template content. A retrieved entry is flat: its payload sits
+      // at the top level (no `attributes` wrapper, which only query records have).
+      const content = bodyAs<TemplateEntryBody>(template.payload)?.content || "";
       
       // Replace placeholders with data
       const renderedContent = renderTemplateWithData(content, templateData);

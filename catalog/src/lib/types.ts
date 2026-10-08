@@ -1,70 +1,257 @@
 /**
- * Common TypeScript type definitions for the application
+ * Shared type definitions for the catalog app.
+ *
+ * `@edraj/tsdmart` types the request side and the response envelopes
+ * precisely, but leaves a record's `attributes` and a payload `body` as
+ * `any`. These are the shapes the app actually reads off a response, named
+ * once so services, components and pages agree. The server strips empty
+ * strings, arrays and objects from its JSON, so every field it may drop is
+ * optional here.
+ *
+ * The attribute and body shapes are `type` aliases rather than interfaces on
+ * purpose: a type literal is assignable to `Record<string, unknown>`, so a
+ * page that reads attributes by a dynamic key can treat them as a JSON bag
+ * without a cast, while named fields stay typed.
  */
+import type { ApiResponse } from "@edraj/tsdmart";
 
-// Base entity interface
-export interface BaseEntity {
-  shortname: string;
-  subpath: string;
-  resource_type: string;
-  space_name?: string;
+/** A JSON object as the server returns it. */
+export type JsonObject = Record<string, unknown>;
+
+/** True for a plain JSON object (not null, not an array). */
+export function isJsonObject(value: unknown): value is JsonObject {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * True for anything a key path can descend into: a JSON object, or an array
+ * (indexed by its numeric string, as "items.0.name" does). Arrays are read
+ * through the same string index as objects, which is why the guard names
+ * `JsonObject`.
+ */
+export function isIndexable(value: unknown): value is JsonObject {
+  return typeof value === "object" && value !== null;
+}
+
+/**
+ * Localized text: whichever of `en` / `ar` / `ku` were filled in. Pages pick
+ * one with `localized()` from `@/lib/catalogItems`.
+ */
+export type LocalizedText = Record<string, string | undefined>;
+
+/** A record's `payload`: the body plus how to read it. */
+export type EntryPayload = {
+  content_type?: string;
+  schema_shortname?: string;
+  checksum?: string;
+  /** A string for text/html/markdown content, a JSON value otherwise. */
+  body?: unknown;
+  last_validated?: string;
+  validation_status?: "valid" | "invalid";
+};
+
+/** One entry of a record's `relationships`. */
+export type Relationship = {
+  related_to?: {
+    space_name?: string;
+    subpath?: string;
+    shortname?: string;
+    resource_type?: string;
+  };
+  attributes?: JsonObject;
+};
+
+/** The meta attributes every resource type carries. */
+export type EntryAttributes = {
   uuid?: string;
+  is_active?: boolean;
+  displayname?: LocalizedText;
+  description?: LocalizedText;
+  tags?: string[];
   created_at?: string;
   updated_at?: string;
-  is_active?: boolean;
-  state?: EntityState;
-  attributes?: Record<string, any>;
-}
+  owner_shortname?: string;
+  slug?: string;
+  schema_shortname?: string;
+  workflow_shortname?: string;
+  state?: string;
+  payload?: EntryPayload;
+  relationships?: Relationship[];
+};
 
-// Entity states
-export type EntityState = 'pending' | 'in_progress' | 'approved' | 'rejected' | 'active' | 'inactive';
+/** A space's attributes (the `spaces` query). */
+export type SpaceAttributes = EntryAttributes & {
+  hide_space?: boolean;
+  hide_folders?: string[];
+  ordinal?: number | null;
+};
 
-// Attachment interface
-export interface Attachment extends BaseEntity {
-  attributes: {
-    payload?: {
-      body?: string;
-      content_type?: string;
-      size?: number;
-    };
-  };
-}
-
-// Space interface
-export interface Space extends BaseEntity {
-  displayname?: Record<string, string>;
-  description?: Record<string, string>;
-  meta?: Record<string, any>;
-}
-
-// User profile interface
-export interface UserProfile {
-  displayname?: string;
+/** A user's attributes (`management/users`). */
+export type UserAttributes = EntryAttributes & {
   email?: string;
   msisdn?: string;
-  password?: string;
-  groups?: string[];
   roles?: string[];
-  is_active?: boolean;
+  groups?: string[];
+  type?: string;
+  language?: string;
+  social_avatar_url?: string;
+  is_email_verified?: boolean;
+  is_msisdn_verified?: boolean;
+  force_password_change?: boolean;
+};
+
+/** Attachments grouped by resource type: `{ media: [...], comment: [...] }`. */
+export type AttachmentsMap = Partial<Record<string, EntryRecord[]>>;
+
+/** One record of a query response (`Dmart.query(...).records[i]`). */
+export interface EntryRecord<A extends EntryAttributes = EntryAttributes> {
+  resource_type: string;
+  shortname: string;
+  subpath: string;
+  uuid?: string;
+  /** Set by the cross-space searches, which tag each hit with its space. */
+  space_name?: string;
+  attributes: A;
+  /** Present when the query asked for attachments. */
+  attachments?: AttachmentsMap;
 }
 
-// Form data interfaces
-export interface FormData {
-  [key: string]: any;
+/**
+ * A retrieved entry (`Dmart.retrieveEntry`): the same attributes, flattened
+ * to the top level beside the identifying fields.
+ */
+export type EntryDetail<A extends EntryAttributes = EntryAttributes> = A & {
+  shortname: string;
+  subpath?: string;
+  resource_type?: string;
+  attachments?: AttachmentsMap;
+};
+
+/**
+ * The records of a response as `EntryRecord`s, with the attributes read as
+ * `A`. The SDK types a record's attributes as `Record<string, any>`; this is
+ * the one place that names the shape a caller reads. The server answers
+ * `records: null` (not `[]`) when nothing matched, so this also guards the
+ * array.
+ */
+export function recordsOf<A extends EntryAttributes = EntryAttributes>(
+  response: Pick<ApiResponse, "records"> | null | undefined,
+): EntryRecord<A>[] {
+  return (response?.records ?? []) as EntryRecord<A>[];
 }
 
-export interface ValidationResult {
-  valid: boolean;
-  errors: string[];
+/** The attachments of one resource type on a record or entry, or `[]`. */
+export function attachmentGroup(
+  attachments: AttachmentsMap | null | undefined,
+  resourceType: string,
+): EntryRecord[] {
+  const group = attachments?.[resourceType];
+  return Array.isArray(group) ? group : [];
 }
 
-// Schema interfaces
+/** A payload body that is a JSON object, or null when it is text or absent. */
+export function bodyObject(payload: EntryPayload | null | undefined): JsonObject | null {
+  const body = payload?.body;
+  return isJsonObject(body) ? body : null;
+}
+
+/**
+ * A payload body read as the shape `T` this app wrote it with (one of the
+ * body types below), or null when the body is not an object.
+ */
+export function bodyAs<T extends JsonObject>(payload: EntryPayload | null | undefined): T | null {
+  const body = payload?.body;
+  return isJsonObject(body) ? (body as T) : null;
+}
+
+// ---------------------------------------------------------------------------
+// Payload bodies with a known shape
+// ---------------------------------------------------------------------------
+
+/** Body of a template entry (`/templates` in a space). */
+export type TemplateBody = {
+  title?: string;
+  content?: string;
+  space_name?: string;
+  schema_shortname?: string;
+};
+
+/** Body of a direct message, stored in the recipient's protected folder. */
+export type DirectMessageBody = {
+  content?: string;
+  sender?: string;
+  receiver?: string;
+  message_type?: string;
+  timestamp?: string;
+};
+
+/** Body of a group-chat entry under `/groups`. */
+export type GroupBody = {
+  participants?: string[];
+  adminIds?: string[];
+  createdBy?: string;
+  groupType?: string;
+};
+
+/** Body of a group message under `/messages`. */
+export type GroupMessageBody = {
+  sender?: string;
+  groupId?: string;
+  content?: string;
+  messageType?: string;
+};
+
+/** Body of a report ticket under `applications/reports`. */
+export type ReportBody = {
+  entry?: string;
+  reported_entry?: string;
+  space_name?: string;
+  reported_space?: string;
+  subpath?: string;
+  reported_subpath?: string;
+  report_type?: string;
+};
+
+// ---------------------------------------------------------------------------
+// JSON Schema
+// ---------------------------------------------------------------------------
+
+/**
+ * A JSON-schema node as dmart stores it: the keywords the app reads, with
+ * every other keyword kept through the index signature.
+ */
+export interface JsonSchemaNode {
+  type?: string | string[];
+  title?: string;
+  description?: string;
+  format?: string;
+  enum?: unknown[];
+  default?: unknown;
+  properties?: Record<string, JsonSchemaNode>;
+  items?: JsonSchemaNode | JsonSchemaNode[];
+  required?: string[];
+  additionalProperties?: boolean | JsonSchemaNode;
+  allOf?: JsonSchemaNode[];
+  oneOf?: JsonSchemaNode[];
+  anyOf?: JsonSchemaNode[];
+  $ref?: string;
+  definitions?: Record<string, JsonSchemaNode>;
+  minimum?: number;
+  maximum?: number;
+  minLength?: number;
+  maxLength?: number;
+  pattern?: string;
+  multipleOf?: number;
+  [keyword: string]: unknown;
+}
+
+/** A property of a schema the dynamic forms can render. */
 export interface SchemaProperty {
   type: 'string' | 'number' | 'integer' | 'boolean' | 'array' | 'object';
   title?: string;
   description?: string;
-  default?: any;
-  enum?: any[];
+  default?: unknown;
+  enum?: unknown[];
   format?: string;
   minimum?: number;
   maximum?: number;
@@ -78,6 +265,7 @@ export interface SchemaProperty {
   additionalProperties?: boolean;
 }
 
+/** An object schema the dynamic forms render. */
 export interface Schema {
   title?: string;
   description?: string;
@@ -87,103 +275,7 @@ export interface Schema {
   additionalProperties?: boolean;
 }
 
-// API Response interfaces
-export interface ApiResponse<T = any> {
-  status: 'success' | 'error' | 'failed';
-  data?: T;
-  message?: string;
-  errors?: string[];
-}
-
-export interface QueryResponse<T = any> extends ApiResponse<T> {
-  records?: T[];
-  attributes?: Record<string, any>;
-}
-
-// Request interfaces
-export interface RequestRecord {
-  resource_type: string;
-  shortname: string;
-  subpath: string;
-  attributes: Record<string, any>;
-}
-
-export interface ApiRequest {
-  space_name: string;
-  request_type: string;
-  records: RequestRecord[];
-}
-
-// Notification interface
-export interface Notification extends BaseEntity {
-  title?: string;
-  message?: string;
-  read?: boolean;
-  type?: 'info' | 'success' | 'warning' | 'error';
-}
-
-// Contact message interface
-export interface ContactMessage extends BaseEntity {
-  subject?: string;
-  message?: string;
-  sender_email?: string;
-  replied?: boolean;
-  reply_message?: string;
-}
-
-// File type information
-export interface FileTypeInfo {
-  contentType: string;
-  resourceType: string;
-}
-
-// Preview data interface
-export interface PreviewData {
-  url: string;
-  type: 'image' | 'video' | 'pdf' | 'audio' | 'file';
-  filename: string;
-}
-
-// Editor interfaces
-export interface EditorOptions {
-  uid?: string;
-  content: string;
-  isEditMode?: boolean;
-  attachments?: Attachment[];
-  resource_type?: string;
-  space_name?: string;
-  subpath?: string;
-  parent_shortname?: string;
-  changed?: () => void;
-}
-
-// Toast message interface
-export interface ToastOptions {
-  message: string;
-  type?: 'success' | 'error' | 'warning' | 'info';
-  timeout?: number;
-}
-
-// Pagination interface
-export interface PaginationInfo {
-  current_page: number;
-  total_pages: number;
-  total_records: number;
-  page_size: number;
-}
-
-// Search/Filter interfaces
-export interface SearchFilters {
-  query?: string;
-  resource_type?: string;
-  state?: EntityState;
-  date_from?: string;
-  date_to?: string;
-  [key: string]: any;
-}
-
-export interface SearchResult<T = BaseEntity> {
-  records: T[];
-  pagination: PaginationInfo;
-  filters: SearchFilters;
+export interface ValidationResult {
+  valid: boolean;
+  errors: string[];
 }

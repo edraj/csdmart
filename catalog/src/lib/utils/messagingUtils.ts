@@ -1,4 +1,14 @@
-export function getDisplayName(displayname: any): string | null {
+import {
+  bodyAs,
+  type DirectMessageBody,
+  type EntryRecord,
+  type GroupBody,
+  type GroupMessageBody,
+  type LocalizedText,
+  type UserAttributes,
+} from "@/lib/types";
+
+export function getDisplayName(displayname: LocalizedText | null | undefined): string | null {
   if (!displayname) return null;
   return displayname.en || displayname.ar || displayname.ku || null;
 }
@@ -61,7 +71,7 @@ export interface MessageData {
   timestamp: Date;
   isOwn: boolean;
   hasAttachments?: boolean;
-  attachments?: any[] | null;
+  attachments?: EntryRecord[] | null;
   isUploading?: boolean;
   uploadFailed?: boolean;
 }
@@ -97,7 +107,7 @@ export interface GroupMessageData extends Omit<MessageData, "receiverId"> {
   receiverId?: never;
 }
 
-export function transformUserRecord(record: any): UserData {
+export function transformUserRecord(record: EntryRecord<UserAttributes>): UserData {
   const attrs = record.attributes;
   return {
     id: record.shortname,
@@ -106,43 +116,42 @@ export function transformUserRecord(record: any): UserData {
     email: attrs.email,
     avatar: attrs.social_avatar_url || null,
     online: false,
-    lastSeen: new Date(attrs.updated_at || attrs.created_at),
+    lastSeen: new Date(attrs.updated_at || attrs.created_at || Date.now()),
     roles: attrs.roles || [],
     isActive: attrs.is_active !== false,
   };
 }
 
 export function transformMessageRecord(
-  record: any,
+  record: EntryRecord,
   currentUserShortname: string
 ): MessageData {
-  const attachments = record?.attachments?.media || null;
-  const payload = record.attributes.payload;
-  const body = payload.body;
+  const attachments = record.attachments?.media || null;
+  const body = bodyAs<DirectMessageBody>(record.attributes.payload) ?? {};
 
   return {
     id: record.shortname,
-    senderId: body.sender,
-    receiverId: body.receiver,
-    content: body.content,
+    senderId: body.sender ?? "",
+    receiverId: body.receiver ?? "",
+    content: body.content ?? "",
     attachments: attachments,
     timestamp: new Date(record.attributes.created_at || Date.now()),
     isOwn: body.sender === currentUserShortname,
   };
 }
 
-export function transformGroupRecord(record: any): GroupData {
+export function transformGroupRecord(record: EntryRecord<UserAttributes>): GroupData {
   const attrs = record.attributes;
-  const payload = attrs.payload?.body || {};
+  const payload = bodyAs<GroupBody>(attrs.payload) ?? {};
 
   return {
     id: record.shortname,
     shortname: record.shortname,
     name: getDisplayName(attrs.displayname) || record.shortname,
-    description: attrs.description || "",
+    description: getDisplayName(attrs.description) || "",
     avatar: attrs.social_avatar_url || null,
     participants: payload.participants || [],
-    adminIds: payload.adminIds || [payload.createdBy],
+    adminIds: payload.adminIds || (payload.createdBy ? [payload.createdBy] : []),
     createdBy: payload.createdBy || "",
     createdAt: new Date(attrs.created_at || Date.now()),
     isActive: attrs.is_active !== false,
@@ -151,18 +160,17 @@ export function transformGroupRecord(record: any): GroupData {
 }
 
 export function transformGroupMessageRecord(
-  record: any,
+  record: EntryRecord,
   currentUserShortname: string
 ): GroupMessageData {
-  const attachments = record?.attachments?.media || null;
-  const payload = record.attributes.payload;
-  const body = payload.body;
+  const attachments = record.attachments?.media || null;
+  const body = bodyAs<GroupMessageBody>(record.attributes.payload) ?? {};
 
   return {
     id: record.shortname,
-    senderId: body.sender,
-    groupId: body.groupId,
-    content: body.content,
+    senderId: body.sender ?? "",
+    groupId: body.groupId ?? "",
+    content: body.content ?? "",
     attachments: attachments,
     timestamp: new Date(record.attributes.created_at || Date.now()),
     isOwn: body.sender === currentUserShortname,
@@ -237,8 +245,15 @@ export function clearMessageCache(): void {
   purgeLegacyMessageStorage();
 }
 
+/** The routing fields of a message as it arrives over the websocket. */
+export interface MessageRouting {
+  senderId?: unknown;
+  receiverId?: unknown;
+  groupId?: unknown;
+}
+
 export function isRelevantMessage(
-  data: any,
+  data: MessageRouting,
   selectedUserShortname: string,
   currentUserShortname: string
 ): boolean {
@@ -259,7 +274,7 @@ export function sortMessagesByTimestamp(
 }
 
 export function isRelevantGroupMessage(
-  data: any,
+  data: MessageRouting,
   groupId: string,
   currentUserShortname: string
 ): boolean {

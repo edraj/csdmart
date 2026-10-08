@@ -15,6 +15,7 @@ import {
     searchEntities
 } from "./core";
 import { APPLICATIONS_SPACE } from "@/lib/constants";
+import { attachmentGroup, type EntryRecord, type JsonObject } from "@/lib/types";
 
 export async function getSurveys(
     space_name: string = "applications",
@@ -40,7 +41,7 @@ export async function getSurveys(
 
 export async function submitSurveyResponse(
     survey_shortname: string,
-    responses: any
+    responses: JsonObject
 ) {
     const currentUser = get(user);
     if (!currentUser?.shortname) {
@@ -49,7 +50,7 @@ export async function submitSurveyResponse(
 
     const existingResponse = await getUserSurveyResponseRecord(survey_shortname);
 
-    const attributes: any = {
+    const attributes = {
         is_active: true,
         owner_shortname: currentUser.shortname,
         payload: {
@@ -77,9 +78,13 @@ export async function submitSurveyResponse(
     }
 }
 
+/**
+ * The current user's response to a survey: the `json` attachment of the
+ * survey entry that the user owns, or null when they have not answered.
+ */
 export async function getUserSurveyResponseRecord(
     survey_shortname: string
-): Promise<any | null> {
+): Promise<EntryRecord | null> {
     const currentUser = get(user);
     if (!currentUser?.shortname) {
         return null;
@@ -96,12 +101,13 @@ export async function getUserSurveyResponseRecord(
             true
         );
 
-        if (!survey || !(survey as any).attachments || !(survey as any).attachments.json) {
+        const responses = attachmentGroup(survey?.attachments, "json");
+        if (responses.length === 0) {
             return null;
         }
 
-        const userResponse = (survey as any).attachments.json.find(
-            (attachment: any) =>
+        const userResponse = responses.find(
+            (attachment) =>
                 attachment.attributes?.owner_shortname === currentUser.shortname
         );
 
@@ -119,9 +125,10 @@ export async function hasUserRespondedToSurvey(
     return !!response;
 }
 
+/** The answers the current user submitted (the response's payload body), or null. */
 export async function getUserSurveyResponses(
     survey_shortname: string
-): Promise<any | null> {
+): Promise<unknown> {
     const userResponse = await getUserSurveyResponseRecord(survey_shortname);
     return userResponse?.attributes?.payload?.body || null;
 }

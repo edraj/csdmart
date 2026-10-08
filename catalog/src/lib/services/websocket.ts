@@ -8,10 +8,17 @@
 import { configReady, website } from "@/config";
 import { resolveBackendBase } from "@shared/backend-url";
 
+/**
+ * A frame sent to or received from the server: a `type` plus whatever fields
+ * that type carries. Receivers narrow the fields they read.
+ */
 export type WebSocketMessage = {
   type: string;
-  [key: string]: any;
+  [key: string]: unknown;
 };
+
+/** An attachment as the chat announces it to the other side (not the record itself). */
+export type WebSocketAttachment = Record<string, unknown>;
 
 export type ConnectionStatus =
   | "disconnected"
@@ -175,10 +182,10 @@ export class WebSocketService {
             this.callbacks.onError(new Error("WebSocket connection error"));
           }
         };
-      } catch (error: any) {
+      } catch (error) {
         console.error(
           "[WebSocket] Connection failed:",
-          error?.message || error,
+          error instanceof Error ? error.message : error,
         );
         this.cleanup();
         resolve(false);
@@ -337,7 +344,7 @@ export class WebSocketService {
       receiverId?: string;
       groupId?: string;
       hasAttachments?: boolean;
-      attachments?: any[];
+      attachments?: WebSocketAttachment[];
     } = {},
   ): Promise<boolean> {
     const msg: WebSocketMessage = {
@@ -359,7 +366,7 @@ export class WebSocketService {
       groupId?: string;
       timestamp?: string;
       hasAttachments?: boolean;
-      attachments?: any[];
+      attachments?: WebSocketAttachment[];
       participants?: string[];
     } = {},
   ): Promise<boolean> {

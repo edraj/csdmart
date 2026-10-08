@@ -5,6 +5,7 @@
   import { getPostContent } from "@/lib/utils/postUtils";
   import { localized, type Localized } from "@/lib/catalogItems";
   import { getTemplate } from "@/lib/dmart_services/templates";
+  import { bodyAs, type TemplateBody as TemplateEntryBody } from "@/lib/types";
   import { getCurrentScope } from "@/stores/user";
   import { APPLICATIONS_SPACE } from "@/lib/constants";
   import JsonViewer from "@/components/JsonViewer.svelte";
@@ -87,7 +88,9 @@
         templateError = $_("post_detail.template.not_found", { values: { name: body.template } });
         return;
       }
-      const content: unknown = template.attributes?.payload?.body?.content;
+      // A retrieved entry is flat: its payload sits at the top level (there
+      // is no `attributes` wrapper, which only query records have).
+      const content = bodyAs<TemplateEntryBody>(template.payload)?.content;
       if (typeof content !== "string" || !content) {
         templateError = $_("post_detail.template.empty");
         return;

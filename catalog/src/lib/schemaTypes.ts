@@ -46,7 +46,18 @@ export const schemaTypeMap: Record<string, SchemaFieldType> = {
   schema_shortname: 'string',
 };
 
-export function parseValueByType(value: any, type: SchemaFieldType): any {
+/** "a, b ,c" → ["a", "b", "c"]. */
+function splitList(text: string): string[] {
+  return text.split(',').map((s) => s.trim()).filter(Boolean);
+}
+
+/**
+ * Turns a form input's value into the JSON the field's type calls for. The
+ * input is normally a string; anything else is read through `String()`, as
+ * `JSON.parse` would have done (a value that was not a string used to reach
+ * `.split` and throw).
+ */
+export function parseValueByType(value: unknown, type: SchemaFieldType): unknown {
   if (value === '' || value === null || value === undefined) {
     if (type === 'array' || type === 'array-object') return [];
     if (type === 'boolean') return false;
@@ -55,39 +66,42 @@ export function parseValueByType(value: any, type: SchemaFieldType): any {
   }
 
   switch (type) {
-    case 'array':
+    case 'array': {
       if (Array.isArray(value)) return value;
+      const text = String(value);
       try {
-        const parsed = JSON.parse(value);
-        return Array.isArray(parsed) ? parsed : value.split(',').map((s: string) => s.trim()).filter(Boolean);
+        const parsed: unknown = JSON.parse(text);
+        return Array.isArray(parsed) ? parsed : splitList(text);
       } catch {
-        return value.split(',').map((s: string) => s.trim()).filter(Boolean);
+        return splitList(text);
       }
+    }
 
-    case 'array-object':
+    case 'array-object': {
       if (Array.isArray(value)) return value;
       try {
-        const parsed = JSON.parse(value);
+        const parsed: unknown = JSON.parse(String(value));
         return Array.isArray(parsed) ? parsed : [];
       } catch {
         return [];
       }
+    }
 
     case 'boolean':
       return value === true || value === 'true' || value === '1' || value === 1 || value === 'on';
 
     case 'localized':
-      if (typeof value === 'object' && value !== null) return value;
+      if (typeof value === 'object') return value;
       try {
-        return JSON.parse(value);
+        return JSON.parse(String(value));
       } catch {
         return { en: value };
       }
 
     case 'object':
-      if (typeof value === 'object' && value !== null) return value;
+      if (typeof value === 'object') return value;
       try {
-        return JSON.parse(value);
+        return JSON.parse(String(value));
       } catch {
         return {};
       }
@@ -113,7 +127,7 @@ export function getFieldType(key: string): SchemaFieldType {
   return schemaTypeMap[key] || 'string';
 }
 
-export function formatValueForEdit(value: any, type: SchemaFieldType): any {
+export function formatValueForEdit(value: unknown, type: SchemaFieldType): unknown {
   if (value === undefined || value === null) {
     if (type === 'array' || type === 'array-object') return [];
     if (type === 'boolean') return false;

@@ -20,7 +20,8 @@
     setNestedValue,
   } from "@/lib/schemaTypes";
   import { createFolder } from "@/lib/dmart_services/entries";
-  import { collectSchemaPropertyBags, resolveSchemaDef } from "@/lib/jsonSchema";
+  import { asSchemaNode, collectSchemaPropertyBags, resolveSchemaDef } from "@/lib/jsonSchema";
+  import { bodyObject } from "@/lib/types";
   import { _, locale } from "@/i18n";
   import { setTitle } from "@/lib/title";
   import { formatDate } from "@/lib/format";
@@ -265,7 +266,10 @@
     spaceHideFolders = hide;
     folderMetadata = folderMeta;
 
-    const schemaShortnames: string[] = folderMeta?.payload?.body?.content_schema_shortnames || [];
+    const folderBody = bodyObject(folderMeta?.payload);
+    const schemaShortnames: string[] = Array.isArray(folderBody?.content_schema_shortnames)
+      ? folderBody.content_schema_shortnames
+      : [];
     const schemaShortnamesKey = schemaShortnames.slice().sort().join(",");
     if (schemaShortnamesKey !== _prevSchemaShortnamesKey) {
       _prevSchemaShortnamesKey = schemaShortnamesKey;
@@ -357,7 +361,7 @@
       >();
 
       for (const schema of schemas) {
-        const body = (schema as any)?.payload?.body;
+        const body = asSchemaNode(schema?.payload?.body);
         // Discriminated-union schemas (e.g. "subaccount") have no top-level
         // `properties` — each oneOf/anyOf branch defines its own. Collect
         // every bag so filters cover fields from any branch.
@@ -380,10 +384,11 @@
               continue;
             }
 
-            const enumValues: any[] | undefined = Array.isArray(propDef.enum)
+            const items = asSchemaNode(propDef.items);
+            const enumValues: unknown[] | undefined = Array.isArray(propDef.enum)
               ? propDef.enum
-              : Array.isArray(propDef.items?.enum)
-                ? propDef.items.enum
+              : Array.isArray(items?.enum)
+                ? items.enum
                 : undefined;
 
             if (enumValues && enumValues.length > 0) {

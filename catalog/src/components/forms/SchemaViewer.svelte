@@ -1,20 +1,48 @@
 <script lang="ts">
   import { _ } from "@/i18n";
-    import { resolveSchemaDef } from "@/lib/jsonSchema";
+    import { asSchemaNode, resolveSchemaDef } from "@/lib/jsonSchema";
+    import type { JsonSchemaNode } from "@/lib/types";
 
-    let { content = {} }: { content?: any } = $props();
+    /** The schema body: a JSON string, or the parsed document. */
+    let { content = {} }: { content?: unknown } = $props();
 
     // Normalise: content can be a JSON string or an object
-    let schema: any = $derived.by((): any => {
+    let schema: JsonSchemaNode = $derived.by((): JsonSchemaNode => {
         if (typeof content === "string") {
             try {
-                return JSON.parse(content);
+                return asSchemaNode(JSON.parse(content)) ?? {};
             } catch {
                 return {};
             }
         }
-        return content || {};
+        return asSchemaNode(content) ?? {};
     });
+
+    /** One row of the properties table. */
+    interface PropertyRow {
+        name: string;
+        type: string;
+        title?: string;
+        description?: string;
+        required: boolean;
+        constraints: string[];
+        properties?: Record<string, JsonSchemaNode>;
+        /** The item type of an array property, when it declares one. */
+        itemsType?: string;
+    }
+
+    interface Variant {
+        title: string;
+        description?: string;
+        properties: PropertyRow[];
+    }
+
+    /** A node's `type` for display: "any" when unset, "a,b" for a list. */
+    function typeLabel(node: JsonSchemaNode | null | undefined): string {
+        const type = node?.type;
+        if (type === undefined) return "any";
+        return Array.isArray(type) ? type.join(",") : type;
+    }
 
     const typeColors: Record<string, string> = {
         string: "bg-success-soft text-success",
@@ -30,11 +58,12 @@
         return typeColors[type] ?? "bg-surface-3 text-text-muted";
     }
 
-    function getProperties(s: any, root: any): any[] {
+    function getProperties(s: JsonSchemaNode | null | undefined, root: JsonSchemaNode): PropertyRow[] {
         if (!s?.properties) return [];
         const required: string[] = s.required ?? [];
-        return Object.entries(s.properties).map(([name, raw]: [string, any]) => {
-            const def = resolveSchemaDef(root, raw);
+        return Object.entries(s.properties).map(([name, raw]) => {
+            const def = resolveSchemaDef(root, raw) ?? {};
+            const items = asSchemaNode(def.items);
             const constraints: string[] = [];
             if (def.minLength != null)
                 constraints.push(`minLength: ${def.minLength}`);
@@ -52,13 +81,13 @@
                 constraints.push(`enum: ${def.enum.join(", ")}`);
             return {
                 name,
-                type: def.type ?? "any",
-                title: def.title as string | undefined,
-                description: def.description as string | undefined,
+                type: typeLabel(def),
+                title: def.title,
+                description: def.description,
                 required: required.includes(name),
                 constraints,
                 properties: def.properties,
-                items: def.items,
+                itemsType: items?.type !== undefined ? typeLabel(items) : undefined,
             };
         });
     }
@@ -67,37 +96,36 @@
     // top-level `properties` at all — instead each `oneOf`/`anyOf` branch is
     // its own object schema with its own `properties`. Surface each branch
     // as its own variant rather than showing an empty schema.
-    function getVariants(
-        s: any,
-        root: any,
-    ): Array<{ title: string; description?: string; properties: any[] }> {
-        if (s?.properties) {
+    function getVariants(s: JsonSchemaNode, root: JsonSchemaNode): Variant[] {
+        if (s.properties) {
             return [
                 {
-                    title: s.title,
+                    title: s.title ?? "",
                     description: s.description,
                     properties: getProperties(s, root),
                 },
             ];
         }
 
-        const branches: any[] | undefined = Array.isArray(s?.oneOf)
+        const branches = Array.isArray(s.oneOf)
             ? s.oneOf
-            : Array.isArray(s?.anyOf)
+            : Array.isArray(s.anyOf)
                 ? s.anyOf
                 : undefined;
 
         if (!branches || branches.length === 0) return [];
 
-        return branches.map((branch, i) => ({
-            title: branch?.title || branch?.description || `Option ${i + 1}`,
-            description: branch?.title ? branch?.description : undefined,
-            properties: getProperties(branch, root),
-        }));
+        return branches.map((raw, i) => {
+            const branch = asSchemaNode(raw);
+            return {
+                title: branch?.title || branch?.description || `Option ${i + 1}`,
+                description: branch?.title ? branch?.description : undefined,
+                properties: getProperties(branch, root),
+            };
+        });
     }
 
-    let variants: Array<{ title: string; description?: string; properties: any[] }> =
-        $derived(getVariants(schema, schema));
+    let variants: Variant[] = $derived(getVariants(schema, schema));
 </script>
 
 <div class="schema-viewer">
@@ -115,7 +143,7 @@
     </div>
 
     <!-- Properties table -->
-    {#snippet propsTable(props: any[])}
+    {#snippet propsTable(props: PropertyRow[])}
         <div class="props-container">
             <table class="props-table">
                 <thead>
@@ -139,9 +167,9 @@
                                 <span class="type-badge {typeColor(prop.type)}"
                                     >{prop.type}</span
                                 >
-                                {#if prop.type === "array" && prop.items?.type}
+                                {#if prop.type === "array" && prop.itemsType}
                                     <span class="items-type"
-                                        >of {prop.items.type}</span
+                                        >of {prop.itemsType}</span
                                     >
                                 {/if}
                             </td>
@@ -173,13 +201,8 @@
                                                         >{subName}</span
                                                     >
                                                     <span
-                                                        class="type-badge {typeColor(
-                                                            (subDef as any)
-                                                                .type ?? 'any',
-                                                        )}"
-                                                        >{(subDef as any)
-                                                            .type ??
-                                                            "any"}</span
+                                                        class="type-badge {typeColor(typeLabel(subDef))}"
+                                                        >{typeLabel(subDef)}</span
                                                     >
                                                 </div>
                                             {/each}

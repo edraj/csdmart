@@ -37,7 +37,7 @@ export async function getPolls(
 export async function userVote(
     poll_shortname: string,
     candidate_shortname: string,
-    voters: any,
+    voters: string[],
     isReplace: boolean = false
 ) {
     const attributes = {
