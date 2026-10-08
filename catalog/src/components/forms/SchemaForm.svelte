@@ -4,11 +4,52 @@
     transformJsonToForm,
   } from "@shared/schema-editor-utils";
   import { _ } from "@/i18n";
+  import { isIndexable, isJsonObject, type JsonObject } from "@/lib/types";
+
+  /**
+   * A schema node as this form edits it (ui-shared/schema-editor-utils'
+   * form shape): `properties` is an ordered list of named rows, a removed
+   * row is kept as `{ name, __removed: true }`, and every node has an `id`
+   * for keyed rendering. The keywords the form binds are named; any other
+   * keyword rides along untouched.
+   */
+  interface FormNode {
+    id?: string;
+    name?: string;
+    type?: string;
+    title?: string;
+    description?: string;
+    format?: string;
+    pattern?: string;
+    minLength?: number;
+    maxLength?: number;
+    minimum?: number;
+    maximum?: number;
+    multipleOf?: number;
+    minItems?: number;
+    maxItems?: number;
+    items?: FormNode;
+    properties?: Array<FormNode | null>;
+    required?: string[];
+    __removed?: boolean;
+    [keyword: string]: unknown;
+  }
+
+  /** The shared transform works on `unknown`; this names its result once. */
+  function asFormNode(value: unknown): FormNode | null {
+    return isJsonObject(value) ? (value as FormNode) : null;
+  }
+
+  /** A live (not removed) row of a properties list. */
+  function isLiveRow(row: FormNode | null): row is FormNode {
+    return row !== null && !row.__removed;
+  }
 
   let {
     content = $bindable({}),
   }: {
-    content: any;
+    /** The stored JSON schema (`payload.body` of a schema entry). */
+    content: JsonObject;
   } = $props();
 
   if (!content || Object.keys(content).length === 0) {
@@ -19,7 +60,7 @@
     };
   }
 
-  let formContent: any = $state(transformJsonToForm($state.snapshot(content)));
+  let formContent: FormNode = $state(asFormNode(transformJsonToForm($state.snapshot(content))) ?? {});
 
   const schemaTypes = [
     { value: "string", name: "String" },
@@ -42,10 +83,10 @@
 
     if (parentPath) {
       const parent = getPropertyByPath(formContent, parentPath);
-      if (parent && !parent.properties) {
-        parent.properties = [];
-      }
       if (parent) {
+        if (!parent.properties) {
+          parent.properties = [];
+        }
         parent.properties.push(newProperty);
       }
     } else {
@@ -58,7 +99,7 @@
     formContent = { ...formContent };
   }
 
-  function addArrayItem(parentPath: any) {
+  function addArrayItem(parentPath: string) {
     const parent = getPropertyByPath(formContent, parentPath);
     if (parent) {
       if (!parent.items) {
@@ -76,41 +117,44 @@
     }
   }
 
-  function removeProperty(path: any, index: any) {
+  function removeProperty(path: string, index: number) {
     const parts = path.split(".");
-    let current = formContent;
+    let current: unknown = formContent;
 
     for (let i = 0; i < parts.length - 1; i++) {
-      if (!current[parts[i]]) return;
+      if (!isIndexable(current) || !current[parts[i]]) return;
       current = current[parts[i]];
     }
 
     const lastPart = parts[parts.length - 1];
-    if (!current[lastPart]) return;
+    if (!isIndexable(current)) return;
+    const rows = current[lastPart];
+    if (!Array.isArray(rows)) return;
 
     // Mark property as removed but preserve its name
-    const propertyName = current[lastPart][index]?.name;
+    const propertyName = asFormNode(rows[index])?.name;
     if (propertyName) {
-      current[lastPart][index] = { __removed: true, name: propertyName };
+      rows[index] = { __removed: true, name: propertyName };
     } else {
-      current[lastPart][index] = null;
+      rows[index] = null;
     }
     formContent = { ...formContent };
   }
 
-  function getPropertyByPath(obj: any, path: any) {
+  /** The node at a dotted path such as "properties.2.items", or null. */
+  function getPropertyByPath(obj: FormNode, path: string): FormNode | null {
     const parts = path.split(".");
-    let current = obj;
+    let current: unknown = obj;
 
     for (const part of parts) {
-      if (!current[part]) return null;
+      if (!isIndexable(current) || !current[part]) return null;
       current = current[part];
     }
 
-    return current;
+    return asFormNode(current);
   }
 
-  function toggleRequired(propertyName: any) {
+  function toggleRequired(propertyName: string) {
     if (!formContent.required) {
       formContent.required = [];
     }
@@ -125,20 +169,22 @@
     formContent = { ...formContent };
   }
 
-  function isRequired(propertyName: any) {
-    return formContent.required && formContent.required.includes(propertyName);
+  function isRequired(propertyName: string): boolean {
+    return !!formContent.required && formContent.required.includes(propertyName);
   }
 
-  function toggleAccordion(event: any) {
+  function toggleAccordion(event: MouseEvent & { currentTarget: HTMLButtonElement }) {
     const button = event.currentTarget;
     const content = button.nextElementSibling;
     const isExpanded = button.getAttribute("aria-expanded") === "true";
 
-    button.setAttribute("aria-expanded", !isExpanded);
-    content.style.display = isExpanded ? "none" : "block";
+    button.setAttribute("aria-expanded", String(!isExpanded));
+    if (content instanceof HTMLElement) {
+      content.style.display = isExpanded ? "none" : "block";
+    }
 
     // Toggle chevron rotation
-    const chevron = button.querySelector(".chevron");
+    const chevron = button.querySelector<SVGElement>(".chevron");
     if (chevron) {
       chevron.style.transform = isExpanded ? "rotate(0deg)" : "rotate(180deg)";
     }
@@ -148,7 +194,7 @@
     const schemaContent = transformFormToJson(
       structuredClone($state.snapshot(formContent))
     );
-    content = schemaContent;
+    content = isJsonObject(schemaContent) ? schemaContent : {};
   });
 </script>
 
@@ -196,7 +242,7 @@
 
       {#if formContent.properties && formContent.properties.length > 0}
         <div class="accordion">
-          {#each formContent.properties.filter((p: any) => p !== null && !p.__removed) as property, index (property.id)}
+          {#each formContent.properties.filter(isLiveRow) as property, index (property.id)}
             <div class="accordion-item">
               <button
                 type="button"
@@ -211,7 +257,7 @@
                   {#if property.type}
                     <span class="badge badge-type">{property.type}</span>
                   {/if}
-                  {#if isRequired(property.name)}
+                  {#if isRequired(property.name ?? "")}
                     <span class="badge badge-required"
                       >{$_("schema_editor.required")}</span
                     >
@@ -461,7 +507,7 @@
 
                                 {#if property.items.properties.length > 0}
                                   <div class="nested-items">
-                                    {#each property.items.properties.filter((p: any) => p !== null && !p.__removed) as itemProperty, itemIndex (itemProperty.id)}
+                                    {#each property.items.properties.filter(isLiveRow) as itemProperty, itemIndex (itemProperty.id)}
                                       <div class="nested-item">
                                         <div class="form-grid">
                                           <div class="form-group">
@@ -570,7 +616,7 @@
 
                         {#if property.properties && property.properties.length > 0}
                           <div class="nested-items">
-                            {#each property.properties.filter((p: any) => p !== null && !p.__removed) as nestedProperty, nestedIndex (nestedProperty.id)}
+                            {#each property.properties.filter(isLiveRow) as nestedProperty, nestedIndex (nestedProperty.id)}
                               <div class="nested-item">
                                 <div class="form-grid">
                                   <div class="form-group">
@@ -634,8 +680,8 @@
                       <input
                         id={`property-required-${index}`}
                         type="checkbox"
-                        checked={isRequired(property.name)}
-                        onchange={() => toggleRequired(property.name)}
+                        checked={isRequired(property.name ?? "")}
+                        onchange={() => toggleRequired(property.name ?? "")}
                       />
                       <label for={`property-required-${index}`}
                         >{$_("schema_editor.required")}</label

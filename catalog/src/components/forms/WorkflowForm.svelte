@@ -1,17 +1,103 @@
+<script module lang="ts">
+  import { isJsonObject } from "@/lib/types";
+
+  // The workflow body the form edits (the `workflow` schema in the
+  // applications space). Every list is present once normalized, so the form
+  // can bind straight into it; the server strips empty lists on the way out
+  // and `normalizeWorkflowContent` puts them back on the way in.
+
+  export interface WorkflowTransition {
+    roles: string[];
+    state: string;
+    action: string;
+    [key: string]: unknown;
+  }
+
+  export interface WorkflowResolution {
+    ar: string;
+    en: string;
+    ku: string;
+    key: string;
+    [key: string]: unknown;
+  }
+
+  export interface WorkflowState {
+    name: string;
+    state: string;
+    next: WorkflowTransition[];
+    resolutions: WorkflowResolution[];
+    [key: string]: unknown;
+  }
+
+  export interface WorkflowInitialState {
+    name: string;
+    roles: string[];
+    [key: string]: unknown;
+  }
+
+  export interface WorkflowContent {
+    name: string;
+    illustration: string;
+    states: WorkflowState[];
+    initial_state: WorkflowInitialState[];
+    [key: string]: unknown;
+  }
+
+  const text = (value: unknown): string => (typeof value === "string" ? value : "");
+  const list = (value: unknown): unknown[] => (Array.isArray(value) ? value : []);
+  const roles = (value: unknown): string[] => list(value).map(text);
+
+  function normalizeTransition(raw: unknown): WorkflowTransition {
+    const t = isJsonObject(raw) ? raw : {};
+    return { ...t, roles: roles(t.roles), state: text(t.state), action: text(t.action) };
+  }
+
+  function normalizeResolution(raw: unknown): WorkflowResolution {
+    const r = isJsonObject(raw) ? raw : {};
+    return { ...r, ar: text(r.ar), en: text(r.en), ku: text(r.ku), key: text(r.key) };
+  }
+
+  function normalizeState(raw: unknown): WorkflowState {
+    const s = isJsonObject(raw) ? raw : {};
+    return {
+      ...s,
+      name: text(s.name),
+      state: text(s.state),
+      next: list(s.next).map(normalizeTransition),
+      resolutions: list(s.resolutions).map(normalizeResolution),
+    };
+  }
+
+  function normalizeInitialState(raw: unknown): WorkflowInitialState {
+    const s = isJsonObject(raw) ? raw : {};
+    return { ...s, name: text(s.name), roles: roles(s.roles) };
+  }
+
+  /**
+   * A stored workflow body (or nothing) as the full shape the form binds to.
+   * Fields the form does not know about are kept.
+   */
+  export function normalizeWorkflowContent(input: unknown): WorkflowContent {
+    const c = isJsonObject(input) ? input : {};
+    return {
+      ...c,
+      name: text(c.name),
+      illustration: text(c.illustration),
+      states: list(c.states).map(normalizeState),
+      initial_state: list(c.initial_state).map(normalizeInitialState),
+    };
+  }
+</script>
+
 <script lang="ts">
   import { _ } from "@/i18n";
   let {
-    content = $bindable({}),
+    content = $bindable(normalizeWorkflowContent({})),
   }: {
-    content: any;
+    content: WorkflowContent;
   } = $props();
 
-  content = {
-    name: content.name || "",
-    states: content.states || [],
-    illustration: content.illustration || "",
-    initial_state: content.initial_state || [],
-  };
+  content = normalizeWorkflowContent(content);
 
   let openAccordions: Set<number> = $state(new Set());
 
@@ -41,7 +127,7 @@
 
   function removeState(event: Event, index: number) {
     event.stopPropagation();
-    content.states = content.states.filter((_: any, i: number) => i !== index);
+    content.states = content.states.filter((_, i) => i !== index);
   }
 
   function addNextTransition(stateIndex: number) {
@@ -53,7 +139,7 @@
 
   function removeNextTransition(stateIndex: number, transitionIndex: number) {
     content.states[stateIndex].next = content.states[stateIndex].next.filter(
-      (_: any, i: number) => i !== transitionIndex
+      (_, i) => i !== transitionIndex
     );
   }
 
@@ -67,7 +153,7 @@
   function removeResolution(stateIndex: number, resolutionIndex: number) {
     content.states[stateIndex].resolutions = content.states[
       stateIndex
-    ].resolutions.filter((_: any, i: number) => i !== resolutionIndex);
+    ].resolutions.filter((_, i) => i !== resolutionIndex);
   }
 
   function addInitialState() {
@@ -79,19 +165,22 @@
 
   function removeInitialState(index: number) {
     content.initial_state = content.initial_state.filter(
-      (_: any, i: number) => i !== index
+      (_, i) => i !== index
     );
   }
 
-  function addRole(item: any) {
+  /** A transition or an initial state: anything that carries a list of roles. */
+  type RoleHolder = { roles: string[] };
+
+  function addRole(item: RoleHolder) {
     if (item.roles === undefined) {
       item.roles = [];
     }
     item.roles = [...(item.roles || []), ""];
   }
 
-  function removeRole(item: any, roleIndex: number) {
-    item.roles = item.roles.filter((_: any, i: number) => i !== roleIndex);
+  function removeRole(item: RoleHolder, roleIndex: number) {
+    item.roles = item.roles.filter((_, i) => i !== roleIndex);
   }
 </script>
 

@@ -51,10 +51,16 @@ export function errorStatus(err: unknown): number | null {
 export function errorMessage(err: unknown, fallback = ""): string {
   if (typeof err === "string") return err || fallback;
   const e = asShape(err);
-  const server = e.response?.data?.error?.message;
-  if (typeof server === "string" && server) return server;
+  const server = serverMessage(err);
+  if (server) return server;
   if (typeof e.message === "string" && e.message) return e.message;
   return fallback;
+}
+
+/** The server's own message for a failed call (`response.data.error.message`), or undefined. */
+export function serverMessage(err: unknown): string | undefined {
+  const server = asShape(err).response?.data?.error?.message;
+  return typeof server === "string" && server ? server : undefined;
 }
 
 export function classifyApiError(err: unknown): ApiErrorKind {

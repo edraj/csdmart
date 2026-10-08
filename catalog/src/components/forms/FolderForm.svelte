@@ -1,22 +1,25 @@
 <script lang="ts">
   import { Dmart, QueryType } from "@edraj/tsdmart";
   import { _ } from "svelte-i18n";
-  import { applyFolderContentDefaults } from "@/lib/folder_defaults";
+  import { applyFolderContentDefaults, type FolderContent } from "@/lib/folder_defaults";
+
+  type SelectChangeEvent = Event & { currentTarget: EventTarget & HTMLSelectElement };
 
   let {
-    content = $bindable({}),
+    content = $bindable(applyFolderContentDefaults({})),
     space_name = $bindable(""),
     fullWidth = false,
   }: {
-    content: any;
-    space_name: any;
+    /** The folder's listing settings (`payload.body`); defaults are applied on mount. */
+    content: FolderContent;
+    space_name: string;
     fullWidth?: boolean;
   } = $props();
 
   content = applyFolderContentDefaults(content);
 
-  function handleResourceTypeChange(e: any) {
-    const target = e.target as HTMLSelectElement;
+  function handleResourceTypeChange(e: SelectChangeEvent) {
+    const target = e.currentTarget;
     if (target.value) {
       content.content_resource_types = [target.value];
     } else {
@@ -24,40 +27,42 @@
     }
   }
 
-  function addSchemaShortname(e: any) {
+  function addSchemaShortname(e: SelectChangeEvent) {
+    const select = e.currentTarget;
     if (
-      e.target.value &&
-      !content.content_schema_shortnames.includes(e.target.value)
+      select.value &&
+      !content.content_schema_shortnames.includes(select.value)
     ) {
       content.content_schema_shortnames = [
         ...content.content_schema_shortnames,
-        e.target.value,
+        select.value,
       ];
-      e.target.value = "";
+      select.value = "";
     }
   }
 
-  function removeSchemaShortname(schema: any) {
+  function removeSchemaShortname(schema: string) {
     content.content_schema_shortnames =
-      content.content_schema_shortnames.filter((s: any) => s !== schema);
+      content.content_schema_shortnames.filter((s) => s !== schema);
   }
 
-  function addWorkflowShortname(e: any) {
+  function addWorkflowShortname(e: SelectChangeEvent) {
+    const select = e.currentTarget;
     if (
-      e.target.value &&
-      !content.workflow_shortnames.includes(e.target.value)
+      select.value &&
+      !content.workflow_shortnames.includes(select.value)
     ) {
       content.workflow_shortnames = [
         ...content.workflow_shortnames,
-        e.target.value,
+        select.value,
       ];
-      e.target.value = "";
+      select.value = "";
     }
   }
 
-  function removeWorkflowShortname(workflow: any) {
+  function removeWorkflowShortname(workflow: string) {
     content.workflow_shortnames = content.workflow_shortnames.filter(
-      (w: any) => w !== workflow
+      (w) => w !== workflow
     );
   }
 </script>
@@ -129,7 +134,7 @@
         <select class="select-field" onchange={addSchemaShortname}>
           <option value="">{$_("options.select_schema_to_add")}</option>
           {#await Dmart.query( { space_name: space_name, type: QueryType.search, subpath: "/schema", search: "", retrieve_json_payload: true, limit: 99 } ) then schemas}
-            {#each schemas!.records.map((e: any) => e.shortname) as schema (schema)}
+            {#each schemas!.records.map((e) => e.shortname) as schema (schema)}
               <option value={schema}>{schema}</option>
             {/each}
           {:catch}
@@ -164,7 +169,7 @@
         <select class="select-field" onchange={addWorkflowShortname}>
           <option value="">{$_("options.select_workflow_to_add")}</option>
           {#await Dmart.query( { space_name: "management", type: QueryType.search, subpath: "/workflow", search: "", retrieve_json_payload: true, limit: 99 } ) then workflows}
-            {#each workflows!.records.map((e: any) => e.shortname) as workflow (workflow)}
+            {#each workflows!.records.map((e) => e.shortname) as workflow (workflow)}
               <option value={workflow}>{workflow}</option>
             {/each}
           {:catch}

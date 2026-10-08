@@ -2,36 +2,49 @@
   import { _ } from "@/i18n";
   import { onMount } from "svelte";
   import { getTemplates } from "@/lib/dmart_services";
+  import { bodyAs, isJsonObject, recordsOf, type EntryRecord, type TemplateBody } from "@/lib/types";
+
+  /** A `{{name:type}}` placeholder of a template. */
+  interface TemplateField {
+    name: string;
+    type: string;
+  }
+
+  /** What a placeholder is filled with: text, or a number / flag for typed fields. */
+  type FieldValue = string | number | boolean;
 
   let {
     content = $bindable(""),
     space_name = "",
     onContentChange = () => {},
   }: {
-    content?: any;
+    content?: string;
     space_name?: string;
     onContentChange?: (content: string) => void;
   } = $props();
 
-  let templates: any[] = $state([]);
-  let originalTemplate: any = $state(null);
-  let templateFields: any[] = $state([]);
-  let fieldValues: Record<string, any> = $state({});
+  let templates: EntryRecord[] = $state([]);
+  let originalTemplate: EntryRecord | null = $state(null);
+  let templateFields: TemplateField[] = $state([]);
+  let fieldValues: Record<string, FieldValue> = $state({});
+
+  /** A field's value as the text its input shows (empty for a blank or false). */
+  function textOf(name: string): string {
+    return String(fieldValues[name] || "");
+  }
 
   // The template body with every {{name:type}} placeholder replaced by the
   // value typed for it.
   const previewContent = $derived.by(() => {
     if (!originalTemplate) return "";
-    let next = originalTemplate?.attributes?.payload?.body;
-    if (typeof next === "object" && next?.content) {
-      next = next.content;
+    let body: unknown = originalTemplate.attributes?.payload?.body;
+    if (isJsonObject(body) && body.content) {
+      body = body.content;
     }
-    if (typeof next !== "string") {
-      next = String(next ?? "");
-    }
+    let next = typeof body === "string" ? body : String(body ?? "");
     for (const field of templateFields) {
       const placeholder = `{{${field.name}:${field.type}}}`;
-      next = next.replace(placeholder, fieldValues[field.name] || "");
+      next = next.replace(placeholder, textOf(field.name));
     }
     return next;
   });
@@ -45,9 +58,14 @@
 
   onMount(async () => {
     const response = await getTemplates(space_name);
-    templates = response.records;
+    templates = recordsOf(response);
     detectAndParseTemplate();
   });
+
+  /** A template entry's text: the `content` of its body. */
+  function templateContentOf(template: EntryRecord): string {
+    return bodyAs<TemplateBody>(template.attributes?.payload)?.content ?? "";
+  }
 
   // Find the template whose placeholders all have a value in `content`, and
   // seed the form from it.
@@ -55,7 +73,7 @@
     if (!content || templates.length === 0) return;
 
     for (const template of templates) {
-      const templateContent = template?.attributes?.payload?.body.content;
+      const templateContent = templateContentOf(template);
       const fields = extractFields(templateContent);
       if (fields.length === 0) continue;
 
@@ -69,9 +87,9 @@
     }
   }
 
-  function extractFields(templateContent: any) {
+  function extractFields(templateContent: string): TemplateField[] {
     const fieldRegex = /\{\{(\w+):(\w+)\}\}/g;
-    const fields = [];
+    const fields: TemplateField[] = [];
     let match;
 
     while ((match = fieldRegex.exec(templateContent)) !== null) {
@@ -82,8 +100,12 @@
     return fields;
   }
 
-  function extractValuesFromContent(filledContent: any, templateContent: any, fields: any) {
-    const values: Record<string, any> = {};
+  function extractValuesFromContent(
+    filledContent: string,
+    templateContent: string,
+    fields: TemplateField[],
+  ): Record<string, FieldValue> | null {
+    const values: Record<string, FieldValue> = {};
 
     const plainContent = String(filledContent).replace(/<[^>]+>/g, "");
 
@@ -92,7 +114,7 @@
 
       const templateLine = templateContent
         .split("\n")
-        .find((line: any) => line.includes(placeholder));
+        .find((line) => line.includes(placeholder));
 
       if (!templateLine) continue;
 
@@ -105,12 +127,13 @@
 
       const match = plainContent.match(regex);
       if (match) {
-        let value: any = match[1].trim();
+        const raw = match[1].trim();
+        let value: FieldValue = raw;
 
         if (field.type === "number") {
-          value = Number(value);
+          value = Number(raw);
         } else if (field.type === "checkbox") {
-          value = ["true", "1", "on"].includes(value.toLowerCase());
+          value = ["true", "1", "on"].includes(raw.toLowerCase());
         }
 
         values[field.name] = value;
@@ -122,7 +145,7 @@
     return values;
   }
 
-  function getFieldType(type: any) {
+  function getFieldType(type: string) {
     switch (type) {
       case "string":
         return "text";
@@ -147,7 +170,7 @@
     }
   }
 
-  function getFieldPlaceholder(type: any, name: any) {
+  function getFieldPlaceholder(type: string, name: string) {
     switch (type) {
       case "string":
         return `Enter ${name}...`;
@@ -170,7 +193,7 @@
     }
   }
 
-  function handleFieldChange(fieldName: any, value: any) {
+  function handleFieldChange(fieldName: string, value: FieldValue) {
     fieldValues = { ...fieldValues, [fieldName]: value };
   }
 </script>
@@ -196,8 +219,8 @@
           {#if getFieldType(field.type) === "textarea"}
             <textarea
               id={field.name}
-              value={fieldValues[field.name] || ""}
-              oninput={(e) => handleFieldChange(field.name, (e.target as HTMLInputElement).value)}
+              value={textOf(field.name)}
+              oninput={(e) => handleFieldChange(field.name, e.currentTarget.value)}
               class="field-textarea"
               placeholder={getFieldPlaceholder(field.type, field.name)}
               rows={field.type === "list" || field.type === "object" || field.type === "list_object" ? 5 : 3}
@@ -213,16 +236,16 @@
             <input
               id={field.name}
               type="checkbox"
-              checked={fieldValues[field.name] || false}
-              onchange={(e) => handleFieldChange(field.name, (e.target as HTMLInputElement).checked)}
+              checked={fieldValues[field.name] === true}
+              onchange={(e) => handleFieldChange(field.name, e.currentTarget.checked)}
               class="field-checkbox"
             />
           {:else}
             <input
               id={field.name}
               type={getFieldType(field.type)}
-              value={fieldValues[field.name] || ""}
-              oninput={(e) => handleFieldChange(field.name, (e.target as HTMLInputElement).value)}
+              value={textOf(field.name)}
+              oninput={(e) => handleFieldChange(field.name, e.currentTarget.value)}
               class="field-input"
               placeholder={getFieldPlaceholder(field.type, field.name)}
             />

@@ -2,14 +2,30 @@
   import { untrack } from "svelte";
   import { _ } from "@/i18n";
   import { confirm } from "@/lib/confirm";
+  import { isJsonObject, type JsonObject } from "@/lib/types";
+
+  /** The JSON types a field can be edited as. */
+  type FieldType = "string" | "integer" | "number" | "boolean" | "array" | "object";
+
+  const FIELD_TYPES: readonly FieldType[] = ["string", "integer", "number", "boolean", "array", "object"];
+
+  /** A select's value as a FieldType; anything unexpected reads as "string". */
+  function toFieldType(value: string): FieldType {
+    return (FIELD_TYPES as readonly string[]).includes(value) ? (value as FieldType) : "string";
+  }
 
   const {
     content = {},
     onContentChange = () => {},
-  }: { content?: any; isEditMode?: boolean; onContentChange?: (data: Record<string, any>) => void } = $props();
+  }: {
+    /** The object to edit, or its JSON text. */
+    content?: unknown;
+    isEditMode?: boolean;
+    onContentChange?: (data: JsonObject) => void;
+  } = $props();
 
-  let jsonData: Record<string, any> = $state({});
-  let fieldTypes: Record<string, any> = $state({});
+  let jsonData: JsonObject = $state({});
+  let fieldTypes: Record<string, FieldType> = $state({});
   
   // Modal state for adding new field
   let showAddFieldModal = $state(false);
@@ -28,15 +44,18 @@
   ];
 
   $effect(() => {
-    if (content && typeof content === "object") {
+    if (isJsonObject(content)) {
+      const source = content;
       untrack(() => {
-        jsonData = { ...content };
+        jsonData = { ...source };
         detectFieldTypes();
       });
     } else if (typeof content === "string") {
+      const text = content;
       try {
         untrack(() => {
-          jsonData = JSON.parse(content);
+          const parsed: unknown = JSON.parse(text);
+          jsonData = isJsonObject(parsed) ? parsed : {};
           detectFieldTypes();
         });
       } catch {
@@ -49,7 +68,7 @@
   });
 
   function detectFieldTypes() {
-    const types: Record<string, any> = {};
+    const types: Record<string, FieldType> = {};
     for (const [key, value] of Object.entries(jsonData)) {
       if (typeof value === "number") {
         types[key] = Number.isInteger(value) ? "integer" : "number";
@@ -66,15 +85,15 @@
     fieldTypes = types;
   }
 
-  function handleFieldChange(key: any, value: any, type: any) {
-    let processedValue: any;
+  function handleFieldChange(key: string, value: unknown, type: FieldType) {
+    let processedValue: unknown;
 
     switch (type) {
       case "integer":
-        processedValue = parseInt(value) || 0;
+        processedValue = parseInt(String(value)) || 0;
         break;
       case "number":
-        processedValue = parseFloat(value) || 0;
+        processedValue = parseFloat(String(value)) || 0;
         break;
       case "boolean":
         processedValue = Boolean(value);
@@ -121,19 +140,19 @@
     showAddFieldModal = false;
   }
   
-  function processNewFieldValue(value: any, type: any) {
+  function processNewFieldValue(value: string, type: FieldType): unknown {
     switch (type) {
       case "integer":
         return parseInt(value) || 0;
       case "number":
         return parseFloat(value) || 0;
       case "boolean":
-        return value === "true" || value === true;
+        return value === "true";
       case "array":
         try {
           return JSON.parse(value);
         } catch {
-          return value.split(",").map((item: any) => item.trim()).filter((item: any) => item);
+          return value.split(",").map((item) => item.trim()).filter((item) => item);
         }
       case "object":
         try {
@@ -159,10 +178,11 @@
       return;
     }
     
-    const processedValue = processNewFieldValue(newFieldValue, newFieldType);
-    
+    const fieldType = toFieldType(newFieldType);
+    const processedValue = processNewFieldValue(newFieldValue, fieldType);
+
     jsonData[newFieldName] = processedValue;
-    fieldTypes[newFieldName] = newFieldType;
+    fieldTypes[newFieldName] = fieldType;
     
     onContentChange(jsonData);
     closeAddFieldModal();
@@ -188,18 +208,18 @@
     onContentChange(jsonData);
   }
 
-  function changeFieldType(key: any, newType: any) {
+  function changeFieldType(key: string, newType: FieldType) {
     fieldTypes[key] = newType;
 
     const currentValue = jsonData[key];
-    let convertedValue;
+    let convertedValue: unknown;
 
     switch (newType) {
       case "integer":
-        convertedValue = parseInt(currentValue) || 0;
+        convertedValue = parseInt(String(currentValue)) || 0;
         break;
       case "number":
-        convertedValue = parseFloat(currentValue) || 0;
+        convertedValue = parseFloat(String(currentValue)) || 0;
         break;
       case "boolean":
         convertedValue = Boolean(currentValue);
@@ -221,11 +241,11 @@
     onContentChange(jsonData);
   }
 
-  function formatArrayValue(value: any) {
+  function formatArrayValue(value: unknown): string {
     return Array.isArray(value) ? value.join(", ") : "";
   }
 
-  function formatObjectValue(value: any) {
+  function formatObjectValue(value: unknown): string {
     return typeof value === "object" ? JSON.stringify(value, null, 2) : "";
   }
 </script>
@@ -275,7 +295,7 @@
             <select
               class="type-select"
               bind:value={fieldTypes[key]}
-              onchange={(e: any) => changeFieldType(key, (e.target as HTMLInputElement).value)}
+              onchange={(e) => changeFieldType(key, toFieldType(e.currentTarget.value))}
             >
               <option value="string">String</option>
               <option value="integer">Integer</option>
@@ -313,9 +333,9 @@
             <label class="checkbox-container">
               <input
                 type="checkbox"
-                bind:checked={jsonData[key]}
-                onchange={(e: any) =>
-                  handleFieldChange(key, (e.target as HTMLInputElement).checked, "boolean")}
+                checked={jsonData[key] === true}
+                onchange={(e) =>
+                  handleFieldChange(key, e.currentTarget.checked, "boolean")}
               />
               <span class="checkbox-label">{value ? "True" : "False"}</span>
             </label>
@@ -324,8 +344,8 @@
               type="number"
               step="1"
               bind:value={jsonData[key]}
-              onchange={(e: any) =>
-                handleFieldChange(key, (e.target as HTMLInputElement).value, "integer")}
+              onchange={(e) =>
+                handleFieldChange(key, e.currentTarget.value, "integer")}
               class="field-input-element"
             />
           {:else if fieldTypes[key] === "number"}
@@ -333,21 +353,21 @@
               type="number"
               step="any"
               bind:value={jsonData[key]}
-              onchange={(e: any) => handleFieldChange(key, (e.target as HTMLInputElement).value, "number")}
+              onchange={(e) => handleFieldChange(key, e.currentTarget.value, "number")}
               class="field-input-element"
             />
           {:else if fieldTypes[key] === "array"}
             <input
               type="text"
               value={formatArrayValue(value)}
-              onchange={(e: any) => handleFieldChange(key, (e.target as HTMLInputElement).value, "array")}
+              onchange={(e) => handleFieldChange(key, e.currentTarget.value, "array")}
               class="field-input-element"
               placeholder={$_("json_editor.csv_placeholder")}
             />
           {:else if fieldTypes[key] === "object"}
             <textarea
               value={formatObjectValue(value)}
-              onchange={(e: any) => handleFieldChange(key, (e.target as HTMLInputElement).value, "object")}
+              onchange={(e) => handleFieldChange(key, e.currentTarget.value, "object")}
               class="field-textarea"
               placeholder={$_("json_editor.object_placeholder")}
               rows="3"
@@ -356,7 +376,7 @@
             <input
               type="text"
               bind:value={jsonData[key]}
-              onchange={(e: any) => handleFieldChange(key, (e.target as HTMLInputElement).value, "string")}
+              onchange={(e) => handleFieldChange(key, e.currentTarget.value, "string")}
               class="field-input-element"
             />
           {/if}

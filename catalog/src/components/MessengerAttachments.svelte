@@ -19,6 +19,14 @@
     isVideoFile,
     removeFileExtension,
   } from "../lib/fileUtils";
+  import { asResourceType, attachmentFilename, type EntryRecord } from "@/lib/types";
+
+  /** The attachment being previewed, with the resolved URL and media kind. */
+  interface PreviewItem extends EntryRecord {
+    url: string;
+    type: string;
+    filename: string;
+  }
 
   let {
     attachments = [],
@@ -27,7 +35,7 @@
     parent_shortname,
     isOwner = false,
   }: {
-    attachments: any[];
+    attachments: EntryRecord[];
     resource_type: ResourceType;
     space_name: string;
     subpath: string;
@@ -36,10 +44,10 @@
   } = $props();
 
   let previewModal = $state(false);
-  let currentPreview: any = $state(null);
+  let currentPreview = $state<PreviewItem | null>(null);
 
-  function openPreview(attachment: any) {
-    const filename = attachment?.attributes?.payload?.body ?? "";
+  function openPreview(attachment: EntryRecord) {
+    const filename = attachmentFilename(attachment);
 
     if (
       isImageFile(filename) ||
@@ -56,7 +64,7 @@
       currentPreview = {
         ...attachment,
         url: Dmart.getAttachmentUrl({
-          resource_type: attachment.resource_type as ResourceType,
+          resource_type: asResourceType(attachment.resource_type),
           space_name,
           subpath,
           parent_shortname,
@@ -75,10 +83,10 @@
     currentPreview = null;
   }
 
-  function downloadFile(attachment: any) {
-    const filename = attachment.attributes?.payload?.body ?? "";
+  function downloadFile(attachment: EntryRecord) {
+    const filename = attachmentFilename(attachment);
     const url = Dmart.getAttachmentUrl({
-      resource_type: attachment.resource_type as ResourceType,
+      resource_type: asResourceType(attachment.resource_type),
       space_name,
       subpath,
       parent_shortname,
@@ -94,7 +102,7 @@
     document.body.removeChild(link);
   }
 
-  async function handleDelete(attachment: any) {
+  async function handleDelete(attachment: EntryRecord) {
     const confirmed = await confirm({
       title: $_("attachment_list.delete_title"),
       body: $_("attachment_list.delete_body", {
@@ -104,22 +112,21 @@
     });
     if (!confirmed) return;
 
-    const request_dict = {
+    const response = await Dmart.request({
       space_name,
       request_type: RequestType.delete,
       records: [
         {
-          resource_type: attachment.resource_type,
+          resource_type: asResourceType(attachment.resource_type),
           shortname: attachment.shortname,
           subpath: `${attachment.subpath}/${parent_shortname}`,
           attributes: {},
         },
       ],
-    };
-    const response = await Dmart.request(request_dict as any);
+    });
     if (response.status === "success") {
       attachments = attachments.filter(
-        (e: { shortname: string }) => e.shortname !== attachment.shortname
+        (e) => e.shortname !== attachment.shortname
       );
       successToastMessage(`Attachment deleted successfully.`);
     } else {
@@ -127,10 +134,10 @@
     }
   }
 
-  function getAttachmentUrl(attachment: any) {
-    const filename = attachment.attributes?.payload?.body ?? "";
+  function getAttachmentUrl(attachment: EntryRecord) {
+    const filename = attachmentFilename(attachment);
     return Dmart.getAttachmentUrl({
-      resource_type: attachment.resource_type as ResourceType,
+      resource_type: asResourceType(attachment.resource_type),
       space_name,
       subpath,
       parent_shortname,
@@ -150,7 +157,7 @@
   {:else}
     <div class="attachments-container">
       {#each attachments as attachment (attachment.shortname)}
-        {@const filename = attachment.attributes?.payload?.body}
+        {@const filename = attachmentFilename(attachment)}
         {@const url = getAttachmentUrl(attachment)}
 
         {#if isImageFile(filename)}
@@ -317,6 +324,7 @@
 
 <!-- Preview Modal -->
 {#if previewModal && currentPreview}
+  {@const preview = currentPreview}
   <div
     class="modal-overlay"
     onclick={closePreview}
@@ -382,7 +390,7 @@
       <div class="modal-footer">
         <button
           class="modal-button download"
-          onclick={() => downloadFile(currentPreview)}
+          onclick={() => downloadFile(preview)}
         >
           <DownloadOutline class="w-4 h-4" />
           Download
@@ -390,7 +398,7 @@
         {#if isOwner}
           <button
             class="modal-button delete"
-            onclick={() => handleDelete(currentPreview)}
+            onclick={() => handleDelete(preview)}
           >
             <TrashBinSolid class="w-4 h-4" />
             Delete

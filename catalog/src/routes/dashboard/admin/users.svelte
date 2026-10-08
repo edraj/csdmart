@@ -10,6 +10,7 @@
   import { setTitle } from "@/lib/title";
   import { formatDate } from "@/lib/format";
   import { localized } from "@/lib/catalogItems";
+  import { bodyObject, type EntryDetail } from "@/lib/types";
   import { _, locale } from "@/i18n";
   import { formatNumber } from "@/lib/helpers";
   import { MANAGEMENT_SPACE } from "@/lib/constants";
@@ -19,7 +20,7 @@
   import ModalCSVUpload from "@/components/management/Modals/ModalCSVUpload.svelte";
   import ModalCSVDownload from "@/components/management/Modals/ModalCSVDownload.svelte";
   import MetaForm from "@/components/management/forms/MetaForm.svelte";
-  import MetaUserForm from "@/components/management/forms/MetaUserForm.svelte";
+  import MetaUserForm, { type UserFormData } from "@/components/management/forms/MetaUserForm.svelte";
   import DataTable from "@/components/DataTable.svelte";
   import PageHeader from "@/components/ui/PageHeader.svelte";
   import CatalogToolbar from "@/components/ui/CatalogToolbar.svelte";
@@ -48,7 +49,8 @@
     roles: string[];
     is_active: boolean;
     created_at: string;
-    attributes?: Record<string, unknown>;
+    /** The record's attributes, as the user form edits them. */
+    attributes?: UserFormData;
     [key: string]: unknown;
   }
 
@@ -88,12 +90,16 @@
   let isEditingUserMode = $state(false);
   let isSavingUser = $state(false);
 
-  let metaContent = $state<Record<string, unknown>>({});
+  let metaContent = $state<UserFormData>({});
   let validateMetaForm = $state<(() => boolean) | null>(null);
   let validateRTForm = $state<(() => boolean) | null>(null);
 
-  let folderMetadata = $state<{ attributes?: { payload?: { body?: Record<string, unknown> } } } | null>(null);
-  const folderBody = $derived((folderMetadata?.attributes?.payload?.body ?? {}) as Record<string, unknown>);
+  // The `users` folder entry. A retrieved entry is flat — its payload sits at
+  // the top level, not under `attributes` (which only query records have);
+  // reading `attributes.payload` here left the CSV flags and the configured
+  // columns permanently empty.
+  let folderMetadata = $state<EntryDetail | null>(null);
+  const folderBody = $derived(bodyObject(folderMetadata?.payload) ?? {});
   const canUploadCSV = $derived(folderBody.allow_upload_csv === true);
   const canDownloadCSV = $derived(folderBody.allow_csv === true);
   const indexAttributes = $derived((Array.isArray(folderBody.index_attributes) ? folderBody.index_attributes : []) as ColumnSetting[]);
@@ -185,7 +191,7 @@
     try {
       isLoading = true;
       loadError = null;
-      folderMetadata = (await getEntity("users", MANAGEMENT_SPACE, "/", ResourceType.folder, DmartScope.managed)) as typeof folderMetadata;
+      folderMetadata = await getEntity("users", MANAGEMENT_SPACE, "/", ResourceType.folder, DmartScope.managed);
 
       const offset = (currentPage - 1) * itemsPerPage;
       const usersResponse = selectedRoleFilter
@@ -320,7 +326,7 @@
             subpath: "/",
             attributes: {
               payload: {
-                ...(folderMetadata?.attributes?.payload ?? {}),
+                ...(folderMetadata?.payload ?? {}),
                 body: {
                   ...folderBody,
                   index_attributes: editingIndexAttributes.filter((a) => a.key?.trim() && a.name?.trim()),

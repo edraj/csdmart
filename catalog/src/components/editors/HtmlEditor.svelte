@@ -1,20 +1,37 @@
 <script lang="ts">
   import { Dmart } from "@edraj/tsdmart";
   import { onMount } from "svelte";
+  import type { Editor } from "typewriter-editor";
   import { getFileExtension } from "@shared/file-extension";
   import { _ } from "@/i18n";
   import Modal from "@/components/Modal.svelte";
+  import { asResourceType, attachmentFilename, type AttachmentsMap, type EntryRecord } from "@/lib/types";
+
+  /** typewriter-editor is loaded on mount so it stays out of the initial bundle. */
+  type Typewriter = typeof import("typewriter-editor");
+
+  interface Props {
+    uid?: string;
+    content?: string;
+    isEditMode?: boolean;
+    /** The parent entry's attachments, grouped by resource type. */
+    attachments?: AttachmentsMap | null;
+    space_name?: string;
+    subpath?: string;
+    parent_shortname?: string;
+    changed?: () => void;
+  }
 
   let {
     uid = "",
     content = $bindable(""),
     isEditMode = false,
-    attachments,
-    space_name,
-    subpath,
-    parent_shortname,
+    attachments = null,
+    space_name = "",
+    subpath = "",
+    parent_shortname = "",
     changed = () => {},
-  } = $props();
+  }: Props = $props();
 
   /**
    * Syncs the current editor HTML into the bound `content` prop. Callers that
@@ -22,7 +39,7 @@
    * relying on the `change` event having already fired) can invoke this.
    */
   export function flush(): string {
-    if (editor && typeof editor.getHTML === "function") {
+    if (editor) {
       content = editor.getHTML();
     }
     return content ?? "";
@@ -36,89 +53,82 @@
   const instanceId = $props.id();
   const urlFormId = `htmleditor-url-${instanceId}`;
   let maindiv: HTMLDivElement;
-  let editor: any;
+  let editor: Editor | undefined;
 
-  let format: any;
-  let h: any;
-  let Editor: any;
-
-  let underline, strike, superscript, subscript;
-  let alignLeft, alignCenter, alignRight, alignJustify;
+  const mediaAttachments: EntryRecord[] = $derived(attachments?.media ?? []);
 
   onMount(async () => {
-    const mod = await import("typewriter-editor");
-    Editor = mod.Editor;
-    h = mod.h;
-    format = mod.format;
+    const mod: Typewriter = await import("typewriter-editor");
+    const { h, format } = mod;
 
-    underline = format({
+    const underline = format({
       name: "underline",
       selector: "u",
       styleSelector:
         '[style*="text-decoration:underline"], [style*="text-decoration: underline"]',
-      commands: (editor: any) => () => editor.toggleTextFormat({ underline: true }),
+      commands: (editor) => () => editor.toggleTextFormat({ underline: true }),
       shortcuts: "Mod+U",
-      render: (attributes: any, children: any) => h("u", null, children),
+      render: (attributes, children) => h("u", null, children),
     });
 
-    strike = format({
+    const strike = format({
       name: "strike",
       selector: "strike, s",
       styleSelector:
         '[style*="text-decoration:line-through"], [style*="text-decoration: line-through"]',
-      commands: (editor: any) => () => editor.toggleTextFormat({ strike: true }),
+      commands: (editor) => () => editor.toggleTextFormat({ strike: true }),
       shortcuts: "Mod+Shift+X",
-      render: (attributes: any, children: any) => h("s", null, children),
+      render: (attributes, children) => h("s", null, children),
     });
 
-    superscript = format({
+    const superscript = format({
       name: "superscript",
       selector: "sup",
-      commands: (editor: any) => () =>
+      commands: (editor) => () =>
         editor.toggleTextFormat({ superscript: true }),
-      render: (attributes: any, children: any) => h("sup", null, children),
+      render: (attributes, children) => h("sup", null, children),
     });
 
-    subscript = format({
+    const subscript = format({
       name: "subscript",
       selector: "sub",
-      commands: (editor: any) => () => editor.toggleTextFormat({ subscript: true }),
-      render: (attributes: any, children: any) => h("sub", null, children),
+      commands: (editor) => () => editor.toggleTextFormat({ subscript: true }),
+      render: (attributes, children) => h("sub", null, children),
     });
 
-    alignLeft = format({
+    const alignLeft = format({
       name: "align-left",
       selector: '[style*="text-align:left"], [style*="text-align: left"]',
-      commands: (editor: any) => () => editor.formatLine({ align: "left" }),
-      render: (attributes: any, children: any) =>
+      commands: (editor) => () => editor.formatLine({ align: "left" }),
+      render: (attributes, children) =>
         h("div", { style: "text-align: left" }, children),
     });
 
-    alignCenter = format({
+    const alignCenter = format({
       name: "align-center",
       selector: '[style*="text-align:center"], [style*="text-align: center"]',
-      commands: (editor: any) => () => editor.formatLine({ align: "center" }),
-      render: (attributes: any, children: any) =>
+      commands: (editor) => () => editor.formatLine({ align: "center" }),
+      render: (attributes, children) =>
         h("div", { style: "text-align: center" }, children),
     });
 
-    alignRight = format({
+    const alignRight = format({
       name: "align-right",
       selector: '[style*="text-align:right"], [style*="text-align: right"]',
-      commands: (editor: any) => () => editor.formatLine({ align: "right" }),
-      render: (attributes: any, children: any) =>
+      commands: (editor) => () => editor.formatLine({ align: "right" }),
+      render: (attributes, children) =>
         h("div", { style: "text-align: right" }, children),
     });
 
-    alignJustify = format({
+    const alignJustify = format({
       name: "align-justify",
       selector: '[style*="text-align:justify"], [style*="text-align: justify"]',
-      commands: (editor: any) => () => editor.formatLine({ align: "justify" }),
-      render: (attributes: any, children: any) =>
+      commands: (editor) => () => editor.formatLine({ align: "justify" }),
+      render: (attributes, children) =>
         h("div", { style: "text-align: justify" }, children),
     });
 
-    editor = new Editor({
+    const instance = new mod.Editor({
       root: maindiv,
       html: content || "",
       types: {
@@ -148,16 +158,17 @@
         embeds: ["image", "br"],
       },
     });
+    editor = instance;
 
-    editor.on("change", () => {
-      content = editor.getHTML();
+    instance.on("change", () => {
+      content = instance.getHTML();
       changed();
     });
 
-    setupToolbar();
+    setupToolbar(instance);
   });
 
-  function setupToolbar() {
+  function setupToolbar(editor: Editor) {
     const toolbar = document.createElement("div");
     toolbar.id = `toolbar-${uid}`;
     toolbar.className = "editor-toolbar";
@@ -248,8 +259,9 @@
       openUrlDialog("image"),
     );
 
-    if (isEditMode && attachments?.media?.length > 0) {
-      addToolbarButton(attachmentsGroup, $_("html_editor.toolbar.attachments"), "📎", (event: any) => {
+    const hasMedia = isEditMode && mediaAttachments.length > 0;
+    if (hasMedia) {
+      addToolbarButton(attachmentsGroup, $_("html_editor.toolbar.attachments"), "📎", (event) => {
         event.preventDefault();
         event.stopPropagation();
         showAttachments = true;
@@ -276,7 +288,7 @@
     toolbar.appendChild(lineFormatGroup);
     toolbar.appendChild(alignmentGroup);
     toolbar.appendChild(insertGroup);
-    if (isEditMode && attachments?.media?.length > 0) {
+    if (hasMedia) {
       toolbar.appendChild(attachmentsGroup);
     }
     toolbar.appendChild(historyGroup);
@@ -285,7 +297,12 @@
     maindiv.parentNode!.insertBefore(toolbar, maindiv);
   }
 
-  function addToolbarButton(toolbar: any, title: any, icon: any, action: any) {
+  function addToolbarButton(
+    toolbar: HTMLElement,
+    title: string,
+    icon: string,
+    action: (event: MouseEvent) => void,
+  ) {
     const button = document.createElement("button");
     button.type = "button";
     button.title = title;
@@ -309,12 +326,12 @@
     toolbar.appendChild(button);
   }
 
-  function insertAttachment(attachment: any) {
-    const filename = attachment?.attributes?.payload?.body;
+  function insertAttachment(attachment: EntryRecord) {
+    const filename = attachmentFilename(attachment);
 
     if (editor && attachment) {
       const url = Dmart.getAttachmentUrl({
-        resource_type: attachment.resource_type,
+        resource_type: asResourceType(attachment.resource_type),
         space_name: space_name,
         subpath: subpath,
         parent_shortname: parent_shortname,
@@ -322,7 +339,7 @@
         ext: getFileExtension(filename),
       });
 
-      const fileExtension = getFileExtension(filename)?.toLowerCase();
+      const fileExtension = getFileExtension(filename).toLowerCase();
       const imageExtensions = [
         "jpg",
         "jpeg",
@@ -381,7 +398,7 @@
   }
 
   $effect(() => {
-    if (editor && typeof editor.setHTML === "function") {
+    if (editor) {
       const currentHtml = editor.getHTML();
       // Ensure content is a string and not null/undefined
       const newContent = content || "";
@@ -406,9 +423,9 @@
 
 {#if showAttachments}
   <Modal title={$_("html_editor.attachments_title")} size="2xl" onClose={closeAttachments}>
-    {#if attachments?.media?.length > 0}
+    {#if mediaAttachments.length > 0}
       <div class="attachments-grid">
-        {#each attachments.media as attachment (attachment.shortname)}
+        {#each mediaAttachments as attachment (attachment.shortname)}
           <div class="attachment-item">
             <div class="attachment-info">
               <div class="attachment-icon" aria-hidden="true">📎</div>

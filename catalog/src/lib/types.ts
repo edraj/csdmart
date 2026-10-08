@@ -13,7 +13,7 @@
  * page that reads attributes by a dynamic key can treat them as a JSON bag
  * without a cast, while named fields stay typed.
  */
-import type { ApiResponse } from "@edraj/tsdmart";
+import type { ApiResponse, ResourceType } from "@edraj/tsdmart";
 
 /** A JSON object as the server returns it. */
 export type JsonObject = Record<string, unknown>;
@@ -50,16 +50,38 @@ export type EntryPayload = {
   validation_status?: "valid" | "invalid";
 };
 
-/** One entry of a record's `relationships`. */
+/** One entry of a record's `relationships`: a locator plus free attributes. */
 export type Relationship = {
   related_to?: {
+    /** The resource type, as the relationship editor writes it. */
+    type?: string;
+    resource_type?: string;
     space_name?: string;
     subpath?: string;
     shortname?: string;
-    resource_type?: string;
+    schema_shortname?: string;
   };
   attributes?: JsonObject;
 };
+
+/**
+ * A column of a folder listing (`index_attributes` in the folder's body):
+ * the attribute key and a label, plain or localized.
+ */
+export type IndexAttribute = {
+  key: string;
+  name: string | LocalizedText;
+  sortable?: boolean;
+};
+
+/**
+ * A record's `resource_type` as the enum. The server only ever sends the
+ * enum's values; records keep the field as `string` so pages can compare it
+ * with literals, and this names the enum where a request needs one.
+ */
+export function asResourceType(value: string): ResourceType {
+  return value as ResourceType;
+}
 
 /** The meta attributes every resource type carries. */
 export type EntryAttributes = {
@@ -147,6 +169,12 @@ export function attachmentGroup(
 ): EntryRecord[] {
   const group = attachments?.[resourceType];
   return Array.isArray(group) ? group : [];
+}
+
+/** The stored file name of a media attachment (its payload body), or "". */
+export function attachmentFilename(attachment: Pick<EntryRecord, "attributes">): string {
+  const body = attachment.attributes?.payload?.body;
+  return typeof body === "string" ? body : "";
 }
 
 /** A payload body that is a JSON object, or null when it is text or absent. */

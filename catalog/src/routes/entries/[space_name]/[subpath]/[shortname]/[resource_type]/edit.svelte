@@ -1,6 +1,7 @@
 <script lang="ts">
   import { setTitle } from "@/lib/title";
   import { log } from "@/lib/logger";
+  import { isJsonObject } from "@/lib/types";
   import { goto as gotoStore, params } from "@roxi/routify";
   import { onMount } from "svelte";
   import HtmlEditor from "@/components/editors/HtmlEditor.svelte";
@@ -638,7 +639,7 @@
                       spaceName={$params.space_name}
                       subpath={$params.subpath}
                       shortname={$params.shortname}
-                      onSaved={(d) => { jsonEditorContent = d; }}
+                      onSaved={(d) => { if (isJsonObject(d)) jsonEditorContent = d; }}
                     />
                   </div>
                 </div>

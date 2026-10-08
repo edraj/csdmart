@@ -2,15 +2,19 @@
   import { _ } from "@/i18n";
   import Modal from "@/components/Modal.svelte";
   import { confirm } from "@/lib/confirm";
-  import { Dmart, DmartScope, RequestType, ResourceType } from "@edraj/tsdmart";
+  import { Dmart, DmartScope, RequestType, ResourceType, type ApiResponseRecord } from "@edraj/tsdmart";
   import { successToastMessage, errorToastMessage } from "@/lib/toasts_messages";
   import { getChildren, getChildrenAndSubChildren, getSpaces } from "@/lib/dmart_services";
+  import { serverMessage } from "@/lib/apiError";
+  import { asResourceType, isJsonObject, type JsonObject, type Relationship } from "@/lib/types";
   import {
     PlusOutline,
     TrashBinSolid,
     PenSolid,
     CloseOutline,
   } from "flowbite-svelte-icons";
+
+  type Locator = NonNullable<Relationship["related_to"]>;
 
   let {
     isOpen = $bindable(false),
@@ -21,7 +25,7 @@
     parent_shortname,
   }: {
     isOpen: boolean;
-    relationships: any[];
+    relationships: Relationship[];
     space_name: string;
     subpath: string;
     resource_type: ResourceType;
@@ -46,9 +50,9 @@
   let relAttributesJson: string = $state("{}");
 
   // Dropdown data
-  let spaces: any[] = $state([]);
+  let spaces: ApiResponseRecord[] = $state([]);
   let subpaths: string[] = $state([]);
-  let shortnames: any[] = $state([]);
+  let shortnames: ApiResponseRecord[] = $state([]);
   let isLoadingSubpaths = $state(false);
   let isLoadingShortnames = $state(false);
 
@@ -94,7 +98,7 @@
     try {
       const result = await getChildren(spaceName, subpathVal, 100);
       shortnames = (result.records || []).filter(
-        (r: any) => r.resource_type !== "folder",
+        (r) => r.resource_type !== "folder",
       );
     } catch {
       shortnames = [];
@@ -139,11 +143,11 @@
 
   function populateFormForEdit(index: number) {
     const rel = relationships[index];
-    const locator = rel.related_to || {};
+    const locator: Locator = rel.related_to || {};
     relSpaceName = locator.space_name || "";
     relSubpath = locator.subpath || "/";
     relShortname = locator.shortname || "";
-    relType = locator.type || ResourceType.content;
+    relType = locator.type ? asResourceType(locator.type) : ResourceType.content;
     relSchemaShortname = locator.schema_shortname || "";
     relAttributesJson = JSON.stringify(rel.attributes || {}, null, 2);
     isEditing = true;
@@ -151,8 +155,8 @@
     showForm = true;
   }
 
-  function buildRelationship() {
-    const locator: any = {
+  function buildRelationship(): Relationship & { related_to: Locator } {
+    const locator: Locator = {
       type: relType,
       space_name: relSpaceName,
       subpath: relSubpath,
@@ -162,9 +166,10 @@
       locator.schema_shortname = relSchemaShortname;
     }
 
-    let attrs = {};
+    let attrs: JsonObject = {};
     try {
-      attrs = JSON.parse(relAttributesJson);
+      const parsed: unknown = JSON.parse(relAttributesJson);
+      if (isJsonObject(parsed)) attrs = parsed;
     } catch {
       // not valid JSON: keep the empty attributes
     }
@@ -175,7 +180,7 @@
     };
   }
 
-  async function saveRelationships(updatedRelationships: any[]) {
+  async function saveRelationships(updatedRelationships: Relationship[]) {
     isSaving = true;
     try {
       await Dmart.request({
@@ -193,9 +198,9 @@
         ],
       });
       successToastMessage($_("relationship_modal.save_success"));
-    } catch (e: any) {
+    } catch (e) {
       errorToastMessage(
-        e.response?.data?.error?.message || $_("relationship_modal.save_error"),
+        serverMessage(e) || $_("relationship_modal.save_error"),
       );
     } finally {
       isSaving = false;
@@ -206,7 +211,7 @@
     const rel = buildRelationship();
     if (!rel.related_to.space_name || !rel.related_to.shortname) return;
 
-    let updated: any[];
+    let updated: Relationship[];
     if (isEditing && editIndex >= 0) {
       updated = [...relationships];
       updated[editIndex] = rel;
@@ -227,14 +232,14 @@
     });
     if (!confirmed) return;
     const updated = relationships.filter(
-      (_: any, i: number) => i !== index,
+      (_, i) => i !== index,
     );
     await saveRelationships(updated);
     relationships = updated;
   }
 
-  function getLocatorDisplay(rel: any) {
-    const loc = rel.related_to || {};
+  function getLocatorDisplay(rel: Relationship) {
+    const loc: Locator = rel.related_to || {};
     return `${loc.space_name || "?"}:${loc.subpath || "/"}/${loc.shortname || "?"}`;
   }
 </script>

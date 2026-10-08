@@ -13,6 +13,7 @@
   import { errorToastMessage } from "@/lib/toasts_messages";
   import { ContentType, ResourceType, DmartScope } from "@edraj/tsdmart";
   import { _, locale } from "@/i18n";
+  import type { JsonObject } from "@/lib/types";
   import { setTitle } from "@/lib/title";
   import { formatDate } from "@/lib/format";
   import { writable } from "svelte/store";
@@ -66,7 +67,8 @@
   let markdownContent: string = $state("");
   let jsonEditorContent: any = $state({});
   let isSchemaBasedItem = $state(false);
-  let schemaEditorContent = $state("");
+  // The schema document the SchemaForm edits (a schema entry's JSON body).
+  let schemaEditorContent = $state<JsonObject>({});
 
   let isDynamicSchemaItem = $state(false);
   let selectedDynamicSchema: any = $state(null);

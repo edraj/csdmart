@@ -6,6 +6,7 @@
   import { getFileExtension } from "@shared/file-extension";
   import { isImageFile } from "@/lib/fileUtils";
   import { attachmentMarkdown } from "@/lib/markdownInsert";
+  import { asResourceType, attachmentFilename, type AttachmentsMap, type EntryRecord } from "@/lib/types";
 
   interface FieldType {
     value: string;
@@ -15,14 +16,15 @@
 
   interface Props {
     content?: string;
-    handleSave?: any;
+    handleSave?: () => void;
     enableDynamicContent?: boolean;
     onDropKey?: ((key: { name: string; type: string }) => void) | null;
     // Media insertion. All optional: without them the attachments button is
     // simply not rendered, so the editor keeps working at the call sites that
     // have no parent entry to attach to (template editing, entry creation).
     isEditMode?: boolean;
-    attachments?: any;
+    /** The parent entry's attachments, grouped by resource type. */
+    attachments?: AttachmentsMap | null;
     space_name?: string;
     subpath?: string;
     parent_shortname?: string;
@@ -32,7 +34,7 @@
     content = $bindable(""),
     handleSave = () => {},
     enableDynamicContent = true,
-    onDropKey = null as any,
+    onDropKey = null,
     isEditMode = false,
     attachments = null,
     space_name = "",
@@ -55,31 +57,33 @@
     content = "";
   }
 
-  let textarea: any;
+  let textarea: HTMLTextAreaElement | undefined;
   let activeTab = $state("editor");
   let start = 0,
     end = 0;
   let showDynamicMenu = $state(false);
   let dynamicFieldName = $state("");
   let selectedFieldType = $state("string");
-  let dynamicMenuRef: HTMLDivElement = $state(undefined as any);
+  let dynamicMenuRef = $state<HTMLDivElement | undefined>(undefined);
   let isDraggingOver = $state(false);
   let showAttachments = $state(false);
 
   // Only media attachments are offered: the picker exists to put a picture in
   // the prose, and a json/comment attachment has no meaningful markdown form.
-  let mediaAttachments = $derived(attachments?.media ?? []);
+  let mediaAttachments: EntryRecord[] = $derived(attachments?.media ?? []);
 
   function handleSelect() {
+    if (!textarea) return;
     start = textarea.selectionStart;
     end = textarea.selectionEnd;
   }
 
   function insertDynamicContent() {
-    if (!dynamicFieldName.trim()) return;
-    
+    if (!dynamicFieldName.trim() || !textarea) return;
+    const field = textarea;
+
     const placeholder = `{{${dynamicFieldName.trim()}:${selectedFieldType}}}`;
-    const cursorPos = textarea.selectionStart;
+    const cursorPos = field.selectionStart;
     
     const before = content.substring(0, cursorPos);
     const after = content.substring(cursorPos);
@@ -95,8 +99,8 @@
     // Set cursor after the inserted placeholder
     setTimeout(() => {
       const newCursorPos = cursorPos + placeholder.length;
-      textarea.setSelectionRange(newCursorPos, newCursorPos);
-      textarea.focus();
+      field.setSelectionRange(newCursorPos, newCursorPos);
+      field.focus();
     }, 0);
   }
 
@@ -183,12 +187,12 @@
   // had to hand-type the attachment URL — which meant knowing the
   // /managed/payload URL shape by heart. Same picker, same URL builder, output
   // as markdown instead of a DOM node.
-  function insertAttachment(attachment: any) {
+  function insertAttachment(attachment: EntryRecord) {
     if (!attachment) return;
 
-    const filename = attachment?.attributes?.payload?.body ?? "";
+    const filename = attachmentFilename(attachment);
     const url = Dmart.getAttachmentUrl({
-      resource_type: attachment.resource_type,
+      resource_type: asResourceType(attachment.resource_type),
       space_name,
       subpath,
       parent_shortname,
@@ -210,7 +214,7 @@
     showAttachments = false;
   }
 
-  function handleAttachmentsModalClick(event: any) {
+  function handleAttachmentsModalClick(event: MouseEvent) {
     if (event.target === event.currentTarget) closeAttachments();
   }
 
@@ -225,7 +229,7 @@
 |----------|----------|
 |  Cell1   |  Cell2   |`;
 
-  function handleKeyDown(event: any) {
+  function handleKeyDown(event: KeyboardEvent) {
     if (event.ctrlKey) {
       if (["b", "i", "t"].includes(event.key)) {
         event.preventDefault();
@@ -244,7 +248,8 @@
     }
   }
 
-  function handleFormatting(format: any, isWrap = true, isPerLine = false) {
+  function handleFormatting(format: string, isWrap = true, isPerLine = false) {
+    if (!textarea) return;
     if (isWrap && start === 0 && end === 0) {
       return;
     }
@@ -297,7 +302,7 @@
   }
 
   // Tab switching functionality
-  function switchTab(tabName: any) {
+  function switchTab(tabName: string) {
     activeTab = tabName;
   }
 
@@ -557,10 +562,10 @@
             type="button"
             class="md-attachment-item"
             onclick={() => insertAttachment(attachment)}
-            title={attachment?.attributes?.payload?.body ?? attachment.shortname}
+            title={attachmentFilename(attachment) || attachment.shortname}
           >
             <span class="md-attachment-icon">
-              {isImageFile(attachment?.attributes?.payload?.body ?? "") ? "🖼️" : "📎"}
+              {isImageFile(attachmentFilename(attachment)) ? "🖼️" : "📎"}
             </span>
             <span class="md-attachment-name">{attachment.shortname}</span>
           </button>

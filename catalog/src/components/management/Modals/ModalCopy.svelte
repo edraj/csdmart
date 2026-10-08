@@ -15,13 +15,16 @@
     successToastMessage,
     errorToastMessage,
   } from "@/lib/toasts_messages";
+  import { errorMessage as failureMessage } from "@/lib/apiError";
+  import { asResourceType, type EntryRecord } from "@/lib/types";
+  import type { ApiResponseRecord } from "@edraj/tsdmart";
 
   type CopyMoveAction = "copy" | "move";
 
   interface Props {
     open: boolean;
     /** Records to act on. Each must carry `resource_type`, `shortname`, `subpath`, `attributes`. */
-    records: any[];
+    records: EntryRecord[];
     /** Which action to perform — "copy" (default) or "move". */
     action?: CopyMoveAction;
     /** Source space (required for move; used as default destination for copy). */
@@ -43,7 +46,7 @@
   }: Props = $props();
 
 
-  let spacesList = $state<any[]>([]);
+  let spacesList = $state<ApiResponseRecord[]>([]);
   let folderList = $state<string[]>(["/"]);
   let selectedSpace = $state("");
   let selectedSubpath = $state("/");
@@ -92,8 +95,8 @@
         0,
       );
       const paths = (response?.records ?? [])
-        .filter((r: any) => r.resource_type === "folder")
-        .map((r: any) => {
+        .filter((r) => r.resource_type === "folder")
+        .map((r) => {
           const parent = (r.subpath || "/")
             .replace(/^\/+/, "/")
             .replace(/\/+$/, "");
@@ -102,7 +105,7 @@
             ? `/${name}`
             : `${parent}/${name}`;
         });
-      paths.sort((a: string, b: string) => a.localeCompare(b));
+      paths.sort((a, b) => a.localeCompare(b));
       folderList = ["/", ...paths];
     } catch (err) {
       log.error("Error loading folders:", err);
@@ -142,8 +145,8 @@
       if (isMove) {
         // Move: src_* + dest_* attributes, sent against the SOURCE space.
         // Mirrors csdmart/cxb's move payload.
-        const payload: ActionRequestRecord[] = records.map((r: any) => ({
-          resource_type: r.resource_type,
+        const payload: ActionRequestRecord[] = records.map((r) => ({
+          resource_type: asResourceType(r.resource_type),
           shortname: r.shortname,
           subpath: r.subpath || destSubpath,
           attributes: {
@@ -172,16 +175,15 @@
           onClose();
           return;
         }
-        errorMessage =
-          (response as any)?.error?.message || "Move failed";
+        errorMessage = response?.error?.message || "Move failed";
         errorToastMessage(errorMessage || "Move failed");
       } else {
         // Copy: create at destination, strip uuid so the server generates
         // a fresh identity instead of colliding with the source.
-        const payload: ActionRequestRecord[] = records.map((r: any) => {
+        const payload: ActionRequestRecord[] = records.map((r) => {
           const { uuid: _uuid, ...cleanAttributes } = r.attributes ?? {};
           return {
-            resource_type: r.resource_type,
+            resource_type: asResourceType(r.resource_type),
             shortname: r.shortname,
             subpath: destSubpath,
             attributes: cleanAttributes,
@@ -205,16 +207,13 @@
           return;
         }
         errorMessage =
-          (response as any)?.error?.message ||
+          response?.error?.message ||
           "Copy failed. The destination may already contain items with the same shortnames.";
         errorToastMessage(errorMessage || "Copy failed");
       }
-    } catch (err: any) {
+    } catch (err) {
       log.error(`${action} error:`, err);
-      errorMessage =
-        err?.response?.data?.error?.message ||
-        err?.message ||
-        `${actionLabel} failed`;
+      errorMessage = failureMessage(err, `${actionLabel} failed`);
       errorToastMessage(errorMessage || `${actionLabel} failed`);
     } finally {
       isSubmitting = false;

@@ -9,6 +9,7 @@
   import { getCurrentScope } from "@/stores/user";
   import { APPLICATIONS_SPACE } from "@/lib/constants";
   import JsonViewer from "@/components/JsonViewer.svelte";
+  import { isJsonValue } from "@/components/json-table/types";
   import ErrorState from "@/components/ui/ErrorState.svelte";
   import LoadingState from "@/components/ui/LoadingState.svelte";
   import MarkdownBody from "./MarkdownBody.svelte";
@@ -139,7 +140,7 @@
       {/if}
     {:else if isJson}
       <JsonViewer
-        data={payload?.body}
+        data={isJsonValue(payload?.body) ? payload.body : null}
         title={jsonTitle}
         {isAdmin}
         schemaShortname={payload?.schema_shortname}

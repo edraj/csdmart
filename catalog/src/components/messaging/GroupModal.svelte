@@ -74,7 +74,7 @@
             id="group-name"
             type="text"
             value={groupName}
-            oninput={(e: any) => onNameChange((e.target as HTMLInputElement).value)}
+            oninput={(e) => onNameChange(e.currentTarget.value)}
             placeholder={$_("messaging.group_name_placeholder")}
             maxlength="50"
           />
@@ -87,7 +87,7 @@
           <textarea
             id="group-description"
             value={groupDescription}
-            oninput={(e: any) => onDescriptionChange((e.target as HTMLTextAreaElement).value)}
+            oninput={(e) => onDescriptionChange(e.currentTarget.value)}
             placeholder={$_("messaging.group_description_placeholder")}
             maxlength="200"
             rows="3"

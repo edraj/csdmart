@@ -1,7 +1,29 @@
+<script module lang="ts">
+  /**
+   * A translation as the form edits it: a cleared language reads as null, so
+   * the server drops it instead of storing an empty string.
+   */
+  export type FormTranslation = Record<string, string | null | undefined>;
+
+  /**
+   * The meta fields the form edits; anything else on the entry rides along.
+   * Callers start from `{}`: the form fills in the translations on mount.
+   */
+  export interface MetaFormData {
+    shortname?: string | null;
+    is_active?: boolean;
+    slug?: string | null;
+    displayname?: FormTranslation | null;
+    description?: FormTranslation | null;
+    [key: string]: unknown;
+  }
+</script>
+
 <script lang="ts">
   import { goto as gotoStore, params } from "@roxi/routify";
   import { Dmart, RequestType, ResourceType } from "@edraj/tsdmart";
   import { _ } from "svelte-i18n";
+  import { isJsonObject } from "@/lib/types";
 
   // Routify's helpers read the fragment context when first subscribed, and
   // Svelte 5 subscribes to a `$store` lazily on first read — so a `$gotoStore`
@@ -12,9 +34,14 @@
   let {
     isCreate,
     fullWidth = false,
-    formData = $bindable(),
+    formData = $bindable({}),
     // eslint-disable-next-line @typescript-eslint/no-unused-vars, no-useless-assignment -- $bindable() prop: assigned here, read by the parent through bind:validateFn
     validateFn = $bindable(),
+  }: {
+    isCreate: boolean;
+    fullWidth?: boolean;
+    formData: MetaFormData;
+    validateFn?: (() => boolean) | null;
   } = $props();
 
   formData = {
@@ -34,17 +61,28 @@
     },
   };
 
-  let form: any;
+  let form: HTMLFormElement | undefined;
   $effect(() => {
     validateFn = validate;
   });
 
-  function validate() {
+  /**
+   * Writes one language of a translation. The inputs below used to bind
+   * straight into `formData.displayname.en`; the translations are optional on
+   * the way in (callers start from `{}`), so the write goes through here.
+   */
+  function setTranslation(field: "displayname" | "description", lang: string, value: string) {
+    const current = formData[field] ?? {};
+    current[lang] = value;
+    formData[field] = current;
+  }
+
+  function validate(): boolean {
     // Check if there's a shortname validation error
     if (shortnameError) {
       return false;
     }
-    
+
     // Also validate the shortname value directly
     if (formData.shortname && formData.shortname !== "auto") {
       if (!validateShortnameInput(formData.shortname)) {
@@ -52,7 +90,8 @@
         return false;
       }
     }
-    
+
+    if (!form) return true;
     const isValid = form.checkValidity();
     if (!isValid) {
       form.reportValidity();
@@ -63,7 +102,7 @@
   let isShortnameUpdateOpen = $state(false);
   let newShortname = $state("");
   let isUpdatingShortname = $state(false);
-  let shortnameUpdateError: any = $state(null);
+  let shortnameUpdateError = $state<string | null>(null);
   let isTranslationsOpen = $state(false);
 
   // Shortname validation pattern
@@ -86,13 +125,28 @@
   }
 
   function handleShortnameModalUpdate() {
-    newShortname = formData.shortname;
+    newShortname = formData.shortname ?? "";
     shortnameUpdateError = null;
     isShortnameUpdateOpen = true;
   }
 
+  /**
+   * The server's reason for a failed move: the first row's own error
+   * (`error.info[0].failed[0].error`), then the error message.
+   */
+  function moveFailureMessage(error: unknown): string | undefined {
+    if (!isJsonObject(error) || !isJsonObject(error.response) || !isJsonObject(error.response.data)) return undefined;
+    const serverError = error.response.data.error;
+    if (!isJsonObject(serverError)) return undefined;
+    const info = Array.isArray(serverError.info) ? serverError.info[0] : undefined;
+    const failed = isJsonObject(info) && Array.isArray(info.failed) ? info.failed[0] : undefined;
+    const rowError = isJsonObject(failed) && typeof failed.error === "string" ? failed.error : undefined;
+    return rowError || (typeof serverError.message === "string" ? serverError.message : undefined);
+  }
+
   async function updateShortname() {
-    if (!newShortname || newShortname === formData.shortname) return;
+    const currentShortname = formData.shortname ?? "";
+    if (!newShortname || newShortname === currentShortname) return;
     if (!newShortname.match(/^[a-zA-Z0-9_]+$/)) {
       shortnameUpdateError = $_("validation.shortname_format");
       return;
@@ -113,7 +167,7 @@
       const moveAttrb = {
         src_space_name: $params.space_name,
         src_subpath: newSubpath,
-        src_shortname: formData.shortname,
+        src_shortname: currentShortname,
         dest_space_name: $params.space_name,
         dest_subpath: newSubpath,
         dest_shortname: newShortname,
@@ -125,7 +179,7 @@
         records: [
           {
             resource_type: resourceType,
-            shortname: formData.shortname,
+            shortname: currentShortname,
             subpath: newSubpath,
             attributes: moveAttrb,
           },
@@ -133,7 +187,7 @@
       });
 
       let url = "/management/content";
-      let gotoPayload: any = {
+      let gotoPayload: Record<string, string> = {
         space_name: $params.space_name,
       };
       if (resourceType === ResourceType.space) {
@@ -156,11 +210,8 @@
         }
       }
       goto(`${url}`, gotoPayload);
-    } catch (error: any) {
-      shortnameUpdateError =
-        error.response.data.error?.info[0]?.failed[0].error ||
-        error.response.data.error?.message ||
-        $_("errors.shortname_update_failed");
+    } catch (error) {
+      shortnameUpdateError = moveFailureMessage(error) || $_("errors.shortname_update_failed");
     } finally {
       isUpdatingShortname = false;
     }
@@ -279,7 +330,8 @@
                 <input
                   id="displayname-en"
                   class="input-field"
-                  bind:value={formData.displayname.en}
+                  value={formData.displayname?.en ?? ""}
+                  oninput={(e) => setTranslation("displayname", "en", e.currentTarget.value)}
                 />
               </div>
               <div>
@@ -289,7 +341,8 @@
                 <input
                   id="displayname-ar"
                   class="input-field"
-                  bind:value={formData.displayname.ar}
+                  value={formData.displayname?.ar ?? ""}
+                  oninput={(e) => setTranslation("displayname", "ar", e.currentTarget.value)}
                 />
               </div>
               <div>
@@ -299,7 +352,8 @@
                 <input
                   id="displayname-ku"
                   class="input-field"
-                  bind:value={formData.displayname.ku}
+                  value={formData.displayname?.ku ?? ""}
+                  oninput={(e) => setTranslation("displayname", "ku", e.currentTarget.value)}
                 />
               </div>
             </div>
@@ -318,7 +372,8 @@
                 <textarea
                   id="description-en"
                   class="textarea-field"
-                  bind:value={formData.description.en}
+                  value={formData.description?.en ?? ""}
+                  oninput={(e) => setTranslation("description", "en", e.currentTarget.value)}
                   rows="3"
                 ></textarea>
               </div>
@@ -329,7 +384,8 @@
                 <textarea
                   id="description-ar"
                   class="textarea-field"
-                  bind:value={formData.description.ar}
+                  value={formData.description?.ar ?? ""}
+                  oninput={(e) => setTranslation("description", "ar", e.currentTarget.value)}
                   rows="3"
                 ></textarea>
               </div>
@@ -340,7 +396,8 @@
                 <textarea
                   id="description-ku"
                   class="textarea-field"
-                  bind:value={formData.description.ku}
+                  value={formData.description?.ku ?? ""}
+                  oninput={(e) => setTranslation("description", "ku", e.currentTarget.value)}
                   rows="3"
                 ></textarea>
               </div>
@@ -408,7 +465,7 @@
           <input
             id="new-shortname"
             class="input-field"
-            placeholder={formData.shortname}
+            placeholder={formData.shortname ?? ""}
             bind:value={newShortname}
           />
         </div>

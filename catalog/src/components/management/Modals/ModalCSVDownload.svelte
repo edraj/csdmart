@@ -14,6 +14,18 @@
         errorToastMessage,
     } from "@/lib/toasts_messages";
     import Modal from "@/components/Modal.svelte";
+    import { errorMessage } from "@/lib/apiError";
+    import { bodyObject, type EntryPayload, type IndexAttribute } from "@/lib/types";
+
+    /**
+     * The folder whose CSV columns are edited: a retrieved entry (payload at
+     * the top level) or a query record (payload under `attributes`).
+     */
+    interface FolderMeta {
+        shortname: string;
+        payload?: EntryPayload;
+        attributes?: { payload?: EntryPayload };
+    }
 
     interface Props {
         isOpen?: boolean;
@@ -21,8 +33,8 @@
         subpath: string;
         query?: QueryRequest | null;
         availableSpaces?: { shortname: string; displayname?: string }[];
-        folderMetadata?: any;
-        indexAttributes?: any[];
+        folderMetadata?: FolderMeta | null;
+        indexAttributes?: IndexAttribute[];
         onUpdateFolder?: () => void;
     }
 
@@ -50,14 +62,15 @@
     let editingCsvColumns = $state<{ key: string; name: string }[]>([]);
     let isSavingColumns = $state(false);
 
+    /** The folder's payload, wherever the given record carries it. */
+    const folderPayload = (): EntryPayload | undefined =>
+        folderMetadata?.payload || folderMetadata?.attributes?.payload || undefined;
+
     // Reset selected space when modal opens
     $effect(() => {
         if (isOpen) {
             selectedSpace = space_name;
-            const existingColumns =
-                folderMetadata?.payload?.body?.csv_columns ||
-                folderMetadata?.attributes?.payload?.body?.csv_columns ||
-                [];
+            const existingColumns = bodyObject(folderPayload())?.csv_columns || [];
             editingCsvColumns = JSON.parse(JSON.stringify(existingColumns));
         }
     });
@@ -107,14 +120,9 @@
                         subpath: getParentPath(subpath),
                         attributes: {
                             payload: {
-                                ...(folderMetadata?.payload ||
-                                    folderMetadata?.attributes?.payload ||
-                                    {}),
+                                ...(folderPayload() ?? {}),
                                 body: {
-                                    ...(folderMetadata?.payload?.body ||
-                                        folderMetadata?.attributes?.payload
-                                            ?.body ||
-                                        {}),
+                                    ...(bodyObject(folderPayload()) ?? {}),
                                     csv_columns: editingCsvColumns.filter(
                                         (a) => a.key.trim() && a.name.trim(),
                                     ),
@@ -131,8 +139,8 @@
             } else {
                 errorToastMessage("Failed to update CSV Columns");
             }
-        } catch (err: any) {
-            errorToastMessage("Error updating CSV Columns: " + err.message);
+        } catch (err) {
+            errorToastMessage("Error updating CSV Columns: " + errorMessage(err));
         } finally {
             isSavingColumns = false;
         }
@@ -178,9 +186,11 @@
                 delete csvQuery.to_date;
             }
 
-            const data = await Dmart.csv(csvQuery) as any;
+            // The SDK declares a query response here, but the CSV endpoint
+            // answers the CSV text itself; String() hands it through as-is.
+            const data = await Dmart.csv(csvQuery);
             downloadFile(
-                data,
+                String(data),
                 `${selectedSpace}_${subpath.replace(/\//g, "_")}.csv`,
                 "text/csv",
             );

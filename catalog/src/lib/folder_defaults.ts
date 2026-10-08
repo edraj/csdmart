@@ -1,4 +1,4 @@
-import { isJsonObject, type JsonObject } from "./types";
+import { isJsonObject, type IndexAttribute, type JsonObject } from "./types";
 
 /** The query a folder's listing is configured to run. */
 export type FolderQuery = {
@@ -19,7 +19,7 @@ export type FolderContent = {
   icon_opened: string;
   shortname_title: string;
 
-  index_attributes: JsonObject[];
+  index_attributes: IndexAttribute[];
   query: FolderQuery;
   search_columns: unknown[];
   csv_columns: unknown[];
@@ -67,7 +67,7 @@ export function applyFolderContentDefaults(content: JsonObject | null | undefine
     icon_opened: str(c.icon_opened),
     shortname_title: str(c.shortname_title),
 
-    index_attributes: list<JsonObject>(c.index_attributes),
+    index_attributes: list<IndexAttribute>(c.index_attributes),
 
     query: isJsonObject(c.query)
       ? c.query

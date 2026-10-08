@@ -40,13 +40,14 @@
   import { formatNumber, getParentPath } from "@/lib/helpers";
   import { parseBreadcrumbPath } from "@/lib/breadcrumb";
   import { stripServerManagedFields } from "@/lib/duplicate";
+  import { applyFolderContentDefaults } from "@/lib/folder_defaults";
   import SchemaForm from "@/components/forms/SchemaForm.svelte";
   import DynamicSchemaBasedForms from "@/components/forms/DynamicSchemaBasedForms.svelte";
   import MetaUserForm from "@/components/management/forms/MetaUserForm.svelte";
   import MetaRoleForm from "@/components/forms/MetaRoleForm.svelte";
   import MetaPermissionForm from "@/components/forms/MetaPermissionForm.svelte";
   import { MANAGEMENT_SPACE } from "@/lib/constants";
-  import WorkflowForm from "@/components/forms/WorkflowForm.svelte";
+  import WorkflowForm, { normalizeWorkflowContent, type WorkflowContent } from "@/components/forms/WorkflowForm.svelte";
   import {
     errorToastMessage,
     successToastMessage,
@@ -1230,54 +1231,22 @@
   let metaContent: any = $state({});
   let showCreateFolderModal = $state(false);
   let validateMetaForm: any = $state(null);
-  let folderContent = $state({
-    title: "",
-    content: "",
-    is_active: true,
-    tags: [],
-    index_attributes: [],
-    sort_by: "created_at",
-    sort_type: "descending",
-    content_resource_types: [],
-    content_schema_shortnames: [],
-    workflow_shortnames: [],
-    allow_view: true,
-    allow_create: true,
-    allow_update: true,
-    allow_delete: false,
-    allow_create_category: false,
-    allow_csv: false,
-    allow_upload_csv: false,
-    use_media: false,
-    stream: false,
-    expand_children: false,
-    disable_filter: false,
-  });
-
-  function handleCreateFolder() {
-    folderContent = {
+  // A new folder's listing settings: the defaults, sorted newest first. The
+  // FolderForm applies the same defaults on mount, so the shape is the one it
+  // has always bound to.
+  const newFolderContent = () =>
+    applyFolderContentDefaults({
       title: "",
       content: "",
       is_active: true,
       tags: [],
-      index_attributes: [],
       sort_by: "created_at",
       sort_type: "descending",
-      content_resource_types: [],
-      content_schema_shortnames: [],
-      workflow_shortnames: [],
-      allow_view: true,
-      allow_create: true,
-      allow_update: true,
-      allow_delete: false,
-      allow_create_category: false,
-      allow_csv: false,
-      allow_upload_csv: false,
-      use_media: false,
-      stream: false,
-      expand_children: false,
-      disable_filter: false,
-    };
+    });
+  let folderContent = $state(newFolderContent());
+
+  function handleCreateFolder() {
+    folderContent = newFolderContent();
     showCreateFolderModal = true;
   }
 
@@ -1316,7 +1285,7 @@
   let schemaContent: Record<string, any> = $state({});
   let isCreatingSchema = $state(false);
   let showCreateWorkflowModal = $state(false);
-  let workflowContent: Record<string, any> = $state({});
+  let workflowContent = $state<WorkflowContent>(normalizeWorkflowContent({}));
   let isCreatingWorkflow = $state(false);
 
   // Column Settings
@@ -1446,12 +1415,7 @@
   }
 
   function handleCreateWorkflow() {
-    workflowContent = {
-      name: "",
-      states: [],
-      illustration: "",
-      initial_state: [],
-    };
+    workflowContent = normalizeWorkflowContent({});
     showCreateWorkflowModal = true;
   }
 
@@ -1513,11 +1477,10 @@
             subpath: `/${$actualSubpath}`,
             attributes: {
               displayname:
-                metaContent.displayname ||
-                ({
-                  ar: (workflowContent as any).name || "",
-                  en: (workflowContent as any).name || "",
-                } as any),
+                metaContent.displayname || {
+                  ar: workflowContent.name || "",
+                  en: workflowContent.name || "",
+                },
               description: metaContent.description || {},
               payload: {
                 body: workflowContent,

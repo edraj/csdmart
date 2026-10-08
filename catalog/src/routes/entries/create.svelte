@@ -1475,7 +1475,6 @@
                 bind:this={htmlEditorRef}
                 bind:content={htmlEditor}
                 uid="main-editor"
-                {attachments}
                 subpath={$params.subpath}
                 space_name={selectedSpace}
                 parent_shortname={shortname}
