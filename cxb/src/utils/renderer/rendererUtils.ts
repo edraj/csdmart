@@ -1,18 +1,27 @@
-export function generateObjectFromSchema(schema) {
+/**
+ * The slice of JSON Schema the form renderer reads. Open-ended on purpose: a
+ * schema carries keywords (`title`, `pattern`, `format`, …) this app passes
+ * through without looking at.
+ */
+export interface JsonSchema {
+    type?: string;
+    properties?: Record<string, JsonSchema>;
+    items?: JsonSchema;
+    default?: unknown;
+    enum?: unknown[];
+    [keyword: string]: unknown;
+}
+
+export function generateObjectFromSchema(schema: JsonSchema): Record<string, unknown> | undefined {
     if (schema.type === 'object' && schema.properties) {
-        const generatedObject = {};
+        const generatedObject: Record<string, unknown> = {};
         Object.keys(schema.properties).forEach((property) => {
-            const propertySchema = schema.properties[property];
+            const propertySchema = schema.properties![property];
             if (propertySchema.type === 'object') {
-                generatedObject[property] = generateObjectFromSchema(propertySchema);
-                if (generatedObject[property] === undefined) {
-                    generatedObject[property] = {};
-                }
+                generatedObject[property] = generateObjectFromSchema(propertySchema) ?? {};
             } else if (propertySchema.type === 'array' && propertySchema.items) {
-                generatedObject[property] = [generateObjectFromSchema(propertySchema.items)];
-                if (generatedObject[property][0] === undefined) {
-                    generatedObject[property] = [];
-                }
+                const item = generateObjectFromSchema(propertySchema.items);
+                generatedObject[property] = item === undefined ? [] : [item];
             } else {
                 if (propertySchema.type === 'string') {
                     generatedObject[property] = "";
@@ -31,7 +40,7 @@ export function generateObjectFromSchema(schema) {
     }
 }
 
-export function generateSchemaFromObject(obj: any): any {
+export function generateSchemaFromObject(obj: unknown): JsonSchema & { type: string } {
     if (obj === null || obj === undefined) {
         return { type: "string" }; // default fallback
     }
@@ -47,9 +56,9 @@ export function generateSchemaFromObject(obj: any): any {
     }
 
     if (typeof obj === 'object') {
-        const properties: Record<string, any> = {};
+        const properties: Record<string, JsonSchema> = {};
         Object.keys(obj).forEach(key => {
-            properties[key] = generateSchemaFromObject(obj[key]);
+            properties[key] = generateSchemaFromObject((obj as Record<string, unknown>)[key]);
         });
         return {
             type: "object",
@@ -72,7 +81,7 @@ export function generateSchemaFromObject(obj: any): any {
  * Infers a JSON-Schema type string from a runtime value. Used by the form
  * renderer to render data props that the schema does not declare.
  */
-export function inferType(value: any): string {
+export function inferType(value: unknown): string {
     return generateSchemaFromObject(value).type;
 }
 
@@ -82,7 +91,7 @@ export function inferType(value: any): string {
  * intended layout); any extra data-only keys are appended. This guarantees that
  * every prop in the record data is rendered, even when absent from the schema.
  */
-export function unionKeys(schema: any, value: any): string[] {
+export function unionKeys(schema: JsonSchema | null | undefined, value: unknown): string[] {
     const keys: string[] = [];
     const seen = new Set<string>();
 
@@ -112,7 +121,7 @@ export function unionKeys(schema: any, value: any): string[] {
  * array item. Objects are seeded from their properties, arrays start empty,
  * and scalars use their declared default or a type-appropriate empty value.
  */
-export function buildDefaultForSchema(schema: any): any {
+export function buildDefaultForSchema(schema: JsonSchema | null | undefined): unknown {
     if (!schema || !schema.type) {
         // Unknown shape — claim nothing about it. The renderer falls back to
         // a text input for null values anyway (inferType(null) === "string").

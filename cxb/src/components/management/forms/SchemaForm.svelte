@@ -9,7 +9,9 @@
         removeProperty,
         schemaTypes,
         toggleRequired,
+        type SchemaFormNode,
     } from "@/utils/schemaFormUtils";
+    import type { JsonSchema } from "@/utils/renderer/rendererUtils";
     import Badge from "@/components/ui/Badge.svelte";
     import IconButton from "@/components/ui/IconButton.svelte";
     import { _ } from "@/i18n";
@@ -17,7 +19,8 @@
     let {
         content = $bindable({}),
     }: {
-        content: any;
+        /** The stored schema (properties keyed by name); written back on every edit. */
+        content: JsonSchema;
     } = $props();
 
     const uid = $props.id();
@@ -26,7 +29,8 @@
         content = createDefaultSchemaContent();
     }
 
-    let formContent = $state(transformJsonToForm($state.snapshot(content)));
+    // The converter walks arbitrary JSON; what it makes of a schema is a form node.
+    let formContent = $state(transformJsonToForm($state.snapshot(content)) as SchemaFormNode);
 
     function handleAddProperty(parentPath = "") {
         formContent = addProperty(formContent, parentPath);
@@ -40,17 +44,19 @@
         formContent = removeProperty(formContent, path, index);
     }
 
-    function handleToggleRequired(propertyName: string) {
-        formContent = toggleRequired(formContent, propertyName);
+    // A property row always has a name (the converter gives every one a string),
+    // but the node type leaves it optional for `items` nodes.
+    function handleToggleRequired(propertyName: string | undefined) {
+        formContent = toggleRequired(formContent, propertyName ?? "");
     }
 
-    function isRequired(propertyName: string) {
-        return formContent.required && formContent.required.includes(propertyName);
+    function isRequired(propertyName: string | undefined): boolean {
+        return !!formContent.required?.includes(propertyName ?? "");
     }
 
     $effect(() => {
         const schemaContent = transformFormToJson(structuredClone($state.snapshot(formContent)));
-        content = schemaContent;
+        content = schemaContent as JsonSchema;
     });
 
     const section = "rounded-card border border-border bg-surface p-3 space-y-3";

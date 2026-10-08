@@ -1,13 +1,58 @@
-import { Dmart, RequestType, ResourceType, type ResponseEntry, type ActionRequest } from "@edraj/tsdmart";
+import { Dmart, RequestType, ResourceType, type ApiResponseRecord, type ResponseEntry, type ActionRequest } from "@edraj/tsdmart";
 import { removeEmpty } from "@/utils/renderer/schemaEntryRenderer";
 import { Level, showToast } from "@/utils/toast";
 import { jsonEditorContentParser } from "@/utils/jsonEditor";
+import { isRecord } from "@/utils/compare";
 import { normalizeSubpath, parentOf, trashDestination } from "@/utils/subpath";
 import { get } from "svelte/store";
 import { _ } from "@/i18n";
 
 /** The active locale's message, for a module that has no component context. */
 const t = (key: string) => get(_)(key);
+
+/**
+ * What an entry action hands back. `errorMessage` is whatever the failure
+ * carried — the server's error envelope (an object) or an Error's text — and
+ * the callers render either: text inline, an object through Prism.
+ */
+export interface EntryActionResult {
+    success: boolean;
+    errorMessage?: unknown;
+}
+
+/**
+ * The entry as the JSON editor holds it. Open like the entry itself; only
+ * the fields the save path touches are named.
+ */
+export interface EditableEntry extends Record<string, unknown> {
+    uuid?: string;
+    shortname?: string;
+    payload?: EditablePayload;
+    password?: unknown;
+    old_password?: unknown;
+}
+
+export interface EditablePayload extends Record<string, unknown> {
+    content_type?: string;
+    schema_shortname?: string;
+    body?: unknown;
+}
+
+/** The parts of an axios/dmart failure the results surface. */
+interface RequestFailure {
+    response?: { data?: unknown };
+    message?: unknown;
+}
+
+function asFailure(error: unknown): RequestFailure {
+    return typeof error === "object" && error !== null ? (error as RequestFailure) : {};
+}
+
+/** `error.response.data.error`, the dmart envelope's error object, when there is one. */
+function responseError(error: unknown): unknown {
+    const data = asFailure(error).response?.data;
+    return isRecord(data) ? data.error : undefined;
+}
 
 /**
  * Gets the parent subpath from a given path
@@ -30,14 +75,14 @@ export function getParentSubpath(path: string): string {
  * non-object values, null, and non-empty values are left untouched. Mutates
  * `current` in place.
  */
-function stripUnchangedEmptyStrings(current: any, original: any): void {
-    if (!current || typeof current !== "object" || Array.isArray(current)) return;
-    const orig = (original && typeof original === "object" && !Array.isArray(original)) ? original : {};
+function stripUnchangedEmptyStrings(current: unknown, original: unknown): void {
+    if (!isRecord(current)) return;
+    const orig: Record<string, unknown> = isRecord(original) ? original : {};
     for (const key of Object.keys(current)) {
         const value = current[key];
         if (value === "" && (orig[key] === "" || orig[key] === undefined)) {
             delete current[key];
-        } else if (value && typeof value === "object" && !Array.isArray(value)) {
+        } else if (isRecord(value)) {
             stripUnchangedEmptyStrings(value, orig[key]);
             // A nested object the strip emptied entirely (every prop was an
             // unchanged empty) and that the original never carried is a spurious
@@ -55,15 +100,15 @@ function stripUnchangedEmptyStrings(current: any, original: any): void {
  * Handles saving entry data with proper content processing
  */
 export async function saveEntry(
-    jeContent: any,
+    jeContent: unknown,
     space_name: string,
     subpath: string,
     resource_type: ResourceType,
-    originalJeContent?: any
-): Promise<{ success: boolean; errorMessage?: string }> {
-    let content;
+    originalJeContent?: unknown
+): Promise<EntryActionResult> {
+    let content: EditableEntry;
     try {
-        content = jsonEditorContentParser(jeContent);
+        content = jsonEditorContentParser<EditableEntry>(jeContent);
     } catch {
         return { success: false, errorMessage: t("invalid_json") };
     }
@@ -73,10 +118,12 @@ export async function saveEntry(
     delete content.shortname;
 
     if (resource_type === ResourceType.schema) {
-        content.payload.body = removeEmpty(content.payload.body);
+        if (content.payload) {
+            content.payload.body = removeEmpty(content.payload.body);
+        }
     } else if (resource_type === ResourceType.content && subpath === "workflows") {
         content.payload = {
-            body: removeEmpty(jsonEditorContentParser(content.payload.body)),
+            body: removeEmpty(jsonEditorContentParser(content.payload?.body)),
             schema: 'workflow',
             content_type: "json"
         };
@@ -91,14 +138,19 @@ export async function saveEntry(
     }
 
     if (originalJeContent) {
-        const originalContent = jsonEditorContentParser(originalJeContent);
-        if (originalJeContent?.payload?.content_type === 'json') {
-            if (originalContent.payload && originalContent.payload.body && content.payload && content.payload.body) {
-                const originalKeys = Object.keys(originalContent.payload.body);
-                const currentKeys = Object.keys(content.payload.body);
+        const originalContent = jsonEditorContentParser<EditableEntry>(originalJeContent);
+        // The renderer passes the already-parsed original, so its payload is
+        // read off the argument as given.
+        const originalPayload = isRecord(originalJeContent) ? originalJeContent.payload : undefined;
+        if (isRecord(originalPayload) && originalPayload.content_type === 'json') {
+            const originalBody = originalContent.payload?.body;
+            const currentBody = content.payload?.body;
+            if (isRecord(originalBody) && isRecord(currentBody)) {
+                const originalKeys = Object.keys(originalBody);
+                const currentKeys = Object.keys(currentBody);
                 const removedKeys = originalKeys.filter(key => !currentKeys.includes(key));
                 removedKeys.forEach(key => {
-                    content.payload.body[key] = null;
+                    currentBody[key] = null;
                 });
             }
         }
@@ -116,15 +168,16 @@ export async function saveEntry(
             request_type: RequestType.update,
             records: [{
                 resource_type: resource_type,
-                shortname: shortname,
+                shortname: shortname ?? "",
                 subpath: _subpath,
-                attributes: content as Record<string, any>
+                attributes: content
             }]
         });
         showToast(Level.info, t("entry_updated"));
         return { success: true };
-    } catch (error: any) {
-        return { success: false, errorMessage: error.response?.data || error.message };
+    } catch (error: unknown) {
+        const failure = asFailure(error);
+        return { success: false, errorMessage: failure.response?.data || failure.message };
     }
 }
 
@@ -137,7 +190,7 @@ export async function deleteEntry(
     subpath: string,
     resource_type: ResourceType,
     force: boolean = false
-): Promise<{ success: boolean; errorMessage?: string }> {
+): Promise<EntryActionResult> {
     // The renderer's `subpath` is the folder's OWN path for a folder entry, and
     // the containing path for anything else; a request always names the parent.
     const targetSubpath = resource_type === ResourceType.folder
@@ -159,9 +212,9 @@ export async function deleteEntry(
         await Dmart.request(body);
         showToast(Level.info, t("entry_deleted"));
         return { success: true };
-    } catch (error: any) {
+    } catch (error: unknown) {
         showToast(Level.warn, t("entry_delete_failed"));
-        return { success: false, errorMessage: error?.response?.data?.error ?? error?.message };
+        return { success: false, errorMessage: responseError(error) ?? asFailure(error).message };
     }
 }
 
@@ -174,7 +227,7 @@ export async function moveEntryToTrash(
     subpath: string,
     resource_type: ResourceType,
     userShortname: string
-): Promise<{ success: boolean; errorMessage?: string }> {
+): Promise<EntryActionResult> {
     try {
         const moveResourceType = resource_type;
         // Same convention as deleteEntry: a folder's `subpath` is its own path.
@@ -205,16 +258,20 @@ export async function moveEntryToTrash(
         });
         showToast(Level.info, t("entry_trashed"));
         return { success: true };
-    } catch (error: any) {
+    } catch (error: unknown) {
         showToast(Level.warn, t("entry_trash_failed"));
-        return { success: false, errorMessage: error?.response?.data?.error?.message ?? error?.message };
+        const envelopeError = responseError(error);
+        return {
+            success: false,
+            errorMessage: (isRecord(envelopeError) ? envelopeError.message : undefined) ?? asFailure(error).message,
+        };
     }
 }
 
 /**
  * Gets payload schema for a given schema shortname
  */
-export async function getPayloadSchema(schemaShortname: string, space_name: string): Promise<any> {
+export async function getPayloadSchema(schemaShortname: string, space_name: string): Promise<ResponseEntry | null> {
     if (schemaShortname === "folder_rendering") {
         return await Dmart.retrieveEntry({ resource_type: ResourceType.schema, space_name: "management", subpath: "schema", shortname: schemaShortname, retrieve_json_payload: true, retrieve_attachments: false, validate_schema: true });
     }
@@ -225,13 +282,14 @@ export async function getPayloadSchema(schemaShortname: string, space_name: stri
  * Moves multiple entries to trash
  */
 export async function bulkMoveEntryToTrash(
-    entries: any[],
+    entries: ApiResponseRecord[],
     space_name: string,
     userShortname: string
-): Promise<{ success: boolean; errorMessage?: string }> {
+): Promise<EntryActionResult> {
     try {
         const records = entries.map((entry) => {
-            const moveResourceType = entry.resource_type;
+            // A list record names its type as a plain string; the request wants the enum.
+            const moveResourceType = entry.resource_type as ResourceType;
             // A list record's `subpath` is already the containing path — for a
             // folder record as much as for a content one — so it is sent as is.
             // Trimming it produced `-a` for `/a/b` and `/` for `/a`.
@@ -261,8 +319,12 @@ export async function bulkMoveEntryToTrash(
         });
         showToast(Level.info, t("entries_trashed"));
         return { success: true };
-    } catch (error: any) {
+    } catch (error: unknown) {
         showToast(Level.warn, t("entries_trash_failed"));
-        return { success: false, errorMessage: error?.response?.data?.error?.message ?? error?.message };
+        const envelopeError = responseError(error);
+        return {
+            success: false,
+            errorMessage: (isRecord(envelopeError) ? envelopeError.message : undefined) ?? asFailure(error).message,
+        };
     }
 }

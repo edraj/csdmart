@@ -105,7 +105,7 @@ export function ensureDmartAxios(): AxiosInstance {
     },
   );
 
-  Dmart.setAxiosInstance(dmartAxios as any);
+  Dmart.setAxiosInstance(dmartAxios);
   instance = dmartAxios;
   return dmartAxios;
 }

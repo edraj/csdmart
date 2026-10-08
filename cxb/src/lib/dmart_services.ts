@@ -1,4 +1,4 @@
-import {type ApiQueryResponse, Dmart, headers, type QueryRequest, QueryType, ResourceType, SortyType,} from "@edraj/tsdmart";
+import {type ApiQueryResponse, type ApiResponse, Dmart, headers, type QueryRequest, QueryType, ResourceType, SortyType,} from "@edraj/tsdmart";
 import {spaces} from "@/stores/management/spaces";
 import {Level, showToast} from "@/utils/toast";
 import type {CsvQuery} from "@/utils/csvExport";
@@ -57,13 +57,16 @@ export async function getAvatar(shortname: string) {
 }
 
 export async function getSpaces(): Promise<ApiQueryResponse> {
-    const _spaces: any = await Dmart.query({
+    const _spaces = await Dmart.query({
         type: QueryType.spaces,
         space_name: "management",
         subpath: "/",
         search: "",
         limit: 100,
     });
+    if (!_spaces) {
+        throw new Error("Failed to query spaces");
+    }
     _spaces.records = _spaces.records.map(e => {
         if (e.attributes.ordinal === null) {
             e.attributes.ordinal = 9999;
@@ -81,7 +84,7 @@ export async function getChildren(
     limit: number = 20,
     offset: number = 0,
     restrict_types: Array<ResourceType> = [],
-    spaces: any = null,
+    spaces: ApiResponse | null = null,
     ignoreFilter = false
 ): Promise<ApiQueryResponse> {
     const _subpath = subpath.replaceAll('-', '/')
@@ -115,7 +118,7 @@ export async function getChildren(
     return folders;
 }
 
-export async function getChildrenAndSubChildren(subpathsPTR: string[], spacename: string, base: string, _subpaths: any): Promise<void> {
+export async function getChildrenAndSubChildren(subpathsPTR: string[], spacename: string, base: string, _subpaths: ApiResponse): Promise<void> {
     for (const _subpath of _subpaths.records) {
         if (_subpath.resource_type === "folder") {
             const fullPath = `${base}/${_subpath.shortname}`;

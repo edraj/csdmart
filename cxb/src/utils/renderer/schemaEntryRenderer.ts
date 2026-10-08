@@ -1,23 +1,27 @@
+import { isRecord } from "@/utils/compare";
+
 export function transformEntryToRender(entries: Record<string, unknown>): Record<string, unknown> {
-    if ((entries as any).properties) {
+    const schemaProperties = entries.properties;
+    if (isRecord(schemaProperties)) {
         const properties: Record<string, unknown>[] = [];
-        Object.keys((entries as any).properties).forEach((entry) => {
+        Object.keys(schemaProperties).forEach((entry) => {
             const id = crypto.randomUUID();
-            if ((entries as any)?.properties[entry]?.properties) {
+            const property = schemaProperties[entry];
+            if (isRecord(property) && property.properties) {
                 properties.push({
                     id,
                     name: entry,
-                    ...transformEntryToRender((entries as any).properties[entry]),
+                    ...transformEntryToRender(property),
                 });
             } else {
                 properties.push({
                     id,
                     name: entry,
-                    ...(entries as any).properties[entry],
+                    ...(isRecord(property) ? property : {}),
                 });
             }
         });
-        (entries as any).properties = properties;
+        entries.properties = properties;
     }
     return entries;
 }

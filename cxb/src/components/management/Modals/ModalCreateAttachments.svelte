@@ -9,7 +9,9 @@
         ResourceType,
         type ActionRequest,
         type ActionRequestRecord,
+        type ApiResponseRecord,
     } from "@edraj/tsdmart";
+    import type { Content } from "svelte-jsoneditor";
     import LazyJsonEditor from "@/components/ui/LazyJsonEditor.svelte";
     import ErrorState from "@/components/ui/ErrorState.svelte";
     import HtmlEditor from "@/components/management/editors/HtmlEditor.svelte";
@@ -24,6 +26,30 @@
     import { limitJsonForDisplay } from "@/utils/displayJson";
     import { _ } from "@/i18n";
 
+    /** One translatable field as the meta form edits it: a cleared box is null. */
+    type MetaTranslation = { en?: string | null; ar?: string | null; ku?: string | null };
+
+    /** The attachment's own metadata, edited through MetaForm. */
+    interface AttachmentMeta {
+        shortname?: string | null;
+        is_active?: boolean;
+        slug?: string | null;
+        displayname?: MetaTranslation;
+        description?: MetaTranslation;
+    }
+
+    /**
+     * What the content control holds, by attachment type: the text itself for
+     * a text/markdown/html media or a new comment, JSON-editor content for a
+     * JSON attachment (and the record itself when only metadata is edited),
+     * `{ body }` for an existing comment, `{}` for a file upload.
+     */
+    type AttachmentContent = string | Content | { body?: string };
+
+    function isEditorContent(value: AttachmentContent): value is Content {
+        return typeof value === "object" && (("json" in value && !!value.json) || ("text" in value && !!value.text));
+    }
+
     let {
         meta = $bindable({}),
         payload = $bindable({}),
@@ -36,11 +62,11 @@
         parent_shortname = $bindable(""),
         refreshEntry,
     }: {
-        meta?: any;
-        payload?: any;
+        meta?: AttachmentMeta;
+        payload?: AttachmentContent;
         isOpen?: boolean;
         isUpdateMode?: boolean;
-        selectedAttachment?: any;
+        selectedAttachment?: ApiResponseRecord | null;
         space_name?: string;
         parentResourceType: ResourceType;
         subpath?: string;
@@ -53,7 +79,7 @@
     let resourceType = $state<ResourceAttachmentType>(ResourceAttachmentType.media);
     let contentType = $state<ContentType>(ContentType.image);
     let payloadFiles = $state<FileList | null>(null);
-    let content: any = $state(payload);
+    let content = $state<AttachmentContent>(payload);
     let selectedSchema = $state("");
     let trueResourceType = $state<ResourceAttachmentType | null>(null);
     let isLoading = $state(false);
@@ -69,7 +95,7 @@
         }
     });
 
-    function initializeFormWithAttachment(attachment: any) {
+    function initializeFormWithAttachment(attachment: ApiResponseRecord) {
         if (!attachment) return;
 
         const _attachment = structuredClone($state.snapshot(attachment));
@@ -193,7 +219,9 @@
                                     content_type: ContentType.json,
                                     body: {
                                         state: "commented",
-                                        body: isUpdateMode ? content.body : content,
+                                        body: isUpdateMode
+                                            ? (typeof content === "object" && "body" in content ? content.body : undefined)
+                                            : content,
                                     },
                                 },
                             },
@@ -206,7 +234,8 @@
                     response = await Dmart.uploadWithPayload({
                         space_name,
                         subpath: attachmentSubpath,
-                        shortname: meta.shortname,
+                        // The meta form's `required` check above guarantees a name here.
+                        shortname: meta.shortname ?? "",
                         resource_type: ResourceType[resourceType as keyof typeof ResourceType],
                         payload_file: payloadFiles![0],
                         attributes: removeEmpty({
@@ -294,7 +323,8 @@
     async function updateMeta() {
         errorModalMessage = null;
         errorContent = null;
-        const _payloadContent = jsonEditorContentParser($state.snapshot(content));
+        // The editor was seeded with the attachment record itself (see initializeFormWithAttachment).
+        const _payloadContent = jsonEditorContentParser<ActionRequestRecord>($state.snapshot(content));
 
         _payloadContent.subpath = attachmentSubpath;
         _payloadContent.attributes.slug = meta.slug;
@@ -420,26 +450,28 @@
                         <Label for="{uid}-file" class="mb-1.5">{$_("file")}</Label>
                         <Fileupload id="{uid}-file" accept={fileAccept[contentType]} clearable bind:files={payloadFiles} />
                     </div>
-                {:else if contentType === ContentType.markdown}
-                    <MarkdownEditor bind:content />
-                {:else if contentType === ContentType.html}
-                    <HtmlEditor bind:content />
-                {:else}
-                    <div>
-                        <Label for="{uid}-text" class="mb-1.5">{$_("content")}</Label>
-                        <Textarea id="{uid}-text" bind:value={content} rows={8} dir="auto" />
-                    </div>
+                {:else if typeof content === "string"}
+                    {#if contentType === ContentType.markdown}
+                        <MarkdownEditor bind:content />
+                    {:else if contentType === ContentType.html}
+                        <HtmlEditor bind:content />
+                    {:else}
+                        <div>
+                            <Label for="{uid}-text" class="mb-1.5">{$_("content")}</Label>
+                            <Textarea id="{uid}-text" bind:value={content} rows={8} dir="auto" />
+                        </div>
+                    {/if}
                 {/if}
             {:else if resourceType === ResourceAttachmentType.json}
-                {#if content.json || content.text}
+                {#if isEditorContent(content)}
                     <LazyJsonEditor mode="text" bind:content />
                 {/if}
             {:else if resourceType === ResourceAttachmentType.comment}
                 <div>
                     <Label for="{uid}-comment" class="mb-1.5">{$_("comment")}</Label>
-                    {#if isUpdateMode}
+                    {#if isUpdateMode && typeof content === "object" && "body" in content}
                         <Textarea id="{uid}-comment" bind:value={content.body} rows={6} dir="auto" />
-                    {:else}
+                    {:else if typeof content === "string"}
                         <Textarea id="{uid}-comment" bind:value={content} rows={6} dir="auto" />
                     {/if}
                 </div>
