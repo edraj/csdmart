@@ -1,0 +1,22 @@
+{
+  "uuid": "70d209ee-39bc-567f-859b-012cd9816c17",
+  "shortname": "home",
+  "is_active": true,
+  "displayname": {
+    "en": "DMART — Self-Hosted Structured Data Platform"
+  },
+  "description": {
+    "en": "DMART is a self-hosted, structured information platform. One binary, JSON Schema payloads, files you own — running in 106 MB alongside PostgreSQL on a 416 MB board."
+  },
+  "tags": [
+    "site"
+  ],
+  "created_at": "2026-10-08T00:00:00",
+  "updated_at": "2026-10-08T00:00:00",
+  "owner_shortname": "dmart",
+  "payload": {
+    "content_type": "json",
+    "schema_shortname": "landing_page",
+    "body": "home.json"
+  }
+}

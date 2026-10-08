@@ -2,6 +2,39 @@
 
 ## Unreleased
 
+### Added
+
+- **dmart publishes a website.** `dmart website build` renders the `website`
+  space into a static site, and the server serves it under `WEBSITE_URL`
+  (default `/website`) from `WEBSITE_DIR` (default `~/.dmart/website`). The
+  pages are real HTML with their text in the markup, plus `sitemap.xml`,
+  `robots.txt`, canonical and Open Graph tags. The build reads **as an
+  anonymous visitor**, so it publishes exactly what the `world` permission
+  lets the public see: a fresh install publishes nothing, drafts
+  (`is_active: false`) never go out, and with nothing public the build
+  refuses rather than overwrite a good site with an empty one. A rebuild
+  replaces the live site atomically and is served on the next request, with
+  no restart. See `docs/website.md`.
+- **The bundled `website` space is now all of dmart.cc.** Alongside the 14
+  docs pages it holds the landing page (`/site/home`) and the navigation and
+  footer (`/site/config`), each validated by a schema in the space
+  (`landing_page`, `site_config`). The built-in template ports dmart.cc's
+  design (light and dark themes, the docs sidebar, the landing layout and
+  its architecture figure). `--template <dir>` swaps in your own.
+- Markdown is rendered with Markdig (new dependency), with raw HTML and
+  generic attributes disabled and link targets limited to http(s), mailto,
+  tel and relative URLs. The site gets its own Content-Security-Policy:
+  scripts from `'self'` plus one pinned, integrity-checked mermaid build on
+  jsdelivr, which loads only on pages that draw a diagram. There is no
+  `'unsafe-inline'` for scripts, so script in an `html`-typed page doesn't
+  run in the origin the admin UI shares.
+
+### Removed
+
+- `catalog/ssg/generate.mjs` and the catalog's `ssg:dmart` script. The Node
+  generator was the prototype for `dmart website build`, which replaces it
+  inside the binary.
+
 ### Tooling
 
 - cxb no longer depends on `vite-plugin-static-copy`: Vite's public

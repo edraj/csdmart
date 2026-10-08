@@ -212,7 +212,19 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- The layout, stylesheet, script, icons and figures `dmart website build`
+         wraps around the website space's content. Embedded for the same reason
+         as seed/: a relocated single binary must still be able to build a site. -->
+    <EmbeddedResource Include="WebsiteTemplate/**" LinkBase="website-template" />
+    <Content Remove="WebsiteTemplate/**" />
+    <None Remove="WebsiteTemplate/**" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="JsonSchema.Net" Version="9.4.0" />
+    <!-- Markdown → HTML for `dmart website build`. Raw HTML is disabled in the
+         pipeline (WebsiteRenderer), so markdown cannot inject markup. -->
+    <PackageReference Include="Markdig" Version="1.4.0" />
     <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.5" />
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.5" />
     <!-- Pin transitive Microsoft.OpenApi (2.0.0 via AspNetCore.OpenApi) to a patched version for CVE-2026-49451 (GHSA-v5pm-xwqc-g5wc) -->

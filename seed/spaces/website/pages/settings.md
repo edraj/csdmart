@@ -35,6 +35,8 @@ A cwd-relative `./config.env` is _not_ looked up implicitly. Because the file ma
 | `LISTENING_PORT` | Port the server listens on (HTTP + WebSocket share this port) | `8282` |
 | `CXB_URL` | URL path prefix for the embedded CXB admin SPA. Set to `/` to serve it at the root. | `"/cxb"` |
 | `CAT_URL` | URL path prefix for the embedded Catalog SPA | `"/cat"` |
+| `WEBSITE_URL` | URL path prefix for the site `dmart website build` generates. `/` turns serving off. | `"/website"` |
+| `WEBSITE_DIR` | Where `dmart website build` writes and the server reads. Empty means `~/.dmart/website`. | `""` |
 | `ALLOWED_CORS_ORIGINS` | Comma-separated origins allowed to make cross-site requests. Empty allows only the same-host origin. | `""` |
 | `TRUSTED_PROXIES` | Comma-separated IPs/CIDRs whose `X-Forwarded-For` is trusted (for real client IP behind nginx/an LB) | `""` |
 | `FORWARDED_FOR_HOP_COUNT` | Number of proxy hops in front of DMART | `1` |

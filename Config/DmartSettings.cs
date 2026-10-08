@@ -795,6 +795,17 @@ public sealed class DmartSettings
     // in catalog/index.html. Share config.json lookup with CXB.
     public string CatUrl { get; set; } = "/cat";
 
+    // URL path prefix for the static website that `dmart website build`
+    // generates from the "website" space, served by WebsiteMiddleware. Unlike
+    // CXB and Catalog nothing is embedded: until a build exists the prefix
+    // answers a plain 404.
+    public string WebsiteUrl { get; set; } = "/website";
+
+    // Directory `dmart website build` writes into and the server reads from.
+    // Empty = ~/.dmart/website. Set it explicitly when the CLI and the server
+    // run as different OS users, or each resolves a different home directory.
+    public string WebsiteDir { get; set; } = "";
+
     // ---- SMTP email gateway (Python parity) ----
     // Used by OtpProvider to deliver email OTP codes. When MailHost is empty
     // the sender logs
