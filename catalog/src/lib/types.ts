@@ -148,6 +148,20 @@ export interface EntryRecord<A extends EntryAttributes = EntryAttributes> {
 }
 
 /**
+ * True for a value carrying a record's identifying fields and an attributes
+ * object — for record lists that arrive untyped (a websocket frame).
+ */
+export function isEntryRecord(value: unknown): value is EntryRecord {
+  return (
+    isJsonObject(value) &&
+    typeof value.resource_type === "string" &&
+    typeof value.shortname === "string" &&
+    typeof value.subpath === "string" &&
+    isJsonObject(value.attributes)
+  );
+}
+
+/**
  * A retrieved entry (`Dmart.retrieveEntry`): the same attributes, flattened
  * to the top level beside the identifying fields.
  */

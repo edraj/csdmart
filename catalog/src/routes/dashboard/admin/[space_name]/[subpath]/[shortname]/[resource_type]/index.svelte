@@ -13,10 +13,23 @@
   import { errorToastMessage } from "@/lib/toasts_messages";
   import { ContentType, ResourceType, DmartScope } from "@edraj/tsdmart";
   import { _, locale } from "@/i18n";
-  import type { JsonObject } from "@/lib/types";
+  import {
+    isJsonObject,
+    type EntryDetail,
+    type EntryPayload,
+    type EntryRecord,
+    type JsonObject,
+    type LocalizedText,
+    type Relationship,
+    type Schema,
+  } from "@/lib/types";
+  import { asFormSchema } from "@/lib/formUtils";
+  import { errorMessage } from "@/lib/apiError";
+  import { isJsonValue } from "@/components/json-table/types";
+  import type { Breadcrumb } from "@/lib/paths";
   import { setTitle } from "@/lib/title";
   import { formatDate } from "@/lib/format";
-  import { writable } from "svelte/store";
+  import { writable, type Readable } from "svelte/store";
   import Attachment from "@/components/Attachments.svelte";
   import HtmlEditor from "@/components/editors/HtmlEditor.svelte";
   import MarkdownEditor from "@/components/editors/MarkdownEditor.svelte";
@@ -39,22 +52,22 @@
 
 
   const isLoading = writable(false);
-  const itemData = writable<any>(null);
-  const error = writable<any>(null);
+  const itemData = writable<EntryDetail | null>(null);
+  const error = writable<string | null>(null);
   const spaceName = writable("");
   const subpath = writable("");
   const itemShortname = writable("");
   const actualSubpath = writable("");
   let unsubscribeParams: () => void;
-  const breadcrumbs = writable<any[]>([]);
+  const breadcrumbs = writable<Breadcrumb[]>([]);
   let spaceNameValue = $state("");
   let subpathValue = "";
   let itemShortnameValue = $state("");
   let actualSubpathValue = $state("");
-  let breadcrumbsValue: any[] = [];
-  const authorRelatedEntries = writable<any[]>([]);
-  let authorRelatedEntriesValue: any[] = $state([]);
-  let itemDataValue: any = $state(null);
+  let breadcrumbsValue: Breadcrumb[] = [];
+  const authorRelatedEntries = writable<EntryRecord[]>([]);
+  let authorRelatedEntriesValue: EntryRecord[] = $state([]);
+  let itemDataValue = $state<EntryDetail | null>(null);
 
   $effect(() => setTitle(itemDataValue ? getDisplayName(itemDataValue) : itemShortnameValue, spaceNameValue));
   const activeTab = writable("content");
@@ -65,20 +78,28 @@
   let isDeleting = writable(false);
   let htmlEditor: string = $state("");
   let markdownContent: string = $state("");
-  let jsonEditorContent: any = $state({});
+  let jsonEditorContent = $state<JsonObject>({});
   let isSchemaBasedItem = $state(false);
   // The schema document the SchemaForm edits (a schema entry's JSON body).
   let schemaEditorContent = $state<JsonObject>({});
 
+  /** The schema a schema-based entry is edited with. */
+  interface SelectedSchema {
+    shortname: string;
+    title: string;
+    schema: Schema | null;
+    description: string;
+  }
+
   let isDynamicSchemaItem = $state(false);
-  let selectedDynamicSchema: any = $state(null);
-  let dynamicSchemaFormData: any = $state({});
+  let selectedDynamicSchema = $state<SelectedSchema | null>(null);
+  let dynamicSchemaFormData = $state<JsonObject>({});
   let loadingDynamicSchema = $state(false);
 
   async function loadDynamicSchema(schemaShortname: string) {
     loadingDynamicSchema = true;
     try {
-      const response: any = await getEntity(
+      const response = await getEntity(
         schemaShortname,
         spaceNameValue,
         "/schema",
@@ -88,11 +109,13 @@
         true,
       );
       if (response) {
+        // A retrieved entry is flat: its displayname and description sit at
+        // the top level (there is no `attributes` wrapper on a retrieve).
         selectedDynamicSchema = {
           shortname: response.shortname,
-          title: response.attributes?.displayname?.en || response.shortname,
-          schema: response.payload?.body,
-          description: response.attributes?.description?.en || "",
+          title: response.displayname?.en || response.shortname,
+          schema: asFormSchema(response.payload?.body),
+          description: response.description?.en || "",
         };
         return true;
       }
@@ -104,58 +127,62 @@
     return false;
   }
 
-  const editForm = writable<any>({
+  /** A translation as the edit modal binds it: every language present. */
+  type EditTranslation = { en: string; ar: string; ku: string };
+
+  /** The edit modal's fields. */
+  interface EditForm {
+    displayname: EditTranslation;
+    description: EditTranslation;
+    content: string;
+    tags: string[];
+    newTag: string;
+    is_active: boolean;
+  }
+
+  const emptyEditForm = (): EditForm => ({
     displayname: { en: "", ar: "", ku: "" },
     description: { en: "", ar: "", ku: "" },
     content: "",
-    tags: [] as any[],
+    tags: [],
     newTag: "",
     is_active: true,
   });
 
-  let editFormValue: any = $state({
-    displayname: { en: "", ar: "", ku: "" },
-    description: { en: "", ar: "", ku: "" },
-    content: "",
-    tags: [] as any[],
-    newTag: "",
-    is_active: true,
-  });
+  const editForm = writable<EditForm>(emptyEditForm());
 
-  const jsonEditForm = writable<any>({});
+  let editFormValue = $state<EditForm>(emptyEditForm());
 
-  let jsonEditFormValue: any = $state({});
-  let relationshipsValue: any[] = $state([]);
+  const jsonEditForm = writable<JsonObject>({});
 
-  function getItemContent(item: any) {
+  let jsonEditFormValue = $state<JsonObject>({});
+  let relationshipsValue = $state<Relationship[]>([]);
+
+  /** The editable content of an entry: its text body, or its JSON body as an object. */
+  function getItemContent(item: EntryDetail | null): string | JsonObject {
     if (!item?.payload) return "";
 
     const contentType = item.payload.content_type;
+    const body = item.payload.body;
 
-    if (contentType === "html") {
-      return item.payload.body || "";
-    } else if (contentType === "json") {
-      if (item.payload.body && typeof item.payload.body === "object") {
-        return item.payload.body;
-      }
-      return {};
+    if (contentType === "json") {
+      return isJsonObject(body) ? body : {};
     }
 
-    return item.payload.body || "";
+    return typeof body === "string" ? body : "";
   }
 
-  function prepareContentForSave(content: any, originalContentType: any) {
+  function prepareContentForSave(
+    content: string | JsonObject | undefined,
+    originalContentType: string | undefined,
+  ): string | JsonObject {
     if (originalContentType === "json") {
       if (isSchemaBasedItem) {
         return schemaEditorContent;
       }
       if (isDynamicSchemaItem && selectedDynamicSchema) {
         const originalContent = getItemContent(itemDataValue);
-        if (
-          originalContent &&
-          typeof originalContent === "object" &&
-          originalContent.schema_data
-        ) {
+        if (isJsonObject(originalContent) && originalContent.schema_data) {
           return {
             ...originalContent,
             schema_data: dynamicSchemaFormData,
@@ -170,7 +197,7 @@
     return content || "";
   }
 
-  function handleJsonContentChange(newContent: any) {
+  function handleJsonContentChange(newContent: JsonObject) {
     jsonEditorContent = newContent;
     jsonEditFormValue = jsonEditorContent;
     jsonEditForm.update((form) => ({
@@ -187,12 +214,12 @@
     if (unsubscribeParams) unsubscribeParams();
   });
 
-  function subscribeStore(store: any, callback: any) {
+  function subscribeStore<T>(store: Readable<T>, callback: (value: T) => void) {
     return store.subscribe(callback);
   }
 
   async function initializeContent() {
-    unsubscribeParams = subscribeStore(params, async (value: any) => {
+    unsubscribeParams = subscribeStore(params, async (value) => {
       spaceNameValue = value.space_name;
       subpathValue = value.subpath;
       itemShortnameValue = value.shortname;
@@ -256,7 +283,7 @@
     error.set(null);
 
     try {
-      const response: any = await getEntity(
+      const response = await getEntity(
         itemShortnameValue,
         spaceNameValue,
         actualSubpathValue,
@@ -289,15 +316,12 @@
           schemaShortname !== "meta_schema"
         );
 
-        if (isDynamicSchemaItem) {
-          const schemaLoaded = await loadDynamicSchema(schemaShortname!);
+        if (isDynamicSchemaItem && schemaShortname) {
+          const schemaLoaded = await loadDynamicSchema(schemaShortname);
           if (schemaLoaded) {
-            if (content && typeof content === "object") {
-              if (content.schema_data) {
-                dynamicSchemaFormData = content.schema_data;
-              } else {
-                dynamicSchemaFormData = content;
-              }
+            if (isJsonObject(content)) {
+              const schemaData = content.schema_data;
+              dynamicSchemaFormData = isJsonObject(schemaData) ? schemaData : content;
             } else {
               dynamicSchemaFormData = {};
             }
@@ -305,11 +329,12 @@
         }
 
         if (response.payload?.content_type === "json") {
+          const jsonContent = isJsonObject(content) ? content : {};
           if (isSchemaBasedItem) {
-            schemaEditorContent = content;
+            schemaEditorContent = jsonContent;
           } else {
-            jsonEditorContent = content;
-            jsonEditFormValue = content;
+            jsonEditorContent = jsonContent;
+            jsonEditFormValue = jsonContent;
           }
         }
 
@@ -327,18 +352,18 @@
             ku: response.description?.ku || "",
           },
           content:
-            response.payload?.content_type === "json"
-              ? JSON.stringify(content)
-              : content || getDescription(response),
-          tags: Array.isArray(tags) ? [...tags] : Array.from(tags),
+            typeof content === "string"
+              ? content || getDescription(response)
+              : JSON.stringify(content),
+          tags: [...tags],
           newTag: "",
-          is_active: response.is_active,
+          is_active: response.is_active ?? true,
         };
         editForm.set(editFormValue);
 
         const ct = response.payload?.content_type;
-        htmlEditor = ct === ContentType.json ? "" : content || "";
-        markdownContent = ct === ContentType.markdown ? content || "" : "";
+        htmlEditor = typeof content === "string" ? content : "";
+        markdownContent = ct === ContentType.markdown && typeof content === "string" ? content : "";
       } else {
         log.error("No valid response found for item:", itemShortnameValue);
         error.set($_("admin_item_detail.error.item_not_found"));
@@ -346,18 +371,18 @@
     } catch (err) {
       log.error("Error fetching admin item data:", err);
       error.set(
-        (err as any).message || $_("admin_item_detail.error.failed_load_item"),
+        errorMessage(err) || $_("admin_item_detail.error.failed_load_item"),
       );
     } finally {
       isLoading.set(false);
     }
   }
 
-  async function handleUpdateItem(event: any) {
+  async function handleUpdateItem(event: Event) {
     event.preventDefault();
 
     try {
-      let htmlContent;
+      let htmlContent: string | JsonObject | undefined;
 
       if (itemDataValue?.payload?.content_type === "json") {
         if (isSchemaBasedItem) {
@@ -408,8 +433,7 @@
     } catch (err) {
       log.error("Error updating item:", err);
       error.set(
-        (err as any).message ||
-          $_("admin_item_detail.error.failed_update_item"),
+        errorMessage(err) || $_("admin_item_detail.error.failed_update_item"),
       );
     }
   }
@@ -443,18 +467,21 @@
     }
   }
 
-  function getDisplayName(item: any) {
+  /** What the page has a name for: a retrieved entry, or a query record (which keeps its name under `attributes`). */
+  type Named = { shortname?: string; displayname?: LocalizedText | null; description?: LocalizedText | null };
+
+  function getDisplayName(item: Named | null): string {
     if (item?.displayname) {
       const localeDisplay = item.displayname[$locale ?? ""]?.trim();
       const enDisplay = item.displayname.en?.trim();
       const arDisplay = item.displayname.ar?.trim();
 
-      return localeDisplay || enDisplay || arDisplay || item.shortname;
+      return localeDisplay || enDisplay || arDisplay || item.shortname || "";
     }
     return item?.shortname || $_("admin_item_detail.unnamed_item");
   }
 
-  function getDescription(item: any) {
+  function getDescription(item: Named | null): string {
     if (item?.description) {
       return (
         item.description[$locale ?? ""] ||
@@ -466,10 +493,17 @@
     return $_("admin_item_detail.no_description");
   }
 
-  function navigateToBreadcrumb(path: any) {
+  /** Who a share attachment names, read off its payload. */
+  function sharedWith(payload: EntryPayload | undefined): unknown {
+    const bag: JsonObject = payload ?? {};
+    return bag.shared_with;
+  }
+
+  function navigateToBreadcrumb(path: string | null) {
+    if (!path) return;
     const pathSegments = path
       .split("/")
-      .filter((segment: any) => segment !== "");
+      .filter((segment) => segment !== "");
 
     if (
       pathSegments.length === 2 &&
@@ -524,7 +558,7 @@
     });
   }
 
-  function setActiveTab(tab: any) {
+  function setActiveTab(tab: string) {
     activeTab.set(tab);
   }
 
@@ -538,7 +572,7 @@
 
   function removeTag(index: number) {
     editFormValue.tags = editFormValue.tags.filter(
-      (_: any, i: any) => i !== index,
+      (_, i) => i !== index,
     );
   }
 </script>
@@ -694,7 +728,7 @@
         </h3>
         <p class="text-text-muted">{$error}</p>
       </div>
-    {:else if $itemData}
+    {:else if itemDataValue}
       <div
         class="bg-surface-2 rounded-3xl shadow-[0_2px_8px_rgba(0,0,0,0.04)] border border-border mb-6 overflow-hidden"
       >
@@ -769,7 +803,7 @@
                   <div class="p-6">
                     {#if ct === "html"}
                       <div class="html-preview">
-                        {@html sanitizeHtml(body)}
+                        {@html sanitizeHtml(typeof body === "string" ? body : String(body))}
                       </div>
                     {:else if ct === "json"}
                       {#if isSchemaBasedItem}
@@ -779,7 +813,7 @@
                       {:else}
                         <div class="p-6">
                           <JsonViewer
-                            data={body}
+                            data={isJsonValue(body) ? body : null}
                             title={itemDataValue?.displayname?.en ||
                               "JSON Content"}
                             isAdmin={true}
@@ -790,7 +824,7 @@
                             subpath={actualSubpathValue}
                             shortname={$params.shortname}
                             onSaved={(d) => {
-                              itemDataValue.payload.body = d;
+                              if (itemDataValue?.payload) itemDataValue.payload.body = d;
                             }}
                           />
                         </div>
@@ -1079,7 +1113,7 @@
               {#if itemDataValue.attachments && typeof itemDataValue.attachments === "object"}
                 {#each Object.entries(itemDataValue.attachments) as [type, attachmentsArrRaw] (type)}
                   {#if Array.isArray(attachmentsArrRaw) && attachmentsArrRaw.length > 0}
-                    {@const attachmentsArr = attachmentsArrRaw as any[]}
+                    {@const attachmentsArr = attachmentsArrRaw ?? []}
                     <div
                       class="bg-surface-2 border border-border rounded-2xl overflow-hidden"
                     >
@@ -1202,9 +1236,9 @@
                                       </div>
                                       <p class="text-xs text-text-muted">
                                         {new Date(
-                                          share.attributes.created_at,
+                                          share.attributes.created_at ?? "",
                                         ).toLocaleDateString()} at {new Date(
-                                          share.attributes.created_at,
+                                          share.attributes.created_at ?? "",
                                         ).toLocaleTimeString()}
                                       </p>
                                     </div>
@@ -1222,13 +1256,14 @@
                                   </div>
                                 </div>
 
-                                {#if share.attributes.payload?.shared_with}
+                                {#if sharedWith(share.attributes.payload)}
                                   <div
                                     class="mt-2 pt-2 border-t border-primary/30"
                                   >
                                     <p class="text-xs text-text-muted">
-                                      Shared with: {share.attributes.payload
-                                        .shared_with}
+                                      Shared with: {sharedWith(
+                                        share.attributes.payload,
+                                      )}
                                     </p>
                                   </div>
                                 {/if}
@@ -1239,7 +1274,7 @@
                                   >
                                     <p class="text-xs text-text-muted">
                                       Last updated: {new Date(
-                                        share.attributes.updated_at,
+                                        share.attributes.updated_at ?? "",
                                       ).toLocaleDateString()}
                                     </p>
                                   </div>
@@ -1374,18 +1409,18 @@
                             class="px-3 py-1.5 whitespace-nowrap text-sm text-text-muted"
                           >
                             <span
-                              class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium {entry.is_active
+                              class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium {entry.attributes?.is_active
                                 ? 'bg-success-soft text-success'
                                 : 'bg-danger-soft text-danger'}"
                             >
                               <div
-                                class="w-1.5 h-1.5 rounded-full me-1.5 {entry.is_active
+                                class="w-1.5 h-1.5 rounded-full me-1.5 {entry.attributes?.is_active
                                   ? 'bg-success'
                                   : 'bg-danger'}"
                                 class:me-1.5={true}
-                                
+
                               ></div>
-                              {entry.is_active
+                              {entry.attributes?.is_active
                                 ? $_("admin_item_detail.status.active")
                                 : $_("admin_item_detail.status.inactive")}
                             </span>
@@ -1393,7 +1428,7 @@
                           <td
                             class="px-3 py-1.5 whitespace-nowrap text-sm text-text-muted"
                           >
-                            {formatDate(entry.created_at, "datetime", $locale)}
+                            {formatDate(entry.attributes?.created_at, "datetime", $locale)}
                           </td>
                         </tr>
                       {/each}
@@ -1789,7 +1824,7 @@
                       <div class="json-preview-pane">
                         <h4 class="preview-title">Preview</h4>
                         <JsonViewer
-                          data={jsonEditFormValue}
+                          data={isJsonValue(jsonEditFormValue) ? jsonEditFormValue : null}
                           title={$_("labels.json_preview")}
                           type="json"
                           isAdmin={true}
@@ -1799,7 +1834,7 @@
                           subpath={actualSubpathValue}
                           shortname={$params.shortname}
                           onSaved={(d) => {
-                            jsonEditFormValue = d;
+                            if (isJsonObject(d)) jsonEditFormValue = d;
                           }}
                         />
                       </div>
@@ -1811,7 +1846,7 @@
                       subpath={actualSubpathValue}
                       parent_shortname={itemShortnameValue}
                       isEditMode={true}
-                      attachments={itemDataValue?.attachments || []}
+                      attachments={itemDataValue?.attachments ?? null}
                     />
                   {:else}
                     <HtmlEditor
@@ -1821,7 +1856,7 @@
                       parent_shortname={itemShortnameValue}
                       uid="main-editor"
                       isEditMode={true}
-                      attachments={itemDataValue?.attachments || []}
+                      attachments={itemDataValue?.attachments ?? null}
                       changed={() => {
                       }}
                     />

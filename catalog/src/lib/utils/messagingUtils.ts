@@ -63,6 +63,12 @@ export function scrollToBottom(chatContainer: HTMLElement | null): void {
   }, 100);
 }
 
+/**
+ * What a message's attachments hold: the stored records once the message is
+ * persisted, the Files still being uploaded before that.
+ */
+export type MessageAttachment = EntryRecord | File;
+
 export interface MessageData {
   id: string;
   senderId: string;
@@ -71,7 +77,7 @@ export interface MessageData {
   timestamp: Date;
   isOwn: boolean;
   hasAttachments?: boolean;
-  attachments?: EntryRecord[] | null;
+  attachments?: MessageAttachment[] | null;
   isUploading?: boolean;
   uploadFailed?: boolean;
 }
@@ -106,6 +112,9 @@ export interface GroupMessageData extends Omit<MessageData, "receiverId"> {
   groupId: string;
   receiverId?: never;
 }
+
+/** A message in either kind of conversation. */
+export type ChatMessage = MessageData | GroupMessageData;
 
 export function transformUserRecord(record: EntryRecord<UserAttributes>): UserData {
   const attrs = record.attributes;
@@ -195,9 +204,9 @@ export const MAX_CACHED_MESSAGES = 200;
 
 const LEGACY_STORAGE_PREFIXES = ["chat_", "group_chat_"];
 
-const messageCache = new Map<string, MessageData[]>();
+const messageCache = new Map<string, ChatMessage[]>();
 
-export function cacheMessages(cacheKey: string, messages: MessageData[]): void {
+export function cacheMessages(cacheKey: string, messages: ChatMessage[]): void {
   messageCache.delete(cacheKey);
   messageCache.set(cacheKey, messages.slice(-MAX_CACHED_MESSAGES));
   while (messageCache.size > MAX_CACHED_CONVERSATIONS) {
@@ -207,13 +216,17 @@ export function cacheMessages(cacheKey: string, messages: MessageData[]): void {
   }
 }
 
-export function getCachedMessages(cacheKey: string): MessageData[] {
+/**
+ * The cached messages of one conversation. A direct-chat key holds
+ * MessageData, a group key holds GroupMessageData; the caller names which.
+ */
+export function getCachedMessages<T extends ChatMessage = ChatMessage>(cacheKey: string): T[] {
   const hit = messageCache.get(cacheKey);
   if (!hit) return [];
   // Re-insert so the conversation counts as recently used.
   messageCache.delete(cacheKey);
   messageCache.set(cacheKey, hit);
-  return hit.slice();
+  return hit.slice() as T[];
 }
 
 /** How many conversations are cached (for tests). */
@@ -265,9 +278,9 @@ export function isRelevantMessage(
   );
 }
 
-export function sortMessagesByTimestamp(
-  messages: MessageData[]
-): MessageData[] {
+export function sortMessagesByTimestamp<T extends { timestamp: Date }>(
+  messages: T[]
+): T[] {
   return messages.sort(
     (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
   );
