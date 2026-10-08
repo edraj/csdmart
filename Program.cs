@@ -644,7 +644,7 @@ static async Task EnsureBaseSchemasAsync(IDbConnectionFactory db, DmartSettings 
             || await entries.GetAsync(MgmtSpace, "/schemas", shortname, ResourceType.Schema) is not null)
             return;
 
-        var body = System.Text.Json.JsonDocument.Parse(bodyJson).RootElement.Clone();
+        var body = Dmart.JsonUtil.ParseElement(bodyJson);
         var checksum = Dmart.Utils.HashUtils.Sha256Hex(bodyJson);
 
         await entries.UpsertAsync(new Entry
@@ -707,7 +707,7 @@ switch (subcommand)
             // No baked-in version — development build via dotnet run
             json = $"{{\"version\":\"dev\",\"runtime\":\".NET {Environment.Version}\"}}";
         }
-        CliConsole.PrintJson(System.Text.Json.JsonDocument.Parse(json).RootElement);
+        CliConsole.PrintJson(Dmart.JsonUtil.ParseElement(json));
         return;
     }
 
@@ -872,7 +872,7 @@ switch (subcommand)
             w.WriteEndObject();
         }
         var json = System.Text.Encoding.UTF8.GetString(ms.ToArray());
-        CliConsole.PrintJson(System.Text.Json.JsonDocument.Parse(json).RootElement);
+        CliConsole.PrintJson(Dmart.JsonUtil.ParseElement(json));
         return;
     }
 

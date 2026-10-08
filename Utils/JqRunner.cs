@@ -182,7 +182,7 @@ public static class JqRunner
         {
             var trimmed = stdoutStr.Trim();
             if (trimmed.StartsWith('[') && trimmed.EndsWith(']'))
-                return new Result(FailureKind.None, JsonDocument.Parse(trimmed).RootElement.Clone(), null);
+                return new Result(FailureKind.None, JsonUtil.ParseElement(trimmed), null);
 
             var sb = new StringBuilder("[");
             var first = true;
@@ -195,7 +195,7 @@ public static class JqRunner
                 first = false;
             }
             sb.Append(']');
-            return new Result(FailureKind.None, JsonDocument.Parse(sb.ToString()).RootElement.Clone(), null);
+            return new Result(FailureKind.None, JsonUtil.ParseElement(sb.ToString()), null);
         }
         catch (JsonException ex)
         {

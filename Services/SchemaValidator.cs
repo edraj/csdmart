@@ -151,7 +151,7 @@ public sealed class SchemaValidator(EntryRepository entries, ILogger<SchemaValid
     // graph. Its shape does not matter: a schema that fails against it is not
     // rejected — only one that THROWS is.
     private static readonly JsonElement TrialInstance =
-        JsonDocument.Parse("{}").RootElement.Clone();
+        JsonUtil.ParseElement("{}");
 
     /// <summary>
     /// Checks that a stored schema document is one the validator can actually

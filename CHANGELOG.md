@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **Seventeen `JsonDocument.Parse(…).RootElement` sites no longer leak a pooled
+  buffer per call.** A `JsonDocument` rents its backing buffer from the
+  `ArrayPool` and returns it only on `Dispose`; the chained form never disposes,
+  so each parse handed one buffer to the GC instead of the pool. Found by the
+  .NET 11 SDK's new CA2026 rule while trialling RC1 (see
+  `bench/REPORT-net11-rc1.md`); invisible to the .NET 10 analyzers. All sites
+  now go through `JsonUtil.ParseElement`, which disposes the document and hands
+  back a standalone element — the shape `JsonElement.Parse` will have once the
+  target framework moves to 11. Affected: CSV import's per-row body and the
+  boolean constants, jq result parsing, MCP tool/registry descriptors, schema
+  seeding at start-up, the CLI's response parsing and `--version`/manifest
+  printing, and `JsonMerge`.
+
 ## v1.5.20 — 2026-10-07
 
 ### Added

@@ -281,5 +281,5 @@ public static class McpRegistry
     // Parse a JSON Schema literal into a JsonElement for the tool descriptor.
     // Safe — all inputs here are compile-time constants.
     internal static JsonElement ParseSchema(string json) =>
-        JsonDocument.Parse(json).RootElement.Clone();
+        JsonUtil.ParseElement(json);
 }

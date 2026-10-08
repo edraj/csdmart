@@ -421,11 +421,11 @@ public static class McpEndpoint
         T value, System.Text.Json.Serialization.Metadata.JsonTypeInfo<T> info)
     {
         var bytes = JsonSerializer.SerializeToUtf8Bytes(value, info);
-        return JsonDocument.Parse(bytes).RootElement.Clone();
+        return JsonUtil.ParseElement(bytes);
     }
 
     private static JsonElement EmptyObject()
-        => JsonDocument.Parse("{}").RootElement.Clone();
+        => JsonUtil.ParseElement("{}");
 
     private static string ServerVersion()
     {
