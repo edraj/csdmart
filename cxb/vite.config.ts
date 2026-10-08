@@ -1,3 +1,4 @@
+import { compression } from "vite-plugin-compression2";
 import {defineConfig} from "vite";
 import {mdsvex} from "mdsvex";
 import routify from "@roxi/routify/vite-plugin";
@@ -77,6 +78,9 @@ export default defineConfig(({command}) => ({
     },
   },
   plugins: [
+    // Build-time .br/.gz next to every hashed asset; Middleware/SpaAssets.cs
+    // serves them as-is to clients that accept the encoding.
+    compression({ threshold: 1024, include: /assets\/.*\.(js|css|svg|json)$/ }),
     prismAddonImportPlugin(),
     routifyStripDevLogsPlugin(),
     tailwindcss(),

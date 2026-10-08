@@ -1,10 +1,9 @@
 import tailwindcss from "@tailwindcss/vite";
 import { defineConfig } from "vite";
-import { mdsvex } from "mdsvex";
 import routify from "@roxi/routify/vite-plugin";
 import { svelte, vitePreprocess } from "@sveltejs/vite-plugin-svelte";
 import * as path from "path";
-import svelteMd from "vite-plugin-svelte-md";
+import { compression } from "vite-plugin-compression2";
 
 const production = process.env.NODE_ENV === "production";
 
@@ -28,7 +27,6 @@ export default defineConfig(({ command }) => ({
   },
   plugins: [
     tailwindcss(),
-    svelteMd(),
     routify({
       forceLogging: true,
       render: { ssg: false, ssr: false },
@@ -40,15 +38,7 @@ export default defineConfig(({ command }) => ({
     svelte({
       exclude: ["node_modules/flowbite-svelte"],
       compilerOptions: { dev: !production },
-      extensions: [".md", ".svelte"],
-      preprocess: [
-        vitePreprocess(),
-        mdsvex({
-          extension: "md",
-          remarkPlugins: [
-          ],
-        }),
-      ],
+      preprocess: [vitePreprocess()],
       onwarn: (warning, defaultHandler) => {
         // Ignore a11y_click_events_have_key_events warning from sveltestrap
         if (
@@ -59,6 +49,10 @@ export default defineConfig(({ command }) => ({
         if (typeof defaultHandler != "undefined") defaultHandler(warning);
       },
     }),
+    // Build-time .br/.gz next to every hashed asset. The server
+    // (Middleware/SpaAssets.cs) serves them as-is to clients that accept the
+    // encoding instead of compressing each chunk on every request.
+    compression({ threshold: 1024, include: /assets\/.*\.(js|css|svg|json)$/ }),
   ],
   build: {
     cssCodeSplit: true,

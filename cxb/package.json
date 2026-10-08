@@ -7,24 +7,31 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "svelte-check": "svelte-check --no-tsconfig --ignore .routify",
+    "check": "svelte-check --tsconfig ./tsconfig.json",
+    "lint": "eslint src",
     "test": "vitest run",
     "test:watch": "vitest"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@sveltejs/vite-plugin-svelte": "^7.0.0",
     "@tailwindcss/typography": "^0.5.19",
     "@tsconfig/svelte": "^5.0.8",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^25.6.0",
     "@types/prismjs": "^1.26.6",
+    "eslint": "^10.2.1",
+    "eslint-plugin-svelte": "^3.23.0",
+    "globals": "^17.13.0",
     "jsdom": "^30.0.1",
     "svelte": "^5.56.8",
     "svelte-check": "^4.4.6",
     "typescript": "~6.0.3",
+    "typescript-eslint": "^8.71.1",
     "vite": "^8.0.10",
+    "vite-plugin-compression2": "^2.5.3",
     "vite-plugin-mkcert": "^2.0.0",
-    "vitest": "^4.1.6"
+    "vitest": "^4.1.11"
   },
   "dependencies": {
     "@akebifiky/remark-simple-plantuml": "^1.0.2",
