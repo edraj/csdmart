@@ -4,6 +4,16 @@
 
 ### Tooling
 
+- **cxb is `any`-free**: the 156 remaining `@typescript-eslint/no-explicit-any`
+  warnings are gone (SDK types, small interfaces for the per-resource-type
+  form shapes in `utils/entryShapes.ts`, `unknown` plus an `isRecord` guard
+  for dynamic JSON) and the rule is an error. The typing exposed nine
+  latent crashes on absent data — the server strips empty arrays and
+  objects — which are guarded now: a workflow without `states`, a schema or
+  workflow save without a payload, a null entry in the permission and role
+  explorers, `.splice`/`.filter` on a non-array reached by path, seeding
+  defaults into an array payload, and a null spaces query. The events list
+  header showed the raw key `timestamp`; it reads "Timestamp".
 - cxb no longer depends on `vite-plugin-static-copy`: Vite's public
   directory already ships `config.json`, and the plugin was the only
   dependent of the chokidar 3 chain that pinned `braces` <= 3.0.3
