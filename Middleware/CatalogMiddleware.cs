@@ -118,18 +118,17 @@ public static class CatalogMiddleware
                 ctx.Response.StatusCode = 200;
                 ctx.Response.ContentType = "text/html; charset=utf-8";
                 ctx.Response.ContentLength = indexHtmlBytes.Length;
+                SpaAssets.MarkNoCache(ctx.Response);
                 await ctx.Response.Body.WriteAsync(indexHtmlBytes);
                 return;
             }
             await next();
         });
 
-        // Serve static files at {catUrl} (everything except index.html above).
-        app.UseStaticFiles(new StaticFileOptions
-        {
-            FileProvider = fileProvider,
-            RequestPath = catUrl,
-        });
+        // Serve static files at {catUrl} (everything except index.html above):
+        // immutable caching for hashed assets, pre-compressed variants when the
+        // build shipped them — see SpaAssets.
+        app.UseSpaStaticFiles(fileProvider, catUrl);
 
         // SPA fallback — {catUrl}/* without file extension → rewritten index.html.
         app.Use(async (ctx, next) =>
@@ -143,6 +142,7 @@ public static class CatalogMiddleware
             {
                 ctx.Response.StatusCode = 200;
                 ctx.Response.ContentType = "text/html; charset=utf-8";
+                SpaAssets.MarkNoCache(ctx.Response);
                 await ctx.Response.Body.WriteAsync(indexHtmlBytes);
             }
         });

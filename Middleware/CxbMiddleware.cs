@@ -131,18 +131,17 @@ public static class CxbMiddleware
                 ctx.Response.StatusCode = 200;
                 ctx.Response.ContentType = "text/html; charset=utf-8";
                 ctx.Response.ContentLength = indexHtmlBytes.Length;
+                SpaAssets.MarkNoCache(ctx.Response);
                 await ctx.Response.Body.WriteAsync(indexHtmlBytes);
                 return;
             }
             await next();
         });
 
-        // Serve static files at {cxbUrl} (everything except index.html which is handled above).
-        app.UseStaticFiles(new StaticFileOptions
-        {
-            FileProvider = fileProvider,
-            RequestPath = cxbUrl,
-        });
+        // Serve static files at {cxbUrl} (everything except index.html which is
+        // handled above): immutable caching for hashed assets, pre-compressed
+        // variants when the build shipped them — see SpaAssets.
+        app.UseSpaStaticFiles(fileProvider, cxbUrl);
 
         // SPA fallback — {cxbUrl}/* without file extension → rewritten index.html.
         app.Use(async (ctx, next) =>
@@ -156,6 +155,7 @@ public static class CxbMiddleware
             {
                 ctx.Response.StatusCode = 200;
                 ctx.Response.ContentType = "text/html; charset=utf-8";
+                SpaAssets.MarkNoCache(ctx.Response);
                 await ctx.Response.Body.WriteAsync(indexHtmlBytes);
             }
         });
