@@ -103,6 +103,7 @@
               "cards",
               "steps",
               "figures",
+              "explainer",
               "prose",
               "banner"
             ]
@@ -113,6 +114,10 @@
           "accent": {
             "type": "string",
             "description": "banner only: a second, emphasised title line"
+          },
+          "figure": {
+            "type": "string",
+            "description": "explainer only: an animated figure shipped with the site template, e.g. explainer; items caption its scenes in order"
           },
           "body": {
             "type": "string",

@@ -19,6 +19,9 @@
  *   4. Header                       10. Landing: bands, cards, figures,
  *   5. Page layouts                      steps, banner
  *   6. Docs sidebar + drawer        11. Responsive
+ *                                   12. Colour: hues per card, step, stat
+ *                                       and docs section
+ *                                   13. Explainer (animated figure)
  */
 
 /* ── 1. Tokens ─────────────────────────────────────────────────────────── */
@@ -55,6 +58,27 @@
   --gradient-iri-h: linear-gradient(90deg, var(--iri-1), var(--iri-3), var(--iri-4));
   --gradient-hairline: linear-gradient(90deg, transparent, var(--border-color) 50%, transparent);
   --gradient-hairline-v: linear-gradient(180deg, transparent, var(--border-color) 50%, transparent);
+
+  /* Hues: one per card, step, scene and docs section, cycled in order (see
+     12. Colour). Dark enough for text on white; dark mode lifts them. */
+  --hue-violet: #7c5cf5;
+  --hue-indigo: #4f46e5;
+  --hue-purple: #9333ea;
+  --hue-sky: #0284c7;
+  --hue-teal: #0d9488;
+  --hue-emerald: #059669;
+  --hue-amber: #d97706;
+  --hue-rose: #e11d48;
+  --hue-slate: #64748b;
+  --gradient-spectrum: linear-gradient(100deg, var(--hue-indigo) 0%, var(--hue-violet) 30%, var(--hue-rose) 68%, var(--hue-amber) 100%);
+
+  /* Explainer stage (13. Explainer). */
+  --xp-stage: linear-gradient(135deg, #f4f2ff 0%, #eef5ff 52%, #ecfbf6 100%);
+  --xp-surface: #ffffff;
+  --xp-line: #d9dcea;
+  --xp-ink: #15161f;
+  --xp-dim: #6b7186;
+  --xp-shadow: rgba(40, 30, 110, 0.10);
 
   /* Surfaces are opaque; no blur-behind. */
   --glass-bg: #ffffff;
@@ -132,6 +156,23 @@
   --glass-bg: #14161f;
   --glass-border: #262a39;
 
+  --hue-violet: #a594ff;
+  --hue-indigo: #818cf8;
+  --hue-purple: #c084fc;
+  --hue-sky: #38bdf8;
+  --hue-teal: #2dd4bf;
+  --hue-emerald: #34d399;
+  --hue-amber: #fbbf24;
+  --hue-rose: #fb7185;
+  --hue-slate: #94a3b8;
+
+  --xp-stage: linear-gradient(135deg, #16142b 0%, #101a2b 52%, #0f2124 100%);
+  --xp-surface: #1a1c29;
+  --xp-line: #2e3246;
+  --xp-ink: #e7e9f2;
+  --xp-dim: #9096ad;
+  --xp-shadow: rgba(0, 0, 0, 0.40);
+
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.2), 0 1px 3px rgba(0, 0, 0, 0.3);
   --shadow-md: 0 2px 4px rgba(0, 0, 0, 0.2), 0 4px 12px rgba(0, 0, 0, 0.3);
   --shadow-lg: 0 4px 8px rgba(0, 0, 0, 0.2), 0 8px 24px rgba(0, 0, 0, 0.4);
@@ -176,6 +217,23 @@
     --gradient-iri-soft: linear-gradient(120deg, #17172b 0%, #1b1a32 100%);
     --glass-bg: #14161f;
     --glass-border: #262a39;
+
+    --hue-violet: #a594ff;
+    --hue-indigo: #818cf8;
+    --hue-purple: #c084fc;
+    --hue-sky: #38bdf8;
+    --hue-teal: #2dd4bf;
+    --hue-emerald: #34d399;
+    --hue-amber: #fbbf24;
+    --hue-rose: #fb7185;
+    --hue-slate: #94a3b8;
+
+    --xp-stage: linear-gradient(135deg, #16142b 0%, #101a2b 52%, #0f2124 100%);
+    --xp-surface: #1a1c29;
+    --xp-line: #2e3246;
+    --xp-ink: #e7e9f2;
+    --xp-dim: #9096ad;
+    --xp-shadow: rgba(0, 0, 0, 0.40);
 
     --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.2), 0 1px 3px rgba(0, 0, 0, 0.3);
     --shadow-md: 0 2px 4px rgba(0, 0, 0, 0.2), 0 4px 12px rgba(0, 0, 0, 0.3);
@@ -297,9 +355,10 @@ main:focus {
 }
 
 /* ── 3. Aurora background ──────────────────────────────────────────────────
-   Three soft violet washes behind everything, static (no animation), as
-   plain gradients on one fixed layer. Each stop mirrors a blurred blob of the
-   old component: same centre, same reach, same per-theme strength. */
+   Three soft washes behind everything — violet, sky and rose — static (no
+   animation), as plain gradients on one fixed layer. Each stop mirrors a
+   blurred blob of the old component: same centre, same reach, same per-theme
+   strength. */
 
 .aurora {
   position: fixed;
@@ -311,10 +370,10 @@ main:focus {
       color-mix(in srgb, var(--iri-1) var(--aurora-1), transparent) 0%,
       transparent 100%),
     radial-gradient(circle 35vw at 85% calc(30vw + 10%),
-      color-mix(in srgb, var(--iri-3) var(--aurora-2), transparent) 0%,
+      color-mix(in srgb, var(--hue-sky) var(--aurora-2), transparent) 0%,
       transparent 100%),
     radial-gradient(circle 38vw at 42.5% calc(125% - 32.5vw),
-      color-mix(in srgb, var(--iri-4) var(--aurora-3), transparent) 0%,
+      color-mix(in srgb, var(--hue-rose) var(--aurora-3), transparent) 0%,
       transparent 100%);
 }
 
@@ -1985,5 +2044,717 @@ div.card .card-icon {
 
   .figure dd {
     text-align: left;
+  }
+}
+
+/* ── 12. Colour ────────────────────────────────────────────────────────────
+   One hue per card, step, stat, scene and docs section, cycled in source
+   order, so a section reads as a set of distinct things rather than one
+   violet block. Components read the hue as --h; the h-* classes set it
+   explicitly (the explainer art uses them). The measured figures keep the
+   signal colour: that colour is reserved for values off an instrument. */
+
+.h-violet  { --h: var(--hue-violet); }
+.h-indigo  { --h: var(--hue-indigo); }
+.h-purple  { --h: var(--hue-purple); }
+.h-sky     { --h: var(--hue-sky); }
+.h-teal    { --h: var(--hue-teal); }
+.h-emerald { --h: var(--hue-emerald); }
+.h-amber   { --h: var(--hue-amber); }
+.h-rose    { --h: var(--hue-rose); }
+.h-slate   { --h: var(--hue-slate); }
+
+.cards > :nth-child(6n + 1),
+.steps > :nth-child(6n + 1),
+.stat:nth-child(6n + 1) { --h: var(--hue-violet); --h2: var(--hue-indigo); }
+.cards > :nth-child(6n + 2),
+.steps > :nth-child(6n + 2),
+.stat:nth-child(6n + 2) { --h: var(--hue-sky); --h2: var(--hue-teal); }
+.cards > :nth-child(6n + 3),
+.steps > :nth-child(6n + 3),
+.stat:nth-child(6n + 3) { --h: var(--hue-emerald); --h2: var(--hue-teal); }
+.cards > :nth-child(6n + 4),
+.steps > :nth-child(6n + 4),
+.stat:nth-child(6n + 4) { --h: var(--hue-amber); --h2: var(--hue-rose); }
+.cards > :nth-child(6n + 5),
+.steps > :nth-child(6n + 5),
+.stat:nth-child(6n + 5) { --h: var(--hue-rose); --h2: var(--hue-purple); }
+.cards > :nth-child(6n + 6),
+.steps > :nth-child(6n + 6),
+.stat:nth-child(6n + 6) { --h: var(--hue-teal); --h2: var(--hue-sky); }
+
+/* Hero: the accent line runs the whole spectrum, slowly. */
+.hero-title-line.accent,
+.band-banner .accent {
+  background-image: var(--gradient-spectrum);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .hero-title-line.accent {
+    animation: spectrum-drift 9s ease-in-out infinite alternate;
+  }
+}
+
+@keyframes spectrum-drift {
+  from { background-position: 0% 50%; }
+  to { background-position: 100% 50%; }
+}
+
+/* Section titles: a short spectrum rule underneath. */
+.band:not(.band-banner) > .section-title::after {
+  content: "";
+  display: block;
+  width: 56px;
+  height: 4px;
+  margin: 0.9rem auto 0;
+  border-radius: 2px;
+  background: var(--gradient-spectrum);
+}
+
+/* Stats: each value in its own pair of hues. */
+.stat-value {
+  background-image: linear-gradient(120deg, var(--h, var(--iri-1)), var(--h2, var(--iri-3)));
+}
+
+/* Pillar tiles: a tinted top, a filled icon tile, and a ring in the card's
+   own hue on hover. */
+a.card {
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--h, var(--iri-2)) 7%, var(--glass-bg)) 0%, var(--glass-bg) 55%);
+  border-top: 3px solid var(--h, var(--iri-2));
+}
+
+a.card::before {
+  background: conic-gradient(from 0deg, var(--h), var(--h2, var(--h)), var(--h));
+}
+
+a.card:hover {
+  box-shadow: 0 14px 32px -14px color-mix(in srgb, var(--h, var(--iri-2)) 70%, transparent), var(--shadow-md);
+}
+
+.card-icon {
+  width: 44px;
+  height: 44px;
+  color: var(--h, var(--iri-2));
+  background: color-mix(in srgb, var(--h, var(--iri-2)) 14%, var(--bg-color));
+  border: none;
+  border-radius: 12px;
+}
+
+.card-icon svg {
+  width: 22px;
+  height: 22px;
+}
+
+a.card:hover .card-arrow {
+  color: var(--h, var(--primary-color));
+}
+
+div.card .card-title {
+  color: var(--h, var(--iri-2));
+}
+
+div.card {
+  box-shadow: inset 0 3px 0 var(--h, transparent);
+}
+
+#explore a.card {
+  border-top-width: 1px;
+  border-top-color: var(--glass-border);
+}
+
+#explore a.card::after {
+  background: var(--h, var(--iri-2));
+}
+
+#explore a.card:hover {
+  box-shadow: 0 12px 30px -14px color-mix(in srgb, var(--h, var(--iri-2)) 65%, transparent), var(--shadow-md);
+}
+
+/* How it works: numbered stops on one coloured line. */
+.steps {
+  position: relative;
+}
+
+.steps::before {
+  content: "";
+  position: absolute;
+  left: 1.5rem;
+  top: 2.75rem;
+  bottom: 2.75rem;
+  width: 2px;
+  margin-left: -1px;
+  background: linear-gradient(180deg, var(--hue-violet), var(--hue-sky), var(--hue-emerald), var(--hue-amber));
+  opacity: 0.45;
+}
+
+.step {
+  border-image: none;
+  border-bottom: none;
+}
+
+.step-num {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 3rem;
+  min-width: 3rem;
+  height: 3rem;
+  font-family: var(--font-mono);
+  font-size: 0.95rem;
+  font-weight: 600;
+  letter-spacing: 0;
+  color: #fff;
+  background: linear-gradient(135deg, var(--h, var(--iri-1)), var(--h2, var(--iri-3)));
+  -webkit-background-clip: border-box;
+  background-clip: border-box;
+  border-radius: 50%;
+  box-shadow: 0 0 0 6px var(--bg-color), 0 10px 22px -10px var(--h, var(--iri-2));
+  opacity: 1;
+}
+
+.step-content {
+  padding-top: 0.55rem;
+}
+
+.step-title {
+  font-size: 1.1rem;
+}
+
+/* Closing banner: a wash in three hues instead of one. */
+.band-banner {
+  background:
+    radial-gradient(60% 120% at 0% 0%, color-mix(in srgb, var(--hue-violet) 14%, transparent), transparent 70%),
+    radial-gradient(50% 120% at 100% 100%, color-mix(in srgb, var(--hue-sky) 14%, transparent), transparent 70%),
+    radial-gradient(40% 90% at 70% 0%, color-mix(in srgb, var(--hue-rose) 10%, transparent), transparent 70%),
+    var(--bg-secondary);
+}
+
+/* Docs: each h2 carries a hue chip, cycled through the page; inline code,
+   tables and the sidebar pick up the same palette. */
+.prose h2:nth-of-type(6n + 1) { --h: var(--hue-violet); }
+.prose h2:nth-of-type(6n + 2) { --h: var(--hue-sky); }
+.prose h2:nth-of-type(6n + 3) { --h: var(--hue-emerald); }
+.prose h2:nth-of-type(6n + 4) { --h: var(--hue-amber); }
+.prose h2:nth-of-type(6n + 5) { --h: var(--hue-rose); }
+.prose h2:nth-of-type(6n + 6) { --h: var(--hue-teal); }
+
+.prose h2::before {
+  content: "";
+  display: inline-block;
+  width: 0.5em;
+  height: 0.5em;
+  margin-right: 0.55em;
+  vertical-align: 0.12em;
+  border-radius: 3px;
+  background: var(--h, var(--iri-2));
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--h, var(--iri-2)) 16%, transparent);
+}
+
+.prose :not(pre) > code {
+  color: color-mix(in srgb, var(--hue-violet) 78%, var(--text-main));
+  background: color-mix(in srgb, var(--hue-violet) 7%, var(--code-bg));
+  border-color: color-mix(in srgb, var(--hue-violet) 20%, var(--border-color));
+}
+
+.prose thead {
+  background:
+    linear-gradient(90deg, color-mix(in srgb, var(--hue-violet) 12%, transparent), color-mix(in srgb, var(--hue-sky) 10%, transparent));
+}
+
+.prose tbody tr:nth-child(even) td {
+  background: color-mix(in srgb, var(--bg-secondary) 75%, transparent);
+}
+
+.prose tbody tr:hover td {
+  background: color-mix(in srgb, var(--hue-violet) 6%, transparent);
+}
+
+.prose blockquote {
+  background: color-mix(in srgb, var(--hue-sky) 7%, var(--bg-color));
+  border-color: color-mix(in srgb, var(--hue-sky) 22%, var(--border-color));
+  border-left-color: var(--hue-sky);
+}
+
+.nav-group:nth-child(4n + 1) { --h: var(--hue-violet); }
+.nav-group:nth-child(4n + 2) { --h: var(--hue-sky); }
+.nav-group:nth-child(4n + 3) { --h: var(--hue-emerald); }
+.nav-group:nth-child(4n + 4) { --h: var(--hue-amber); }
+
+.nav-group-title::before {
+  content: "";
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 0.5rem;
+  vertical-align: 0.1em;
+  border-radius: 2px;
+  background: var(--h, var(--iri-2));
+}
+
+.nav-links a::before {
+  background: var(--h, var(--iri-2));
+}
+
+.nav-links a:hover,
+.nav-links a[aria-current="page"] {
+  color: color-mix(in srgb, var(--h, var(--primary-color)) 85%, var(--text-main));
+  background: color-mix(in srgb, var(--h, var(--primary-color)) 10%, transparent);
+}
+
+@media (max-width: 900px) {
+  .steps::before {
+    left: 1.25rem;
+  }
+
+  .step-num {
+    width: 2.5rem;
+    min-width: 2.5rem;
+    height: 2.5rem;
+    font-size: 0.85rem;
+  }
+
+  .step {
+    gap: 1.25rem;
+  }
+
+  .step-content {
+    padding-top: 0.3rem;
+  }
+}
+
+/* ── 13. Explainer ─────────────────────────────────────────────────────────
+   An animated figure (figures/explainer.svg: one <g class="sc"> per scene)
+   over a row of captions. site.js shows one scene at a time (`.on`) and
+   advances every SCENE_MS, which must match the 6s caption bar below.
+   Every animation runs FROM an offset state TO the element's resting pose,
+   so with motion reduced (animations off) each scene shows its end state,
+   and without script the last scene stands as a still frame. */
+
+.band-explainer {
+  max-width: 1120px;
+}
+
+.explainer {
+  display: grid;
+  gap: 1.25rem;
+}
+
+.explainer-stage {
+  position: relative;
+  overflow: hidden;
+  background: var(--xp-stage);
+  border: 1px solid var(--border-color);
+  border-radius: 22px;
+  box-shadow: var(--shadow-lg);
+}
+
+/* A faint dot grid, like a canvas. */
+.explainer-stage::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image: radial-gradient(color-mix(in srgb, var(--xp-dim) 30%, transparent) 1px, transparent 1.4px);
+  background-size: 22px 22px;
+  opacity: 0.55;
+}
+
+.xp {
+  position: relative;
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.explainer-toggle {
+  position: absolute;
+  right: 14px;
+  bottom: 14px;
+  padding: 0.35rem 0.95rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-main);
+  background: color-mix(in srgb, var(--xp-surface) 88%, transparent);
+  border: 1px solid var(--border-color);
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.explainer-toggle:hover {
+  border-color: var(--primary-color);
+}
+
+/* Scenes: one at a time. */
+.xp .sc {
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.45s ease, visibility 0s linear 0.45s;
+}
+
+.xp .sc.on,
+.explainer:not(.is-live) .xp .sc:last-of-type {
+  opacity: 1;
+  visibility: visible;
+  transition: opacity 0.45s ease;
+}
+
+/* Art. */
+.xp text {
+  font-family: var(--font-sans);
+  font-size: 15px;
+  fill: var(--xp-ink);
+}
+
+.xp .xp-label { font-weight: 500; }
+.xp .xp-strong { font-family: var(--font-display); font-weight: 700; }
+.xp .xp-small { font-size: 12.5px; }
+.xp .xp-mono { font-family: var(--font-mono); font-size: 14px; }
+.xp .xp-mono.xp-small { font-size: 12px; }
+.xp .xp-dim { fill: var(--xp-dim); }
+
+.xp .xp-card {
+  fill: var(--xp-surface);
+  stroke: var(--xp-line);
+  stroke-width: 1.2;
+  filter: drop-shadow(0 8px 16px var(--xp-shadow));
+}
+
+.xp .xp-head { fill: color-mix(in srgb, var(--h) 12%, var(--xp-surface)); }
+.xp .xp-row { fill: color-mix(in srgb, var(--h) 5%, var(--xp-surface)); stroke: var(--xp-line); }
+.xp .xp-folder { fill: color-mix(in srgb, var(--h) 75%, transparent); }
+.xp .xp-line { fill: var(--xp-line); }
+
+.xp .xp-wire {
+  fill: none;
+  stroke: var(--xp-line);
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+
+.xp .xp-wire-hue { stroke: color-mix(in srgb, var(--h) 55%, var(--xp-line)); }
+
+.xp .xp-chip { fill: color-mix(in srgb, var(--h) 15%, var(--xp-surface)); }
+.xp .xp-chip-text { fill: var(--h); font-weight: 600; }
+.xp .xp-type { fill: color-mix(in srgb, var(--h) 9%, var(--xp-surface)); stroke: color-mix(in srgb, var(--h) 35%, transparent); }
+.xp .xp-type-text { fill: var(--h); }
+.xp .xp-badge { fill: var(--h); filter: drop-shadow(0 8px 14px color-mix(in srgb, var(--h) 40%, transparent)); }
+.xp .xp-badge-text { fill: #fff; font-weight: 700; }
+.xp .xp-tile { fill: var(--h); }
+.xp .xp-tile-text { fill: #fff; font-family: var(--font-mono); font-weight: 600; }
+.xp .xp-tile-glyph { fill: #fff; }
+
+/* Fixed, not themed: white type on the core must read in both themes. */
+.xp .xp-stop-a { stop-color: #4f46e5; }
+.xp .xp-stop-b { stop-color: #9333ea; }
+
+.xp .xp-core {
+  fill: url(#xp-g-core);
+  filter: drop-shadow(0 12px 26px color-mix(in srgb, var(--hue-violet) 50%, transparent));
+}
+
+.xp .xp-core-text {
+  font-family: var(--font-display);
+  font-size: 28px;
+  font-weight: 800;
+  letter-spacing: -0.5px;
+  fill: #fff;
+}
+
+.xp .xp-core-sub {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  fill: rgba(255, 255, 255, 0.82);
+}
+
+.xp .xp-db { fill: color-mix(in srgb, var(--h) 10%, var(--xp-surface)); stroke: var(--h); stroke-width: 1.5; }
+.xp .xp-db-top { fill: color-mix(in srgb, var(--h) 24%, var(--xp-surface)); stroke: var(--h); stroke-width: 1.5; }
+
+.xp .xp-avatar { fill: color-mix(in srgb, var(--h) 16%, var(--xp-surface)); stroke: var(--h); stroke-width: 2; }
+.xp .xp-avatar-text { font-family: var(--font-display); font-size: 24px; font-weight: 800; fill: var(--h); }
+.xp .xp-gate { fill: color-mix(in srgb, var(--h) 14%, var(--xp-surface)); stroke: var(--h); stroke-width: 2.5; }
+.xp .xp-lock { fill: var(--h); }
+.xp .xp-lock-loop { fill: none; stroke: var(--h); stroke-width: 4; }
+.xp .xp-pill { fill: color-mix(in srgb, var(--h) 14%, var(--xp-surface)); stroke: var(--h); stroke-width: 1.5; }
+.xp .xp-pill-text { fill: var(--h); font-weight: 600; }
+
+.xp .xp-search { stroke: color-mix(in srgb, var(--h) 55%, var(--xp-line)); stroke-width: 2; }
+.xp .xp-lens { fill: none; stroke: var(--h); stroke-width: 2.5; stroke-linecap: round; }
+.xp .xp-query { font-size: 15px; }
+
+.xp .xp-node { fill: var(--xp-surface); stroke: var(--h); stroke-width: 2; filter: drop-shadow(0 6px 12px var(--xp-shadow)); }
+.xp .xp-node-text { fill: var(--h); font-weight: 700; }
+
+/* Dark mode lifts the hues, so type set on a filled hue turns dark. */
+:root.dark .xp .xp-badge-text,
+:root.dark .xp .xp-tile-text,
+:root.dark .xp .xp-tile-glyph {
+  fill: #0d0e15;
+}
+
+:root.dark .scene-num,
+:root.dark .step-num {
+  color: #0d0e15;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not(.light):not(.dark) .xp .xp-badge-text,
+  :root:not(.light):not(.dark) .xp .xp-tile-text,
+  :root:not(.light):not(.dark) .xp .xp-tile-glyph {
+    fill: #0d0e15;
+  }
+
+  :root:not(.light):not(.dark) .scene-num,
+  :root:not(.light):not(.dark) .step-num {
+    color: #0d0e15;
+  }
+}
+
+/* Resting poses of things that only exist in motion. */
+.xp .xp-dot { fill: var(--h); opacity: 0; }
+.xp .xp-cover { fill: var(--xp-surface); transform: scaleX(0); }
+
+.xp .a-pop,
+.xp .a-wipe {
+  transform-box: fill-box;
+}
+
+.xp .a-pop { transform-origin: center; }
+.xp .a-wipe { transform-origin: right center; }
+.xp .a-draw { stroke-dasharray: 1; }
+
+/* Motion, only while the scene is showing. */
+.xp .sc.on .a-in { animation: xp-in 0.6s cubic-bezier(0.2, 0.8, 0.2, 1) var(--t, 0s) both; }
+.xp .sc.on .a-left { animation: xp-left 0.65s cubic-bezier(0.2, 0.8, 0.2, 1) var(--t, 0s) both; }
+.xp .sc.on .a-right { animation: xp-right 0.65s cubic-bezier(0.2, 0.8, 0.2, 1) var(--t, 0s) both; }
+.xp .sc.on .a-pop { animation: xp-pop 0.55s cubic-bezier(0.3, 1.45, 0.5, 1) var(--t, 0s) both; }
+.xp .sc.on .a-draw { animation: xp-draw 0.7s ease-out var(--t, 0s) both; }
+.xp .sc.on .a-wipe { animation: xp-wipe 1.3s steps(34, end) var(--t, 0s) both; }
+.xp .sc.on .a-flash { animation: xp-flash 1.1s ease var(--t, 0s) both; }
+.xp .sc.on .a-pass { animation: xp-pass 2s cubic-bezier(0.45, 0, 0.2, 1) var(--t, 0s) both; }
+.xp .sc.on .a-stop { animation: xp-stop 1.7s ease var(--t, 0s) both; }
+.xp .sc.on .xp-dot { animation: xp-travel 1.1s ease-in-out var(--t, 0s) 2 both; }
+.xp .sc.on .xp-dot.xp-loop { animation-duration: 1.6s; animation-iteration-count: infinite; }
+
+@keyframes xp-in { from { opacity: 0; transform: translateY(10px); } }
+@keyframes xp-left { from { opacity: 0; transform: translateX(-40px); } }
+@keyframes xp-right { from { opacity: 0; transform: translateX(40px); } }
+@keyframes xp-pop { from { opacity: 0; transform: scale(0.6); } }
+@keyframes xp-draw { from { stroke-dashoffset: 1; } to { stroke-dashoffset: 0; } }
+@keyframes xp-wipe { from { transform: scaleX(1); } to { transform: scaleX(0); } }
+
+@keyframes xp-travel {
+  0% { opacity: 0; transform: translate(0, 0); }
+  15%, 85% { opacity: 1; }
+  100% { opacity: 0; transform: translate(var(--dx), var(--dy)); }
+}
+
+/* The gate flashes red as the anonymous request is refused. */
+@keyframes xp-flash {
+  0%, 100% { stroke: var(--h); }
+  25%, 60% { stroke: var(--hue-rose); stroke-width: 5; }
+}
+
+/* Alice's request: from her avatar to the gate, a beat at the check, then
+   through to the entry. Resting pose is past the gate. */
+@keyframes xp-pass {
+  0% { opacity: 0; transform: translateX(-330px); }
+  10% { opacity: 1; }
+  45%, 62% { transform: translateX(-140px); }
+  100% { opacity: 1; transform: translateX(0); }
+}
+
+/* The anonymous request reaches the gate and is shaken off. */
+@keyframes xp-stop {
+  0% { opacity: 0; transform: translateX(-70px); }
+  15% { opacity: 1; }
+  55% { transform: translateX(0); }
+  63% { transform: translateX(-9px); }
+  71% { transform: translateX(6px); }
+  79% { transform: translateX(-3px); }
+  86%, 100% { transform: translateX(0); }
+}
+
+/* Paused, or scrolled away: freeze in place. */
+.explainer.is-paused .xp *,
+.explainer.is-paused .scene-bar::after,
+.explainer.is-offscreen .xp *,
+.explainer.is-offscreen .scene-bar::after {
+  animation-play-state: paused !important;
+}
+
+/* Captions. */
+.explainer-scenes {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 11rem), 1fr));
+  gap: 0.85rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.scene:nth-child(5n + 1) { --h: var(--hue-violet); }
+.scene:nth-child(5n + 2) { --h: var(--hue-sky); }
+.scene:nth-child(5n + 3) { --h: var(--hue-amber); }
+.scene:nth-child(5n + 4) { --h: var(--hue-teal); }
+.scene:nth-child(5n + 5) { --h: var(--hue-rose); }
+
+.scene {
+  position: relative;
+  padding: 0.85rem 1rem 1rem;
+  background: var(--glass-bg);
+  border: 1px solid var(--border-color);
+  border-radius: 14px;
+  transition: opacity 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease, transform 0.3s ease;
+}
+
+.scene-title {
+  margin: 0;
+  font-size: 0.95rem;
+  letter-spacing: 0;
+}
+
+.scene-jump {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  width: 100%;
+  padding: 0;
+  font: inherit;
+  font-weight: 700;
+  text-align: left;
+  color: var(--text-main);
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+
+.scene-jump:disabled {
+  cursor: default;
+}
+
+.scene-jump:focus-visible {
+  outline-offset: 4px;
+}
+
+.scene-num {
+  display: inline-grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 1.6rem;
+  height: 1.6rem;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #fff;
+  background: var(--h);
+  border-radius: 50%;
+}
+
+.scene-bar {
+  display: block;
+  height: 3px;
+  margin: 0.65rem 0 0.6rem;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--h) 18%, transparent);
+  border-radius: 2px;
+}
+
+.scene-bar::after {
+  content: "";
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: var(--h);
+  transform: scaleX(0);
+  transform-origin: left;
+}
+
+.scene-body {
+  font-size: 0.84rem;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.scene-body p {
+  margin: 0;
+  color: inherit;
+}
+
+.explainer:not(.is-live) .scene-bar {
+  display: none;
+}
+
+.explainer:not(.is-live) .scene-title {
+  margin-bottom: 0.5rem;
+}
+
+.explainer.is-live .scene {
+  opacity: 0.62;
+}
+
+.explainer.is-live .scene:hover {
+  opacity: 0.9;
+}
+
+.explainer.is-live .scene.is-on {
+  opacity: 1;
+  border-color: color-mix(in srgb, var(--h) 55%, var(--border-color));
+  box-shadow: 0 12px 28px -16px color-mix(in srgb, var(--h) 70%, transparent);
+  transform: translateY(-2px);
+}
+
+.scene.is-on .scene-bar::after {
+  animation: xp-bar 6s linear both;
+}
+
+.explainer.is-reduced .scene.is-on .scene-bar::after {
+  transform: scaleX(1);
+}
+
+@keyframes xp-bar { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .xp *,
+  .xp .sc,
+  .scene,
+  .scene-bar::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+
+/* Narrow: the captions stack, and only the playing scene shows its text. */
+@media (max-width: 900px) {
+  .explainer-stage {
+    border-radius: 16px;
+  }
+
+  .explainer-scenes {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0.5rem;
+  }
+
+  .explainer.is-live .scene:not(.is-on) .scene-bar,
+  .explainer.is-live .scene:not(.is-on) .scene-body {
+    display: none;
+  }
+
+  .explainer.is-live .scene {
+    padding: 0.65rem 0.9rem;
+  }
+
+  .explainer.is-live .scene.is-on {
+    padding-bottom: 0.9rem;
+  }
+
+  .explainer-toggle {
+    right: 8px;
+    bottom: 8px;
+    padding: 0.25rem 0.7rem;
   }
 }

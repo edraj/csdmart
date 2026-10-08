@@ -28,6 +28,7 @@ public sealed class WebsiteRendererTests : IDisposable
         File.WriteAllText(Path.Combine(_dir, "og-card.png"), "png");
         File.WriteAllText(Path.Combine(_dir, "icons", "database.svg"), "<svg id=\"icon-db\"></svg>");
         File.WriteAllText(Path.Combine(_dir, "figures", "architecture.svg"), "<svg id=\"fig-arch\"></svg>");
+        File.WriteAllText(Path.Combine(_dir, "figures", "explainer.svg"), "<svg id=\"fig-xp\"><g class=\"sc\"></g><g class=\"sc\"></g></svg>");
         _template = WebsiteTemplate.LoadDirectory(_dir)!;
     }
 
@@ -299,6 +300,36 @@ public sealed class WebsiteRendererTests : IDisposable
     }
 
     [Fact]
+    public void Explainer_Renders_Its_Figure_And_Numbered_Scene_Captions()
+    {
+        using var doc = JsonDocument.Parse("""
+        {"shortname": "home", "attributes": {"payload": {"body": {
+          "hero": {"title_lines": ["X"]},
+          "sections": [
+            {"id": "in-30-seconds", "kind": "explainer", "title": "In 30 seconds", "figure": "explainer", "items": [
+              {"title": "Model it", "body": "A **space**."},
+              {"title": "<Store>"}
+            ]},
+            {"kind": "explainer", "title": "No art", "figure": "missing", "items": [{"title": "Only"}]}
+          ]
+        }}}}
+        """);
+        var html = Renderer().RenderHome(LandingPage.FromRecord(doc.RootElement));
+
+        html.ShouldContain("<section class=\"band band-explainer\" id=\"in-30-seconds\">");
+        // The figure is inlined, then the play/pause control site.js reveals.
+        html.ShouldContain("<div class=\"explainer\">\n<div class=\"explainer-stage\"><svg id=\"fig-xp\"><g class=\"sc\"></g><g class=\"sc\"></g></svg>"
+            + "<button type=\"button\" class=\"explainer-toggle\" aria-pressed=\"false\" hidden>Pause</button></div>");
+        // Scene buttons start disabled: without script they must not look clickable and do nothing.
+        html.ShouldContain("<li class=\"scene\"><h3 class=\"scene-title\"><button type=\"button\" class=\"scene-jump\" disabled>"
+            + "<span class=\"scene-num\">1</span>Model it</button></h3><span class=\"scene-bar\" aria-hidden=\"true\"></span>"
+            + "<div class=\"scene-body\"><p>A <strong>space</strong>.</p></div></li>");
+        html.ShouldContain("<span class=\"scene-num\">2</span>&lt;Store&gt;</button></h3><span class=\"scene-bar\" aria-hidden=\"true\"></span></li>");
+        // An unknown figure name leaves an empty stage, not an error.
+        html.ShouldContain("<div class=\"explainer-stage\"><button type=\"button\" class=\"explainer-toggle\"");
+    }
+
+    [Fact]
     public void A_Single_Title_Line_Gets_No_Accent()
     {
         using var doc = JsonDocument.Parse("""{"shortname":"home","attributes":{"payload":{"body":{"hero":{"title_lines":["DMART"]}}}}}""");
@@ -352,6 +383,13 @@ public sealed class WebsiteRendererTests : IDisposable
         Regex.IsMatch(t.Layout, @"<script(?![^>]*\bsrc=)[^>]*>", RegexOptions.IgnoreCase).ShouldBeFalse("inline <script> in layout.html");
         Regex.IsMatch(t.Layout, @"\son[a-z]+\s*=", RegexOptions.IgnoreCase).ShouldBeFalse("inline event handler in layout.html");
         t.Figure("architecture").ShouldNotBeNull();
+
+        // Figures are inlined into the page, so the same rule holds for them.
+        // The explainer tells the seeded home page's five-scene story.
+        var explainer = t.Figure("explainer");
+        explainer.ShouldNotBeNull();
+        Regex.Matches(explainer, "<g class=\"sc[ \"]").Count.ShouldBe(5);
+        Regex.IsMatch(explainer, @"<script|\son[a-z]+\s*=", RegexOptions.IgnoreCase).ShouldBeFalse("script in explainer.svg");
     }
 
     [Theory]

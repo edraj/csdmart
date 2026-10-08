@@ -166,7 +166,7 @@ public sealed partial class WebsiteRenderer
 
     private void AppendSection(StringBuilder sb, LandingSection s)
     {
-        var kind = s.Kind is "cards" or "steps" or "figures" or "prose" or "banner" ? s.Kind : "prose";
+        var kind = s.Kind is "cards" or "steps" or "figures" or "explainer" or "prose" or "banner" ? s.Kind : "prose";
         sb.Append("<section class=\"band band-").Append(kind).Append('"');
         if (!string.IsNullOrEmpty(s.Id) && SectionIdRegex().IsMatch(s.Id))
             sb.Append(" id=\"").Append(s.Id).Append('"');
@@ -226,6 +226,30 @@ public sealed partial class WebsiteRenderer
                     sb.Append("</dl>");
                 }
                 sb.Append("</div>\n");
+                break;
+
+            // An animated figure from the template (one <g class="sc"> per
+            // scene) captioned by the items, in order. site.js plays it and
+            // enables the scene buttons; without script the figure shows its
+            // last scene and every caption reads as a plain list.
+            case "explainer":
+                AppendBody(sb, s.Body);
+                sb.Append("<div class=\"explainer\">\n<div class=\"explainer-stage\">");
+                if (_template.Figure(s.Figure) is { } art) sb.Append(art);
+                sb.Append("<button type=\"button\" class=\"explainer-toggle\" aria-pressed=\"false\" hidden>Pause</button>");
+                sb.Append("</div>\n<ol class=\"explainer-scenes\">\n");
+                for (var i = 0; i < s.Items.Count; i++)
+                {
+                    var item = s.Items[i];
+                    sb.Append("<li class=\"scene\"><h3 class=\"scene-title\"><button type=\"button\" class=\"scene-jump\" disabled>")
+                      .Append("<span class=\"scene-num\">").Append((i + 1).ToString(CultureInfo.InvariantCulture)).Append("</span>")
+                      .Append(Esc(item.Title)).Append("</button></h3>");
+                    sb.Append("<span class=\"scene-bar\" aria-hidden=\"true\"></span>");
+                    if (!string.IsNullOrEmpty(item.Body))
+                        sb.Append("<div class=\"scene-body\">").Append(Markdown(item.Body)).Append("</div>");
+                    sb.Append("</li>\n");
+                }
+                sb.Append("</ol>\n</div>\n");
                 break;
 
             default:

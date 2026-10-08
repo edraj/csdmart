@@ -88,6 +88,8 @@ public sealed record LandingSection(
     string Title,
     string? Accent,
     string Body,
+    // explainer: the template figure that plays the story; items are its scenes.
+    string? Figure,
     IReadOnlyList<LandingItem> Items,
     IReadOnlyList<LandingAction> Actions);
 
@@ -130,6 +132,7 @@ public sealed record LandingPage(
                     s.Str("title") ?? "",
                     s.Str("accent"),
                     s.Str("body") ?? "",
+                    s.Str("figure"),
                     s.Arr("items")
                         .Select(i => new LandingItem(i.Str("title") ?? "", i.Str("body") ?? "", i.Str("href"), i.Str("icon")))
                         .ToList(),

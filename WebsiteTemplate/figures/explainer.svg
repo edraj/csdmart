@@ -1,0 +1,255 @@
+<svg class="xp" viewBox="0 0 800 450" role="img" aria-label="An animated walk-through of DMART in five scenes: model your data, store anything, control who sees what, find it fast, and use it everywhere." xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="xp-g-core" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" class="xp-stop-a"/>
+      <stop offset="1" class="xp-stop-b"/>
+    </linearGradient>
+  </defs>
+
+  <!-- 1. Model it: a space with folders, and a schema that says what a valid entry looks like. -->
+  <g class="sc h-violet">
+    <rect class="xp-card" x="60" y="70" width="260" height="300" rx="16"/>
+    <rect class="xp-head" x="60" y="70" width="260" height="54" rx="16"/>
+    <rect class="xp-head" x="60" y="100" width="260" height="24"/>
+    <text class="xp-label xp-strong" x="84" y="104">◆ my_shop</text>
+    <text class="xp-small xp-dim" x="298" y="104" text-anchor="end">space</text>
+    <g class="a-left" style="--t:.15s">
+      <rect class="xp-row" x="80" y="140" width="220" height="44" rx="10"/>
+      <path class="xp-folder" d="M96 154h10l4 4h14v16H96z"/>
+      <text class="xp-mono" x="136" y="168">/products</text>
+    </g>
+    <g class="a-left" style="--t:.35s">
+      <rect class="xp-row" x="80" y="196" width="220" height="44" rx="10"/>
+      <path class="xp-folder" d="M96 210h10l4 4h14v16H96z"/>
+      <text class="xp-mono" x="136" y="224">/orders</text>
+    </g>
+    <g class="a-left" style="--t:.55s">
+      <rect class="xp-row" x="80" y="252" width="220" height="44" rx="10"/>
+      <path class="xp-folder" d="M96 266h10l4 4h14v16H96z"/>
+      <text class="xp-mono" x="136" y="280">/customers</text>
+    </g>
+    <g class="a-left" style="--t:.75s">
+      <rect class="xp-row" x="80" y="308" width="220" height="44" rx="10"/>
+      <path class="xp-folder" d="M96 322h10l4 4h14v16H96z"/>
+      <text class="xp-mono" x="136" y="336">/invoices</text>
+    </g>
+
+    <path class="xp-wire xp-wire-hue a-draw" style="--t:.9s" pathLength="1" d="M300 162 C 360 162, 360 118, 420 118"/>
+
+    <rect class="xp-card" x="420" y="60" width="320" height="250" rx="16"/>
+    <text class="xp-label xp-strong" x="444" y="96">schema</text>
+    <rect class="xp-chip" x="520" y="78" width="88" height="26" rx="13"/>
+    <text class="xp-small xp-chip-text" x="564" y="96" text-anchor="middle">product</text>
+    <g class="a-in" style="--t:1.1s">
+      <text class="xp-mono" x="444" y="146">"name"</text>
+      <rect class="xp-type" x="580" y="128" width="136" height="26" rx="7"/>
+      <text class="xp-mono xp-type-text" x="594" y="146">string</text>
+    </g>
+    <g class="a-in" style="--t:1.35s">
+      <text class="xp-mono" x="444" y="190">"price"</text>
+      <rect class="xp-type" x="580" y="172" width="136" height="26" rx="7"/>
+      <text class="xp-mono xp-type-text" x="594" y="190">number ≥ 0</text>
+    </g>
+    <g class="a-in" style="--t:1.6s">
+      <text class="xp-mono" x="444" y="234">"tags"</text>
+      <rect class="xp-type" x="580" y="216" width="136" height="26" rx="7"/>
+      <text class="xp-mono xp-type-text" x="594" y="234">[string]</text>
+    </g>
+    <g class="a-in" style="--t:1.85s">
+      <text class="xp-mono" x="444" y="278">"photo"</text>
+      <rect class="xp-type" x="580" y="260" width="136" height="26" rx="7"/>
+      <text class="xp-mono xp-type-text" x="594" y="278">attachment</text>
+    </g>
+
+    <g class="a-pop h-emerald" style="--t:2.5s">
+      <rect class="xp-badge" x="450" y="330" width="260" height="44" rx="22"/>
+      <text class="xp-label xp-badge-text" x="580" y="358" text-anchor="middle">✓ every entry is validated</text>
+    </g>
+  </g>
+
+  <!-- 2. Store anything: JSON, files and tickets go in; each lands as a file on disk and an indexed row. -->
+  <g class="sc">
+    <path class="xp-wire a-draw" style="--t:.7s" pathLength="1" d="M240 104 L330 200"/>
+    <path class="xp-wire a-draw" style="--t:.85s" pathLength="1" d="M240 225 L330 225"/>
+    <path class="xp-wire a-draw" style="--t:1s" pathLength="1" d="M240 346 L330 250"/>
+    <path class="xp-wire a-draw" style="--t:1.7s" pathLength="1" d="M470 205 L560 135"/>
+    <path class="xp-wire a-draw" style="--t:1.9s" pathLength="1" d="M470 245 L560 315"/>
+
+    <g class="a-left h-sky" style="--t:.05s">
+      <rect class="xp-card" x="40" y="76" width="200" height="56" rx="12"/>
+      <rect class="xp-tile" x="54" y="88" width="32" height="32" rx="8"/>
+      <text class="xp-small xp-tile-text" x="70" y="109" text-anchor="middle">{ }</text>
+      <text class="xp-label" x="98" y="103">product</text>
+      <text class="xp-small xp-dim" x="98" y="121">JSON entry</text>
+    </g>
+    <g class="a-left h-amber" style="--t:.25s">
+      <rect class="xp-card" x="40" y="197" width="200" height="56" rx="12"/>
+      <rect class="xp-tile" x="54" y="209" width="32" height="32" rx="8"/>
+      <path class="xp-tile-glyph" d="M60 235l8-10 6 7 4-4 6 7z"/>
+      <text class="xp-label" x="98" y="224">photo.jpg</text>
+      <text class="xp-small xp-dim" x="98" y="242">attachment</text>
+    </g>
+    <g class="a-left h-rose" style="--t:.45s">
+      <rect class="xp-card" x="40" y="318" width="200" height="56" rx="12"/>
+      <rect class="xp-tile" x="54" y="330" width="32" height="32" rx="8"/>
+      <text class="xp-small xp-tile-text" x="70" y="351" text-anchor="middle">#</text>
+      <text class="xp-label" x="98" y="345">order 1042</text>
+      <text class="xp-small xp-dim" x="98" y="363">ticket · new</text>
+    </g>
+
+    <circle class="xp-dot h-sky" cx="240" cy="104" r="5" style="--t:1.2s;--dx:90px;--dy:96px"/>
+    <circle class="xp-dot h-amber" cx="240" cy="225" r="5" style="--t:1.5s;--dx:90px;--dy:0px"/>
+    <circle class="xp-dot h-rose" cx="240" cy="346" r="5" style="--t:1.8s;--dx:90px;--dy:-96px"/>
+
+    <g class="a-pop" style="--t:.5s">
+      <rect class="xp-core" x="330" y="160" width="140" height="130" rx="24"/>
+      <text class="xp-core-text" x="400" y="230" text-anchor="middle">dmart</text>
+      <text class="xp-core-sub" x="400" y="254" text-anchor="middle">one binary</text>
+    </g>
+
+    <g class="a-right h-violet" style="--t:2s">
+      <rect class="xp-card" x="560" y="72" width="200" height="138" rx="14"/>
+      <path class="xp-folder" d="M578 92h12l5 5h17v19h-34z"/>
+      <text class="xp-label xp-strong" x="622" y="109">files on disk</text>
+      <text class="xp-mono xp-small" x="578" y="146">product.json</text>
+      <text class="xp-mono xp-small" x="578" y="166">photo.jpg</text>
+      <text class="xp-mono xp-small xp-dim" x="578" y="186">the source of truth</text>
+    </g>
+    <g class="a-right h-teal" style="--t:2.25s">
+      <path class="xp-db" d="M575 268 v84 a85 18 0 0 0 170 0 v-84"/>
+      <ellipse class="xp-db-top" cx="660" cy="268" rx="85" ry="18"/>
+      <text class="xp-label xp-strong" x="660" y="320" text-anchor="middle">PostgreSQL</text>
+      <text class="xp-small xp-dim" x="660" y="342" text-anchor="middle">or SQLite · indexed</text>
+    </g>
+
+    <circle class="xp-dot h-violet" cx="470" cy="205" r="5" style="--t:2.7s;--dx:90px;--dy:-70px"/>
+    <circle class="xp-dot h-teal" cx="470" cy="245" r="5" style="--t:2.9s;--dx:90px;--dy:70px"/>
+  </g>
+
+  <!-- 3. Control who sees what: one request passes the permission check, one is refused. -->
+  <g class="sc">
+    <g class="h-sky">
+      <circle class="xp-avatar" cx="90" cy="150" r="30"/>
+      <text class="xp-avatar-text" x="90" y="158" text-anchor="middle">A</text>
+      <text class="xp-label xp-strong" x="90" y="208" text-anchor="middle">alice</text>
+      <rect class="xp-chip" x="56" y="218" width="68" height="24" rx="12"/>
+      <text class="xp-small xp-chip-text" x="90" y="235" text-anchor="middle">editor</text>
+    </g>
+    <g class="h-slate">
+      <circle class="xp-avatar" cx="90" cy="330" r="30"/>
+      <text class="xp-avatar-text" x="90" y="339" text-anchor="middle">?</text>
+      <text class="xp-label xp-strong" x="90" y="388" text-anchor="middle">anonymous</text>
+    </g>
+
+    <path class="xp-wire" d="M140 150 H 600"/>
+    <path class="xp-wire" d="M140 330 H 330"/>
+
+    <g class="h-amber xp-gate-wrap">
+      <path class="xp-gate a-flash" style="--t:1.85s" d="M400 120 l62 22 v62 c0 46 -30 76 -62 92 c-32 -16 -62 -46 -62 -92 v-62 z"/>
+      <rect class="xp-lock" x="382" y="206" width="36" height="30" rx="6"/>
+      <path class="xp-lock-loop" d="M389 206 v-10 a11 11 0 0 1 22 0 v10"/>
+      <text class="xp-small xp-dim" x="400" y="330" text-anchor="middle">roles → permissions</text>
+    </g>
+
+    <g class="a-pass h-sky" style="--t:.4s">
+      <rect class="xp-pill" x="470" y="134" width="130" height="32" rx="16"/>
+      <text class="xp-mono xp-small xp-pill-text" x="535" y="155" text-anchor="middle">GET /orders</text>
+    </g>
+    <g class="a-stop h-slate" style="--t:.9s">
+      <rect class="xp-pill" x="196" y="314" width="130" height="32" rx="16"/>
+      <text class="xp-mono xp-small xp-pill-text" x="261" y="335" text-anchor="middle">GET /orders</text>
+    </g>
+
+    <g class="a-right h-emerald" style="--t:2.1s">
+      <rect class="xp-card" x="620" y="96" width="150" height="120" rx="14"/>
+      <text class="xp-label xp-strong" x="640" y="128">order 1042</text>
+      <rect class="xp-line" x="640" y="144" width="110" height="8" rx="4"/>
+      <rect class="xp-line" x="640" y="162" width="84" height="8" rx="4"/>
+      <rect class="xp-line" x="640" y="180" width="98" height="8" rx="4"/>
+    </g>
+    <g class="a-pop h-emerald" style="--t:2.6s">
+      <rect class="xp-badge" x="640" y="232" width="110" height="34" rx="17"/>
+      <text class="xp-label xp-badge-text" x="695" y="255" text-anchor="middle">✓ allowed</text>
+    </g>
+    <g class="a-pop h-rose" style="--t:2.35s">
+      <rect class="xp-badge" x="236" y="362" width="110" height="34" rx="17"/>
+      <text class="xp-label xp-badge-text" x="291" y="385" text-anchor="middle">✕ denied</text>
+    </g>
+  </g>
+
+  <!-- 4. Find it fast: one query across everything stored. -->
+  <g class="sc">
+    <g class="h-teal">
+      <rect class="xp-card xp-search" x="100" y="56" width="600" height="64" rx="32"/>
+      <circle class="xp-lens" cx="144" cy="86" r="11"/>
+      <path class="xp-lens" d="M152 94 l9 9"/>
+      <text class="xp-mono xp-query" x="176" y="95">@payload.body.price:&lt;50 @tags:sale</text>
+      <rect class="xp-cover a-wipe" style="--t:.3s" x="172" y="66" width="352" height="44"/>
+    </g>
+
+    <g class="a-in h-sky" style="--t:1.6s">
+      <rect class="xp-card" x="100" y="146" width="600" height="62" rx="14"/>
+      <rect class="xp-tile" x="118" y="160" width="34" height="34" rx="9"/>
+      <text class="xp-label xp-strong" x="168" y="183">Canvas tote</text>
+      <rect class="xp-chip" x="520" y="164" width="60" height="26" rx="13"/>
+      <text class="xp-small xp-chip-text" x="550" y="182" text-anchor="middle">sale</text>
+      <text class="xp-mono xp-strong" x="676" y="183" text-anchor="end">24</text>
+    </g>
+    <g class="a-in h-amber" style="--t:1.85s">
+      <rect class="xp-card" x="100" y="222" width="600" height="62" rx="14"/>
+      <rect class="xp-tile" x="118" y="236" width="34" height="34" rx="9"/>
+      <text class="xp-label xp-strong" x="168" y="259">Desk lamp</text>
+      <rect class="xp-chip" x="520" y="240" width="60" height="26" rx="13"/>
+      <text class="xp-small xp-chip-text" x="550" y="258" text-anchor="middle">sale</text>
+      <text class="xp-mono xp-strong" x="676" y="259" text-anchor="end">39</text>
+    </g>
+    <g class="a-in h-violet" style="--t:2.1s">
+      <rect class="xp-card" x="100" y="298" width="600" height="62" rx="14"/>
+      <rect class="xp-tile" x="118" y="312" width="34" height="34" rx="9"/>
+      <text class="xp-label xp-strong" x="168" y="335">Notebook set</text>
+      <rect class="xp-chip" x="520" y="316" width="60" height="26" rx="13"/>
+      <text class="xp-small xp-chip-text" x="550" y="334" text-anchor="middle">sale</text>
+      <text class="xp-mono xp-strong" x="676" y="335" text-anchor="end">12</text>
+    </g>
+
+    <g class="a-pop h-teal" style="--t:2.6s">
+      <rect class="xp-badge" x="520" y="376" width="180" height="36" rx="18"/>
+      <text class="xp-label xp-badge-text" x="610" y="400" text-anchor="middle">3 matches</text>
+    </g>
+  </g>
+
+  <!-- 5. Use it everywhere: one engine, many ways in. Also the still frame without JavaScript. -->
+  <g class="sc">
+    <path class="xp-wire a-draw" style="--t:.1s" pathLength="1" d="M400 225 L400 55"/>
+    <path class="xp-wire a-draw" style="--t:.2s" pathLength="1" d="M400 225 L612 105"/>
+    <path class="xp-wire a-draw" style="--t:.3s" pathLength="1" d="M400 225 L690 225"/>
+    <path class="xp-wire a-draw" style="--t:.4s" pathLength="1" d="M400 225 L612 345"/>
+    <path class="xp-wire a-draw" style="--t:.5s" pathLength="1" d="M400 225 L400 395"/>
+    <path class="xp-wire a-draw" style="--t:.6s" pathLength="1" d="M400 225 L188 345"/>
+    <path class="xp-wire a-draw" style="--t:.7s" pathLength="1" d="M400 225 L110 225"/>
+    <path class="xp-wire a-draw" style="--t:.8s" pathLength="1" d="M400 225 L188 105"/>
+
+    <circle class="xp-dot xp-loop h-violet" cx="400" cy="225" r="5" style="--t:1.6s;--dx:0px;--dy:-150px"/>
+    <circle class="xp-dot xp-loop h-sky" cx="400" cy="225" r="5" style="--t:1.9s;--dx:190px;--dy:-108px"/>
+    <circle class="xp-dot xp-loop h-indigo" cx="400" cy="225" r="5" style="--t:2.2s;--dx:270px;--dy:0px"/>
+    <circle class="xp-dot xp-loop h-teal" cx="400" cy="225" r="5" style="--t:2.5s;--dx:190px;--dy:108px"/>
+    <circle class="xp-dot xp-loop h-purple" cx="400" cy="225" r="5" style="--t:2.8s;--dx:0px;--dy:150px"/>
+    <circle class="xp-dot xp-loop h-amber" cx="400" cy="225" r="5" style="--t:3.1s;--dx:-190px;--dy:108px"/>
+    <circle class="xp-dot xp-loop h-rose" cx="400" cy="225" r="5" style="--t:3.4s;--dx:-270px;--dy:0px"/>
+    <circle class="xp-dot xp-loop h-emerald" cx="400" cy="225" r="5" style="--t:3.7s;--dx:-190px;--dy:-108px"/>
+
+    <g class="a-pop h-violet" style="--t:.5s"><rect class="xp-node" x="330" y="35" width="140" height="40" rx="20"/><text class="xp-label xp-node-text" x="400" y="60" text-anchor="middle">REST API</text></g>
+    <g class="a-pop h-sky" style="--t:.65s"><rect class="xp-node" x="542" y="85" width="140" height="40" rx="20"/><text class="xp-label xp-node-text" x="612" y="110" text-anchor="middle">Python SDK</text></g>
+    <g class="a-pop h-indigo" style="--t:.8s"><rect class="xp-node" x="620" y="205" width="150" height="40" rx="20"/><text class="xp-label xp-node-text" x="695" y="230" text-anchor="middle">TypeScript SDK</text></g>
+    <g class="a-pop h-teal" style="--t:.95s"><rect class="xp-node" x="542" y="325" width="140" height="40" rx="20"/><text class="xp-label xp-node-text" x="612" y="350" text-anchor="middle">Dart SDK</text></g>
+    <g class="a-pop h-purple" style="--t:1.1s"><rect class="xp-node" x="330" y="375" width="140" height="40" rx="20"/><text class="xp-label xp-node-text" x="400" y="400" text-anchor="middle">C# SDK</text></g>
+    <g class="a-pop h-amber" style="--t:1.25s"><rect class="xp-node" x="118" y="325" width="140" height="40" rx="20"/><text class="xp-label xp-node-text" x="188" y="350" text-anchor="middle">Admin UI</text></g>
+    <g class="a-pop h-rose" style="--t:1.4s"><rect class="xp-node" x="30" y="205" width="160" height="40" rx="20"/><text class="xp-label xp-node-text" x="110" y="230" text-anchor="middle">MCP · AI agents</text></g>
+    <g class="a-pop h-emerald" style="--t:1.55s"><rect class="xp-node" x="118" y="85" width="140" height="40" rx="20"/><text class="xp-label xp-node-text" x="188" y="110" text-anchor="middle">Catalog</text></g>
+
+    <g class="a-pop" style="--t:0s">
+      <rect class="xp-core" x="335" y="180" width="130" height="90" rx="22"/>
+      <text class="xp-core-text" x="400" y="234" text-anchor="middle">dmart</text>
+    </g>
+  </g>
+</svg>
