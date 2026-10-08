@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **The release's frontend SBOM step inventories only the workspaces the
+  binary embeds.** It built every yarn workspace, and the `e2e` workspace
+  (the Playwright suite) has no build and never ships, which failed the
+  v1.5.22 release run; the list now comes from `dmart.csproj`'s
+  `EmbeddedResource` entries.
+
+### Tooling
+
+- **The EL9 RPM build no longer downloads its toolchain on every run.** CI
+  recreated the builder container each time and pulled ~400 MB of RPMs
+  from AlmaLinux's mirrors, which at the 80-100 kB/s seen on 2026-10-08
+  blew the job's 20-minute budget three times in a day. The builder is now
+  reused per runner (recreated weekly; build-rpm.sh already refreshes the
+  SDK on reuse and the runtime CVE scan reads the finished binary), and a
+  host dnf cache with `keepcache` backs even a recreation: measured
+  locally, a fresh builder went from 828 s to 119 s including the build.
+  Releases still build in a fresh container, from the same cache.
+
 ## v1.5.22 — 2026-10-08
 
 ### Added

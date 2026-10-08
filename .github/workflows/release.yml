@@ -451,10 +451,19 @@ jobs:
           pkill -f 'dmart serve' 2>/dev/null || true
           sleep 1
           rm -rf dist/out
-          # Remove stale builder container from previous runs
-          podman rm -f dmart-el9-builder 2>/dev/null || true
+          # A release builds in a FRESH container (no toolchain carried over
+          # from CI's reusable builder), but from the same per-runner dnf
+          # cache, so the ~400 MB of RPMs come from disk instead of a mirror
+          # that has been seen at 80-100 kB/s. Names are per runner because
+          # the runners share a podman graphroot.
+          RUNNER_KEY=$(printf '%s' "${RUNNER_NAME:-local}" | tr -c 'A-Za-z0-9' '-')
+          export EL9_BUILDER_NAME="dmart-el9-release-${RUNNER_KEY}"
+          export HOST_DNF_CACHE="${HOME}/.cache/dmart-el9-dnf/${RUNNER_KEY}"
+          podman rm -f "$EL9_BUILDER_NAME" dmart-el9-builder 2>/dev/null || true
           VERSION="$(dist/release-version.sh)"
           VERSION="$VERSION" ./dist/build-rpm.sh el9
+          # Nothing reuses the release builder; free the space.
+          podman rm -f "$EL9_BUILDER_NAME" 2>/dev/null || true
 
       # This job is now the single linux-x64 AOT compile for the whole
       # release. The Fedora RPM and the .deb used to run their own, three
