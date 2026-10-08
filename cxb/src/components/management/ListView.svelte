@@ -42,6 +42,7 @@
         is_clickable = $bindable(true),
         canDelete = $bindable(false),
         exact_subpath = $bindable(true),
+        emptyHint = undefined,
         scope = $bindable(DmartScope.managed),
         stream = $bindable(false),
         onStreamUpdate = undefined,
@@ -57,6 +58,8 @@
         is_clickable?: boolean;
         canDelete?: boolean;
         exact_subpath?: boolean;
+        // Hint under "No records found" for lists that are not a folder (Trash).
+        emptyHint?: string;
         scope?: DmartScope;
         stream?: boolean;
         onStreamUpdate?: ((message: any) => void) | undefined;
@@ -616,7 +619,7 @@
                 <div class="py-6">
                     <EmptyState
                         title={$_("no_records_found")}
-                        hint={$searchListView ? $_("search_empty_hint") : $_("folder_empty_hint")}
+                        hint={$searchListView ? $_("search_empty_hint") : (emptyHint ?? $_("folder_empty_hint"))}
                     />
                 </div>
             {:else}

@@ -718,5 +718,6 @@
   "workflow_shortname": "Workflow shortname",
   "workflow_shortnames": "Workflow shortnames",
   "yes": "Yes",
-  "updated_at": "Updated at"
+  "updated_at": "Updated at",
+  "trash_empty_hint": "Nothing in the trash. Entries you move to the trash can be restored or deleted for good from here."
 }

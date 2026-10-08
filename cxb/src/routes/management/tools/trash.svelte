@@ -21,6 +21,7 @@
     />
 
     <ListView
+        emptyHint={$_("trash_empty_hint")}
         bind:space_name
         bind:subpath
         canDelete={true}
