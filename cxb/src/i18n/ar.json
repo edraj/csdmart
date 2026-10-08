@@ -717,5 +717,6 @@
   "workflow_name": "اسم سير العمل",
   "workflow_shortname": "الاسم المختصر لسير العمل",
   "workflow_shortnames": "أسماء سير العمل",
-  "yes": "نعم"
+  "yes": "نعم",
+  "updated_at": "تاريخ التحديث"
 }

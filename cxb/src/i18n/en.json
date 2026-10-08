@@ -717,5 +717,6 @@
   "workflow_name": "Workflow name",
   "workflow_shortname": "Workflow shortname",
   "workflow_shortnames": "Workflow shortnames",
-  "yes": "Yes"
+  "yes": "Yes",
+  "updated_at": "Updated at"
 }

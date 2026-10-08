@@ -34,6 +34,10 @@
         e.stopPropagation();
         signout();
     }
+
+    // The menu must close itself after a choice; flowbite's simple Dropdown
+    // only toggles on its trigger.
+    let languageMenuOpen = $state(false);
 </script>
 
 <header class="flex items-center justify-between gap-4 border-b border-border bg-surface-2 px-4 sm:px-6 h-14">
@@ -55,9 +59,9 @@
                 <LanguageOutline size="sm" aria-hidden="true" />
                 <span class="uppercase">{$locale}</span>
             </button>
-            <Dropdown simple triggeredBy="#home-language-menu" class="min-w-40">
+            <Dropdown simple triggeredBy="#home-language-menu" class="min-w-40" bind:isOpen={languageMenuOpen}>
                 {#each languages as code (code)}
-                    <DropdownItem onclick={() => switchLocale(code)} aria-current={$locale === code ? "true" : undefined}>
+                    <DropdownItem onclick={() => { switchLocale(code); languageMenuOpen = false; }} aria-current={$locale === code ? "true" : undefined}>
                         <span class="flex items-center justify-between gap-3" lang={code}>
                             <span>{website.languages[code]}</span>
                             {#if $locale === code}<CheckOutline size="sm" class="text-primary" aria-hidden="true" />{/if}
