@@ -3,7 +3,6 @@ import {defineConfig} from "vite";
 import {mdsvex} from "mdsvex";
 import routify from "@roxi/routify/vite-plugin";
 import {svelte, vitePreprocess} from "@sveltejs/vite-plugin-svelte";
-import {viteStaticCopy} from "vite-plugin-static-copy";
 import plantuml from "@akebifiky/remark-simple-plantuml";
 import svelteMd from "vite-plugin-svelte-md";
 import tailwindcss from "@tailwindcss/vite"
@@ -85,14 +84,6 @@ export default defineConfig(({command}) => ({
     routifyStripDevLogsPlugin(),
     tailwindcss(),
     svelteMd(),
-    viteStaticCopy({
-      targets: [
-        {
-          src: 'public/config.json',
-          dest: ''
-        }
-      ]
-    }),
     routify({
       "render.ssr": {enable: false},
       // Misleadingly named: forceLogging defaults to TRUE which means
