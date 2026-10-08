@@ -1,6 +1,6 @@
 import {_, locale} from "@/i18n";
 import {get} from "svelte/store";
-import {formatDate} from "@/lib/helpers";
+import {formatDate} from "@/utils/format";
 import {isTimestampKey} from "@/utils/columnsUtils";
 
 
@@ -65,9 +65,9 @@ export function getAttributeValue(item: any, key: string): string {
 
     // A timestamp column is a timestamp whatever path reaches it: the default
     // columns use `attributes.created_at`, folder columns may use the bare
-    // key, and either must render as a formatted date rather than raw ISO.
+    // key, and either must render as a locale-formatted date rather than raw ISO.
     if (isTimestampKey(key) && !Number.isNaN(new Date(String(value)).getTime())) {
-        return formatDate(String(value));
+        return formatDate(String(value), "datetime");
     }
 
     if (typeof value === "object" && !Array.isArray(value)) {

@@ -1,13 +1,15 @@
 <!-- routify:meta reset -->
 <script lang="ts">
-    import {Dmart, DmartScope} from "@edraj/tsdmart";
-    import {clearLocalSession, ensureDmartAxios} from "@/lib/dmart_axios";
+    import type { Snippet } from "svelte";
+    import { Dmart, DmartScope } from "@edraj/tsdmart";
+    import { clearLocalSession, ensureDmartAxios } from "@/lib/dmart_axios";
     import Login from "@/components/Login.svelte";
     import ManagementHeader from "@/components/management/ManagementHeader.svelte";
-    import {Spinner} from "flowbite-svelte";
-    import {getSpaces} from "@/lib/dmart_services.js";
-    import {user} from "@/stores/user.js";
+    import LoadingState from "@/components/ui/LoadingState.svelte";
+    import { getSpaces } from "@/lib/dmart_services";
+    import { user } from "@/stores/user";
 
+    let { children }: { children?: Snippet } = $props();
 
     // The axios instance (and its 401 interceptor) now lives in
     // src/lib/dmart_axios.ts so routes outside /management — the
@@ -60,38 +62,38 @@
         // side effect of getProfile and must go with the rest: stale privilege
         // data outliving the session is what drives the next user's UI gating.
         clearLocalSession();
-        user.set({signedin: false, locale: $user?.locale});
+        user.set({ signedin: false, locale: $user?.locale });
         throw error;
     });
 </script>
 
 {#await profilePromise}
-    <div class="flex w-svw h-svh justify-center items-center">
-        <Spinner color="blue" size="16" />
+    <div class="flex w-full h-svh justify-center items-center">
+        <LoadingState />
     </div>
-    <!-- Routify expects the parent of an active child route to put a
-         <slot /> in the DOM within 5s of navigation. While we're still
-         resolving auth (or showing Login), the slot would otherwise be
-         absent and Routify logs "Failed to render index within 5s".
-         Render it hidden so the timer is satisfied; the child mounts
-         silently and gets revealed once the user signs in. Boot 401s
-         from this early mount are silenced by per-callsite log gating;
-         the session probe itself no longer contributes one, because it
-         skips the request entirely when there is no local session. -->
-    <div style="display:none"><slot /></div>
+    <!-- Routify expects the parent of an active child route to put its
+         children in the DOM within 5s of navigation. While we're still
+         resolving auth (or showing Login), they would otherwise be absent and
+         Routify logs "Failed to render index within 5s". Render them hidden
+         so the timer is satisfied; the child mounts silently and gets
+         revealed once the user signs in. Boot 401s from this early mount are
+         silenced by per-callsite log gating; the session probe itself no
+         longer contributes one, because it skips the request entirely when
+         there is no local session. -->
+    <div hidden>{@render children?.()}</div>
 {:then _}
     {#if !$user || !$user.signedin}
         <Login />
-        <div style="display:none"><slot /></div>
+        <div hidden>{@render children?.()}</div>
     {:else}
-        <div class="flex flex-col h-screen">
+        <div class="flex flex-col h-screen bg-surface text-text">
             <ManagementHeader />
             <div class="flex-grow overflow-auto">
-                <slot />
+                {@render children?.()}
             </div>
         </div>
     {/if}
 {:catch}
     <Login />
-    <div style="display:none"><slot /></div>
+    <div hidden>{@render children?.()}</div>
 {/await}

@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { Button, ButtonGroup, Heading, Input, Label, Spinner } from "flowbite-svelte";
-  import { EyeSlashSolid, EyeSolid } from "flowbite-svelte-icons";
+  import { Button, Input, Label, Spinner } from "flowbite-svelte";
+  import { EyeOutline, EyeSlashOutline } from "flowbite-svelte-icons";
   import { goto } from "@roxi/routify";
   import { onDestroy, onMount } from "svelte";
   import { _ } from "@/i18n";
@@ -20,7 +20,7 @@
     type ResetIdentifier,
   } from "@/lib/password_reset";
   import { ensureDmartAxios } from "@/lib/dmart_axios";
-
+  import IconButton from "@/components/ui/IconButton.svelte";
 
   let target: ResetIdentifier | null = $state(null);
   let otp: string = $state("");
@@ -37,7 +37,7 @@
   // another full cooldown for a resend the server would already accept.
   let canResend: boolean = $state(false);
   let resendCountdown: number = $state(0);
-  let resendTimer: any;
+  let resendTimer: ReturnType<typeof setInterval> | undefined;
 
   onMount(() => {
     // This route lives outside /management, whose layout is where the axios
@@ -121,7 +121,7 @@
       await confirmPasswordReset(target, otp.trim(), password);
       clearResetTarget();
       succeeded = true;
-    } catch (e: any) {
+    } catch (e: unknown) {
       formError = e instanceof ResetError ? $_(resetErrorKey(e.reason)) : $_("reset_failed");
     } finally {
       isSubmitting = false;
@@ -139,83 +139,90 @@
   }
 </script>
 
-<div class="flex justify-center items-center h-svh">
-  <div class="w-full max-w-md p-8">
+<div class="flex justify-center items-center min-h-[calc(100svh-3.5rem)] px-4 bg-surface text-text">
+  <div class="w-full max-w-md py-8">
     {#if target}
-      <Heading class="text-primary" tag="h2">{$_("choose_new_password")}</Heading>
-      <p class="mt-2 text-sm opacity-75">
+      <h1 class="text-2xl font-semibold text-text">{$_("choose_new_password")}</h1>
+      <p class="mt-2 text-sm text-text-muted">
         {$_("reset_code_sent", {
           values: { target: target.value, minutes: OTP_TTL_MINUTES },
         })}
       </p>
 
-      <form onsubmit={handleSubmit} class="mt-8">
-        <Label for="otp">{$_("verification_code")}</Label>
-        <Input
-          id="otp"
-          type="text"
-          inputmode="numeric"
-          maxlength={6}
-          autocomplete="one-time-code"
-          bind:value={otp}
-          color={errors.otp ? "red" : "default"}
-          aria-describedby={errors.otp ? "otp-error" : undefined}
-          required
-        />
-        {#if errors.otp}<p id="otp-error" class="text-red-600 mt-2">{errors.otp}</p>{/if}
-
-        <div class="mt-6"></div>
-        <Label for="password">{$_("new_password")}</Label>
-        <ButtonGroup class="w-full">
+      <form onsubmit={handleSubmit} class="mt-8 space-y-5">
+        <div>
+          <Label for="otp" class="mb-2">{$_("verification_code")}</Label>
           <Input
-            id="password"
-            type={showPassword ? "text" : "password"}
-            bind:value={password}
-            color={errors.password ? "red" : "default"}
-            autocomplete="new-password"
-            aria-describedby={errors.password ? "password-error" : undefined}
+            id="otp"
+            type="text"
+            inputmode="numeric"
+            maxlength={6}
+            autocomplete="one-time-code"
+            bind:value={otp}
+            color={errors.otp ? "red" : "default"}
+            aria-describedby={errors.otp ? "otp-error" : undefined}
             required
           />
-          <Button class="flex items-center border-s-0" color="light"
-                  onclick={() => (showPassword = !showPassword)} aria-controls="password"
-                  aria-label={$_("toggle_password_visibility")} aria-pressed={showPassword}>
-            {#if showPassword}<EyeSolid />{:else}<EyeSlashSolid />{/if}
-          </Button>
-        </ButtonGroup>
-        <p id="password-error" class="mt-2 text-sm" class:text-red-600={!!errors.password}>
-          {errors.password ?? $_("password_requirements")}
-        </p>
+          {#if errors.otp}<p id="otp-error" class="text-sm text-danger mt-2">{errors.otp}</p>{/if}
+        </div>
 
-        <div class="mt-6"></div>
-        <Label for="confirm">{$_("confirm_new_password")}</Label>
-        <Input
-          id="confirm"
-          type={showPassword ? "text" : "password"}
-          bind:value={confirmPassword}
-          color={errors.confirmPassword ? "red" : "default"}
-          autocomplete="new-password"
-          aria-describedby={errors.confirmPassword ? "confirm-error" : undefined}
-          required
-        />
-        {#if errors.confirmPassword}
-          <p id="confirm-error" class="text-red-600 mt-2">{errors.confirmPassword}</p>
-        {/if}
+        <div>
+          <Label for="password" class="mb-2">{$_("new_password")}</Label>
+          <div class="relative">
+            <Input
+              id="password"
+              type={showPassword ? "text" : "password"}
+              bind:value={password}
+              color={errors.password ? "red" : "default"}
+              autocomplete="new-password"
+              aria-describedby="password-error"
+              class="pe-11"
+              required
+            />
+            <span class="absolute inset-y-0 end-1 flex items-center">
+              <IconButton
+                label={$_("toggle_password_visibility")}
+                pressed={showPassword}
+                controls="password"
+                onclick={() => (showPassword = !showPassword)}
+              >
+                {#if showPassword}<EyeSlashOutline size="sm" />{:else}<EyeOutline size="sm" />{/if}
+              </IconButton>
+            </span>
+          </div>
+          <p id="password-error" class="mt-2 text-sm {errors.password ? 'text-danger' : 'text-text-muted'}">
+            {errors.password ?? $_("password_requirements")}
+          </p>
+        </div>
 
-        <div class="mt-6"></div>
-        <Button type="submit" class="w-full bg-primary" disabled={isSubmitting}
-                style="cursor: pointer">
+        <div>
+          <Label for="confirm" class="mb-2">{$_("confirm_new_password")}</Label>
+          <Input
+            id="confirm"
+            type={showPassword ? "text" : "password"}
+            bind:value={confirmPassword}
+            color={errors.confirmPassword ? "red" : "default"}
+            autocomplete="new-password"
+            aria-describedby={errors.confirmPassword ? "confirm-error" : undefined}
+            required
+          />
+          {#if errors.confirmPassword}
+            <p id="confirm-error" class="text-sm text-danger mt-2">{errors.confirmPassword}</p>
+          {/if}
+        </div>
+
+        <Button type="submit" color="primary" class="w-full" disabled={isSubmitting}>
           {#if isSubmitting}
-            <Spinner class="me-3" size="4" color="blue" />
+            <Spinner class="me-3" size="4" />
           {/if}
           {$_("update_password")}
         </Button>
 
-        {#if formError}<p class="text-red-600 mt-2">{formError}</p>{/if}
+        {#if formError}<p class="text-sm text-danger" role="alert">{formError}</p>{/if}
       </form>
 
       <div class="mt-6 text-center">
-        <Button color="light" onclick={handleResend} disabled={!canResend}
-                style="cursor: pointer">
+        <Button color="alternative" onclick={handleResend} disabled={!canResend}>
           {canResend
             ? $_("resend_code")
             : $_("resend_code_in", { values: { seconds: resendCountdown } })}

@@ -1,20 +1,23 @@
 <script lang="ts">
-    import {spaces} from "@/stores/management/spaces";
-    import {goto} from "@roxi/routify";
+    import { spaces } from "@/stores/management/spaces";
+    import { _ } from "@/i18n";
+    import PageHeader from "@/components/ui/PageHeader.svelte";
     import SpaceGrid from "@/components/ui/SpaceGrid.svelte";
+    import EmptyState from "@/components/ui/EmptyState.svelte";
+    import LoadingState from "@/components/ui/LoadingState.svelte";
 
-    function handleSelectedSpace(spaceShortname: string) {
-        $goto(`/management/content/[space_name]/health_check/[space_name_health]`, {
-            space_name: 'management',
-            space_name_health: spaceShortname
-        });
-    }
+    // The reports live in the "management" space under /health_check, one
+    // entry per space; the card leads to that entry.
+    const list = $derived($spaces ?? []);
 </script>
 
-<div class="container mx-auto px-12 py-6">
-    <div class="flex justify-between items-center mb-1 px-1">
-        <h1 class="text-2xl font-bold mb-6">Select Space to list the events</h1>
-    </div>
-    <hr class="mb-6 border-gray-300" />
-    <SpaceGrid spaces={$spaces ?? []} onSelect={handleSelectedSpace} />
+<div class="container mx-auto px-4 sm:px-6 py-6">
+    <PageHeader title={$_("health_check")} description={$_("health_check_select_space")} />
+    {#if $spaces === null}
+        <LoadingState variant="skeleton" rows={6} />
+    {:else if list.length === 0}
+        <EmptyState title={$_("no_spaces")} />
+    {:else}
+        <SpaceGrid spaces={list} href={(space) => `/management/content/management/health_check/${space.shortname}`} />
+    {/if}
 </div>

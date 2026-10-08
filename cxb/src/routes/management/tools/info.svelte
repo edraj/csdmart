@@ -1,33 +1,18 @@
 <script lang="ts">
     import { Dmart } from "@edraj/tsdmart";
-    import Table2Cols from "@/components/management/Table2Cols.svelte";
-    import {
-        Table,
-        TableBody,
-        TableBodyCell,
-        TableBodyRow,
-        TableHead,
-        TableHeadCell,
-    } from "flowbite-svelte";
-    import {
-        InfoCircleOutline,
-        UserSettingsOutline,
-        ArrowLeftOutline,
-        CodeOutline,
-    } from "flowbite-svelte-icons";
+    import { Table, TableBody, TableBodyCell, TableBodyRow, TableHead, TableHeadCell, TabItem, Tabs } from "flowbite-svelte";
+    import { CodeOutline, InfoCircleOutline } from "flowbite-svelte-icons";
     import { onMount } from "svelte";
-    import { goto } from "@roxi/routify";
     import { _ } from "@/i18n";
-    import { Level, showToast } from "@/utils/toast";
+    import Table2Cols from "@/components/management/Table2Cols.svelte";
+    import PageHeader from "@/components/ui/PageHeader.svelte";
+    import Card from "@/components/ui/Card.svelte";
+    import ErrorState from "@/components/ui/ErrorState.svelte";
+    import EmptyState from "@/components/ui/EmptyState.svelte";
+    import LoadingState from "@/components/ui/LoadingState.svelte";
 
     // Injected by vite.config.ts from `git rev-parse`; "N/A" outside a checkout.
     const gitHash: string = import.meta.env.VITE_GIT_HASH ?? "N/A";
-
-    const TabMode = {
-        settings: "settings",
-        manifest: "manifest",
-        plugins: "plugins",
-    };
 
     // Records returned by GET /info/plugins. Each plugin row carries the
     // version it announces from its own binary (assembly attr, .so dlsym,
@@ -39,182 +24,119 @@
         type: string;
     };
 
-    let activeTab = $state(TabMode.settings);
-    let settings = $state({});
-    let manifest = $state({});
+    let settings = $state<Record<string, unknown>>({});
+    let manifest = $state<Record<string, unknown>>({});
     let plugins = $state<PluginRow[]>([]);
-    let pluginsError = $state<string | null>(null);
+    let settingsError = $state<unknown>(null);
+    let manifestError = $state<unknown>(null);
+    let pluginsError = $state<unknown>(null);
+    let loading = $state(true);
 
-    onMount(async () => {
+    async function load() {
+        loading = true;
+        settingsError = manifestError = pluginsError = null;
         // Each tab loads on its own: a failing settings call must not blank
         // the manifest and plugins tabs too.
-        try {
-            const _settings = await Dmart.getSettings();
-            if (_settings?.status === "success") {
-                settings = _settings.attributes;
-            }
-        } catch {
-            showToast(Level.warn, $_("settings_load_failed"));
-        }
-        try {
-            const _manifest = await Dmart.getManifest();
-            if (_manifest?.status === "success") {
-                manifest = _manifest.attributes;
-            }
-        } catch {
-            showToast(Level.warn, $_("manifest_load_failed"));
-        }
-        try {
-            const _plugins = await Dmart.getPlugins();
-            if (_plugins.status === "success" && Array.isArray(_plugins.records)) {
-                plugins = _plugins.records.map((r: any) => ({
-                    shortname: r.shortname ?? "",
-                    version: r.attributes?.version ?? "0.0.0",
-                    type: r.attributes?.type ?? "",
-                }));
-            } else {
-                pluginsError = "Plugins endpoint returned no records.";
-            }
-        } catch (err: any) {
-            // Older dmart servers (pre-/info/plugins) return 404 here. Surface
-            // the failure in the tab body rather than swallowing — operators
-            // can then upgrade the server.
-            pluginsError = err?.response?.data?.error?.message ?? err?.message ?? $_("plugins_load_failed");
-        }
-    });
+        await Promise.all([
+            Dmart.getSettings()
+                .then((r) => {
+                    if (r?.status === "success") settings = r.attributes ?? {};
+                    else settingsError = $_("settings_load_failed");
+                })
+                .catch((e: unknown) => (settingsError = e)),
+            Dmart.getManifest()
+                .then((r) => {
+                    if (r?.status === "success") manifest = r.attributes ?? {};
+                    else manifestError = $_("manifest_load_failed");
+                })
+                .catch((e: unknown) => (manifestError = e)),
+            Dmart.getPlugins()
+                .then((r) => {
+                    if (r?.status === "success" && Array.isArray(r.records)) {
+                        plugins = r.records.map((rec) => ({
+                            shortname: rec.shortname ?? "",
+                            version: (rec.attributes?.version as string | undefined) ?? "0.0.0",
+                            type: (rec.attributes?.type as string | undefined) ?? "",
+                        }));
+                    } else {
+                        pluginsError = $_("plugins_load_failed");
+                    }
+                })
+                // Older dmart servers (pre-/info/plugins) return 404 here. Surface
+                // the failure in the tab body rather than swallowing — operators
+                // can then upgrade the server.
+                .catch((e: unknown) => (pluginsError = e)),
+        ]);
+        loading = false;
+    }
+
+    onMount(load);
 </script>
 
-<div class="mb-6 container mx-auto p-8">
-    <button
-        class="flex items-center gap-2 text-gray-600 hover:text-primary-600 mb-6 transition-colors"
-        onclick={() => $goto("/management/tools")}
+<div class="container mx-auto px-4 sm:px-6 py-6">
+    <PageHeader
+        title={$_("information")}
+        description={$_("information_description")}
+        icon={InfoCircleOutline}
+        backHref="/management/tools"
+        backLabel={$_("back_to_tools")}
     >
-        <ArrowLeftOutline size="sm" />
-        <span>Back to Tools</span>
-    </button>
+        {#snippet actions()}
+            <span class="text-xs text-text-muted font-mono" dir="ltr">{$_("build_hash")}: {gitHash}</span>
+        {/snippet}
+    </PageHeader>
 
-    <div class="flex items-center gap-3 mb-8">
-        <div class="p-3 bg-primary-100 rounded-full">
-            <InfoCircleOutline class="w-8 h-8 text-primary-600" />
-        </div>
-        <div>
-            <h1 class="text-2xl font-bold">Information</h1>
-            <p class="text-gray-500">
-                Get information about connected instance of Dmart.
-            </p>
-            <p class="text-xs text-gray-500 dark:text-gray-400 mt-1 font-mono">
-                {$_("build_hash")}: {gitHash}
-            </p>
-        </div>
-    </div>
-
-    <div class="border-b border-gray-200">
-        <ul
-            class="flex flex-wrap -mb-px text-sm font-medium text-center"
-            role="tablist"
-        >
-            <li class="mr-2" role="presentation">
-                <button
-                    class="inline-flex items-center p-4 border-b-2 rounded-t-lg {activeTab ===
-                    TabMode.settings
-                        ? 'text-blue-600 border-blue-600'
-                        : 'border-transparent hover:text-gray-600 hover:border-gray-300'}"
-                    type="button"
-                    role="tab"
-                    aria-selected={activeTab === TabMode.settings}
-                    onclick={() => (activeTab = TabMode.settings)}
-                >
-                    <div class="flex items-center gap-2">
-                        <UserSettingsOutline size="md" />
-                        <p>Settings</p>
+    <Card padding="none">
+        <Tabs tabStyle="underline" class="px-4 pt-2" contentClass="p-4">
+            <TabItem open title={$_("settings")}>
+                {#if loading}
+                    <LoadingState variant="skeleton" rows={8} />
+                {:else if settingsError}
+                    <ErrorState title={$_("settings_load_failed")} error={settingsError} onRetry={load} />
+                {:else}
+                    <Table2Cols entry={settings} />
+                {/if}
+            </TabItem>
+            <TabItem title={$_("manifest")}>
+                {#if loading}
+                    <LoadingState variant="skeleton" rows={8} />
+                {:else if manifestError}
+                    <ErrorState title={$_("manifest_load_failed")} error={manifestError} onRetry={load} />
+                {:else}
+                    <Table2Cols entry={manifest} />
+                {/if}
+            </TabItem>
+            <TabItem title={$_("plugins")}>
+                {#if loading}
+                    <LoadingState variant="skeleton" rows={4} />
+                {:else if pluginsError}
+                    <ErrorState title={$_("plugins_load_failed")} error={pluginsError} onRetry={load} />
+                {:else if plugins.length === 0}
+                    <EmptyState icon={CodeOutline} title={$_("no_plugins_loaded")} />
+                {:else}
+                    <!-- Three columns: shortname, version, type. Versions come
+                         from the plugin binary itself (assembly attr, .so symbol,
+                         or subprocess info JSON) — not a config file. -->
+                    <div class="overflow-x-auto">
+                        <Table striped>
+                            <TableHead>
+                                <TableHeadCell>{$_("shortname")}</TableHeadCell>
+                                <TableHeadCell>{$_("version")}</TableHeadCell>
+                                <TableHeadCell>{$_("type")}</TableHeadCell>
+                            </TableHead>
+                            <TableBody>
+                                {#each plugins as p (p.shortname)}
+                                    <TableBodyRow>
+                                        <TableBodyCell>{p.shortname}</TableBodyCell>
+                                        <TableBodyCell class="tabular-nums" dir="ltr">{p.version}</TableBodyCell>
+                                        <TableBodyCell>{p.type}</TableBodyCell>
+                                    </TableBodyRow>
+                                {/each}
+                            </TableBody>
+                        </Table>
                     </div>
-                </button>
-            </li>
-            <li class="mr-2" role="presentation">
-                <button
-                    class="inline-flex items-center p-4 border-b-2 rounded-t-lg {activeTab ===
-                    TabMode.manifest
-                        ? 'text-blue-600 border-blue-600'
-                        : 'border-transparent hover:text-gray-600 hover:border-gray-300'}"
-                    type="button"
-                    role="tab"
-                    aria-selected={activeTab === TabMode.manifest}
-                    onclick={() => (activeTab = TabMode.manifest)}
-                >
-                    <div class="flex items-center gap-2">
-                        <InfoCircleOutline size="md" />
-                        <p>Manifest</p>
-                    </div>
-                </button>
-            </li>
-            <li class="mr-2" role="presentation">
-                <button
-                    class="inline-flex items-center p-4 border-b-2 rounded-t-lg {activeTab ===
-                    TabMode.plugins
-                        ? 'text-blue-600 border-blue-600'
-                        : 'border-transparent hover:text-gray-600 hover:border-gray-300'}"
-                    type="button"
-                    role="tab"
-                    aria-selected={activeTab === TabMode.plugins}
-                    onclick={() => (activeTab = TabMode.plugins)}
-                >
-                    <div class="flex items-center gap-2">
-                        <CodeOutline size="md" />
-                        <p>Plugins</p>
-                    </div>
-                </button>
-            </li>
-        </ul>
-    </div>
-
-    <div>
-        <div
-            class={activeTab === TabMode.settings ? "" : "hidden"}
-            role="tabpanel"
-        >
-            <Table2Cols entry={settings} />
-        </div>
-        <div
-            class={activeTab === TabMode.manifest ? "" : "hidden"}
-            role="tabpanel"
-        >
-            <Table2Cols entry={manifest} />
-        </div>
-        <div
-            class={activeTab === TabMode.plugins ? "" : "hidden"}
-            role="tabpanel"
-        >
-            {#if pluginsError}
-                <div class="p-4 my-4 text-sm text-red-700 bg-red-100 rounded">
-                    {pluginsError}
-                </div>
-            {:else if plugins.length === 0}
-                <div class="p-4 my-4 text-sm text-gray-500">
-                    No plugins are currently loaded.
-                </div>
-            {:else}
-                <!-- Three columns: shortname, version, type. Versions come
-                     from the plugin binary itself (assembly attr, .so symbol,
-                     or subprocess info JSON) — not a config file. -->
-                <div class="h-full" style="overflow-y: auto;">
-                    <Table class="h-full" striped>
-                        <TableHead>
-                            <TableHeadCell>Shortname</TableHeadCell>
-                            <TableHeadCell>Version</TableHeadCell>
-                            <TableHeadCell>Type</TableHeadCell>
-                        </TableHead>
-                        <TableBody>
-                            {#each plugins as p (p.shortname)}
-                                <TableBodyRow>
-                                    <TableBodyCell>{p.shortname}</TableBodyCell>
-                                    <TableBodyCell>{p.version}</TableBodyCell>
-                                    <TableBodyCell>{p.type}</TableBodyCell>
-                                </TableBodyRow>
-                            {/each}
-                        </TableBody>
-                    </Table>
-                </div>
-            {/if}
-        </div>
-    </div>
+                {/if}
+            </TabItem>
+        </Tabs>
+    </Card>
 </div>

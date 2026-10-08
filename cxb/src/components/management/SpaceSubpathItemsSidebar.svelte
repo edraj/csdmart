@@ -1,17 +1,23 @@
 <script lang="ts">
-    import { Sidebar, SidebarGroup, SidebarItem } from "flowbite-svelte";
     import { CodeForkSolid } from "flowbite-svelte-icons";
+    import { untrack } from "svelte";
     import { SvelteSet } from "svelte/reactivity";
     import { ResourceType } from "@edraj/tsdmart";
+    import { activeRoute, params, url } from "@roxi/routify";
     import { Level, showToast } from "@/utils/toast";
     import { getChildren } from "@/lib/dmart_services";
     import SpacesSubpathItemsSidebar from "./SpacesSubpathItemsSidebar.svelte";
-    import { params } from "@roxi/routify";
     import { spaces } from "@/stores/management/spaces";
     import { spaceChildren } from "@/stores/global";
-    import { sidebarCacheKey } from "@/utils/subpath";
+    import { normalizeSubpath, sidebarCacheKey } from "@/utils/subpath";
     import { hasMoreRecords } from "@/utils/paging";
+    import { errorMessage } from "@/utils/errorMessage";
+    import { localizedText } from "@/utils/localized";
     import { _ } from "@/i18n";
+
+    // The folder tree for one space. Keyboard and screen-reader friendly:
+    // every node is a link, every expander a named button, nothing nested.
+    let { onNavigate }: { onNavigate?: () => void } = $props();
 
     // One page of folder children per tree node; "Load more" appends the next.
     const CHILDREN_PAGE_SIZE = 50;
@@ -48,11 +54,8 @@
                     cacheKey,
                     hasMoreRecords(children.attributes?.total, records.length, records.length, CHILDREN_PAGE_SIZE),
                 );
-            } catch (error: any) {
-                showToast(
-                    Level.warn,
-                    error?.response?.data?.error?.message ?? error?.message ?? $_("subpaths_load_failed"),
-                );
+            } catch (error: unknown) {
+                showToast(Level.warn, errorMessage(error, $_("subpaths_load_failed")));
                 $spaceChildren.data.set(cacheKey, []);
                 $spaceChildren.hasMore.set(cacheKey, false);
             }
@@ -76,11 +79,8 @@
                 cacheKey,
                 hasMoreRecords(children.attributes?.total, merged.length, page.length, CHILDREN_PAGE_SIZE),
             );
-        } catch (error: any) {
-            showToast(
-                Level.warn,
-                error?.response?.data?.error?.message ?? error?.message ?? $_("subpaths_load_failed"),
-            );
+        } catch (error: unknown) {
+            showToast(Level.warn, errorMessage(error, $_("subpaths_load_failed")));
         }
         publishChildren();
     }
@@ -117,49 +117,39 @@
         return $spaceChildren.hasMore.get(sidebarCacheKey(spaceName, subpath)) === true;
     }
 
-    let currentSpaceNameLabel = $state($params.space_name);
-    async function getCurrentSpaceNameLabel() {
-        if (!$spaces) return;
-        const currentSpace = $spaces.filter(
-            (space) => space.shortname === $params.space_name,
-        );
-        currentSpaceNameLabel =
-            currentSpace.length === 1
-                ? currentSpace[0].attributes?.displayname?.en ||
-                  $params.space_name
-                : $params.space_name;
-    }
-    $effect(() => {
-        if ($spaces) {
-            getCurrentSpaceNameLabel();
-        }
-    });
+    const spaceName = $derived($params.space_name as string);
+    const currentSpace = $derived(($spaces ?? []).find((space) => space.shortname === spaceName));
+    const spaceLabel = $derived(localizedText(currentSpace?.attributes?.displayname, spaceName));
+    // The space root is "current" only when no folder is open.
+    const atRoot = $derived(normalizeSubpath($activeRoute?.params?.subpath) === "/");
 
-    loadChildren($params.space_name);
+    // Load the root level for the current space, and again when the route
+    // moves to another space while this tree stays mounted.
+    $effect(() => {
+        const name = spaceName;
+        untrack(() => {
+            void loadChildren(name);
+        });
+    });
 </script>
 
-<Sidebar
-    position="static"
-    class="h-full w-full [&_aside]:w-full [&_aside]:bg-transparent [&_aside]:border-0 [&_aside]:shadow-none"
->
-    <SidebarGroup>
-        <SidebarItem
-            label={currentSpaceNameLabel}
-            href={"/management/content/" + $params.space_name}
-        >
-            {#snippet icon()}
-                <div class="flex items-center gap-2">
-                    <CodeForkSolid
-                        size="md"
-                        class="text-gray-500"
-                        style="transform: rotate(180deg); position: relative; z-index: 5;"
-                    />
-                </div>
-            {/snippet}
-        </SidebarItem>
-        {#each getChildrenForSpace($params.space_name, "/") as child (child.shortname)}
+<nav class="py-3 px-2 text-sm" aria-label={$_("folders")}>
+    <ul class="flex flex-col gap-0.5">
+        <li>
+            <a
+                href={$url("/management/content/" + spaceName)}
+                onclick={onNavigate}
+                aria-current={atRoot ? "page" : undefined}
+                class="flex items-center gap-2 h-9 px-2 rounded-control font-semibold text-text hover:bg-surface-3
+                    aria-[current=page]:bg-primary-soft aria-[current=page]:text-primary transition-colors"
+            >
+                <CodeForkSolid size="md" class="shrink-0 text-text-faint" aria-hidden="true" />
+                <span class="truncate">{spaceLabel}</span>
+            </a>
+        </li>
+        {#each getChildrenForSpace(spaceName, "/") as child (child.shortname)}
             <SpacesSubpathItemsSidebar
-                spaceName={$params.space_name}
+                {spaceName}
                 parentPath="/"
                 item={child}
                 depth={1}
@@ -170,19 +160,20 @@
                 {getChildrenForSpace}
                 {hasMoreChildren}
                 loadMore={loadMoreChildren}
+                {onNavigate}
             />
         {/each}
-        {#if hasMoreChildren($params.space_name, "/")}
+        {#if hasMoreChildren(spaceName, "/")}
             <li>
                 <button
                     type="button"
-                    class="w-full text-start text-sm text-primary px-3 py-1.5 hover:underline cursor-pointer"
-                    style="margin-inline-start: 20px;"
-                    onclick={() => loadMoreChildren($params.space_name, "/")}
+                    class="w-full text-start text-sm text-primary h-8 px-2 rounded-control hover:bg-surface-3 cursor-pointer"
+                    style="padding-inline-start: 2.25rem"
+                    onclick={() => loadMoreChildren(spaceName, "/")}
                 >
                     {$_("load_more")}
                 </button>
             </li>
         {/if}
-    </SidebarGroup>
-</Sidebar>
+    </ul>
+</nav>

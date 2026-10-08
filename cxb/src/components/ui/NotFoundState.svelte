@@ -1,6 +1,7 @@
 <script lang="ts">
     import { Button } from "flowbite-svelte";
     import { QuestionCircleOutline } from "flowbite-svelte-icons";
+    import { url } from "@roxi/routify";
     import EmptyState from "./EmptyState.svelte";
     import { _ } from "@/i18n";
 
@@ -13,19 +14,19 @@
     }: {
         title?: string;
         hint?: string;
-        /** Where the action button leads; null hides the button. */
+        /** Internal route the action button leads to; null hides the button. */
         href?: string | null;
     } = $props();
 </script>
 
-<div class="p-6">
+<div class="p-4 sm:p-6">
     <EmptyState
         icon={QuestionCircleOutline}
         title={title ?? $_("page_not_found")}
         hint={hint ?? $_("page_not_found_hint")}
     >
         {#if href}
-            <Button {href} color="alternative" size="sm">{$_("go_to_spaces")}</Button>
+            <Button href={$url(href)} color="alternative" size="sm">{$_("go_to_spaces")}</Button>
         {/if}
     </EmptyState>
 </div>

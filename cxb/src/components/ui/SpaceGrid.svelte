@@ -1,65 +1,59 @@
 <script lang="ts">
-    import { Card } from "flowbite-svelte";
     import type { ApiResponseRecord } from "@edraj/tsdmart";
     import type { Snippet } from "svelte";
+    import { url } from "@roxi/routify";
     import { _ } from "@/i18n";
+    import { formatDate } from "@/utils/format";
+    import { localizedText } from "@/utils/localized";
 
     // The one space-card grid: Spaces, Events and Health check all list the
-    // same cards and differ only in where a click goes and whether a card has
-    // an actions menu.
+    // same cards and differ only in where a card leads and whether it has an
+    // actions menu. Cards are links (open in a new tab works); the actions
+    // menu is a sibling of the link, never inside it.
     let {
         spaces,
-        onSelect,
+        href,
         actions,
     }: {
         spaces: ApiResponseRecord[];
-        onSelect: (shortname: string) => void;
-        /** Optional per-card menu, rendered in the card's top start corner. */
+        /** Internal route path for a space's card. */
+        href: (space: ApiResponseRecord) => string;
+        /** Optional per-card menu, rendered in the card's top end corner. */
         actions?: Snippet<[ApiResponseRecord]>;
     } = $props();
-
-    function updatedAt(space: ApiResponseRecord): string {
-        const raw = space.attributes?.updated_at;
-        if (!raw) return "";
-        const date = new Date(raw);
-        return Number.isNaN(date.getTime()) ? "" : date.toLocaleDateString();
-    }
 </script>
 
-<div
-    class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-4 gap-4 w-full place-items-center"
->
+<ul class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 w-full items-stretch" role="list">
     {#each spaces as space (space.shortname)}
-        <Card class="relative w-full">
+        <li class="relative flex">
+            <a
+                href={$url(href(space))}
+                class="flex flex-col w-full h-full p-4 sm:p-5 rounded-card border border-border bg-surface-2 text-text shadow-card
+                    transition-shadow hover:shadow-modal hover:border-border-strong
+                    focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+            >
+                <span class="flex items-start justify-between gap-2 {actions ? 'pe-9' : ''}">
+                    <span class="inline-block px-2 py-0.5 rounded-control border border-border bg-surface text-xs font-medium text-text-muted font-mono truncate">
+                        {space.shortname}
+                    </span>
+                </span>
+                <span class="mt-3 font-semibold text-base leading-snug break-words">
+                    {localizedText(space.attributes?.displayname, space.shortname)}
+                </span>
+                {#if space.attributes?.description}
+                    <span class="mt-1.5 text-sm text-text-muted line-clamp-3">
+                        {localizedText(space.attributes?.description, "")}
+                    </span>
+                {/if}
+                <span class="mt-auto pt-4 text-xs text-text-faint tabular-nums">
+                    {$_("updated")}: {formatDate(space.attributes?.updated_at, "date") || $_("not_applicable")}
+                </span>
+            </a>
             {#if actions}
-                <div class="absolute top-2 start-2">
+                <div class="absolute top-3 end-3">
                     {@render actions(space)}
                 </div>
             {/if}
-
-            <button
-                type="button"
-                class="flex flex-col items-center text-center p-4 w-full cursor-pointer"
-                onclick={() => onSelect(space.shortname)}
-            >
-                <span
-                    class="inline-block px-3 py-1 mb-3 border border-gray-300 rounded-md text-sm font-medium"
-                >
-                    {space.shortname}
-                </span>
-
-                <span class="font-semibold text-lg">
-                    {space.attributes?.displayname?.en || space.shortname}
-                </span>
-
-                <span class="text-gray-600 mt-2 mb-4 line-clamp-3">
-                    {space.attributes?.description?.en || ""}
-                </span>
-
-                <span class="text-xs text-gray-500 mt-auto">
-                    {$_("updated")}: {updatedAt(space)}
-                </span>
-            </button>
-        </Card>
+        </li>
     {/each}
-</div>
+</ul>

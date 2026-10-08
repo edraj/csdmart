@@ -1,86 +1,110 @@
-import {_, addMessages, date, getLocaleFromNavigator, init, locale, number, time} from 'svelte-i18n';
-import {website} from "../config";
-import {derived} from 'svelte/store';
+import { _, addMessages, getLocaleFromNavigator, init, locale } from "svelte-i18n";
+import { derived } from "svelte/store";
+import { website } from "../config";
 
-// Add all ./xx.json localizations here
-import ar from './ar.json';
-import en from './en.json';
+// Add all ./xx.json localizations here.
+import ar from "./ar.json";
+import en from "./en.json";
 
-addMessages('ar', ar);
-addMessages('en', en);
-const l17ns = { "ar": ar, "en": en };
-const available_locales = ["ar", "en"];
-const actual_locales = available_locales.filter((x) => x in website.languages);
+addMessages("ar", ar);
+addMessages("en", en);
 
+const bundled: Record<string, Record<string, string>> = { ar, en };
 
-function switchLocale(_locale: string) {
-  if (!(_locale in website.languages)) {
-    _locale = website.default_language;
-  }
-  if (typeof localStorage !== 'undefined') {
-    localStorage.setItem("preferred_locale", JSON.stringify(_locale));
-  }
-  locale.set(_locale);
+/** Locales this build ships messages for. */
+const available_locales = Object.keys(bundled);
+
+/**
+ * Locales the operator enabled in config.json AND this build can render. The
+ * language menu is built from this list, so a config that names a language
+ * with no bundle (or a bundle the config does not enable) never shows up as
+ * an option that would fall back to English.
+ */
+function enabledLocales(): string[] {
+    return Object.keys(website.languages ?? {}).filter((code) => code in bundled);
 }
 
-function getPreferredLocale(): string {
-  if (typeof localStorage !== 'undefined') {
+/** The locale a first-time visitor gets when the browser offers no match. */
+function defaultLocale(): string {
+    const enabled = enabledLocales();
+    const configured = website.default_language;
+    if (configured && enabled.includes(configured)) return configured;
+    return enabled[0] ?? "en";
+}
+
+const STORAGE_KEY = "preferred_locale";
+
+function readStoredLocale(): string | null {
+    if (typeof localStorage === "undefined") return null;
     try {
-      const preferred_locale = localStorage.getItem("preferred_locale");
-      if (typeof preferred_locale === "string") {
-        return JSON.parse(preferred_locale);
-      }
+        const raw = localStorage.getItem(STORAGE_KEY);
+        const parsed = raw ? JSON.parse(raw) : null;
+        return typeof parsed === "string" ? parsed : null;
     } catch {
-      // Corrupted localStorage data, continue to browser detection
+        return null;
     }
-  }
-
-  let fallback: string = "";
-  let _locale = getLocaleFromNavigator();
-  let _locale_found = false;
-
-  for (const key in website.languages) {
-    // Assign first locale as fallback
-    if (fallback.trim().length > 0) {
-      fallback = key;
-    }
-    // Match User locale from browser to existing locale.
-    if (!_locale_found && _locale && _locale.startsWith(key)) {
-      _locale = key;
-      _locale_found = true;
-    }
-  }
-
-  if (!_locale_found) {
-    _locale = fallback;
-  }
-
-  if (!_locale) {
-    _locale = "en";
-  }
-
-  if (typeof localStorage !== 'undefined')
-    localStorage.setItem("preferred_locale", JSON.stringify(_locale));
-  return _locale;
 }
+
+function storeLocale(code: string) {
+    if (typeof localStorage === "undefined") return;
+    try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(code));
+    } catch {
+        // Storage may be full or blocked; the in-memory locale still applies.
+    }
+}
+
+function switchLocale(code: string) {
+    const next = enabledLocales().includes(code) ? code : defaultLocale();
+    storeLocale(next);
+    locale.set(next);
+}
+
+/**
+ * Stored preference → browser language → `website.default_language`. The old
+ * version had the fallback check inverted (`fallback.trim().length > 0`), so a
+ * first-time visitor whose browser spoke neither language always landed on
+ * "en" regardless of the configured default.
+ */
+function getPreferredLocale(): string {
+    const enabled = enabledLocales();
+
+    const stored = readStoredLocale();
+    if (stored && enabled.includes(stored)) return stored;
+
+    const navigatorLocale = getLocaleFromNavigator();
+    if (navigatorLocale) {
+        const match = enabled.find((code) => navigatorLocale.toLowerCase().startsWith(code.toLowerCase()));
+        if (match) return match;
+    }
+
+    return defaultLocale();
+}
+
+const rtl = new Set(["ar", "fa", "ur", "he"]);
+const isRtl = (code: string | null | undefined) => rtl.has((code ?? "").split("-")[0]);
+
+const dir = derived(locale, ($locale) => (isRtl($locale) ? "rtl" : "ltr"));
+const isLocaleLoaded = derived(locale, ($locale) => typeof $locale === "string");
 
 function setupI18n() {
+    const initial = getPreferredLocale();
+    storeLocale(initial);
 
-  let _locale: string = getPreferredLocale();
+    init({
+        initialLocale: initial,
+        fallbackLocale: defaultLocale(),
+    });
 
-  if (!(_locale in l17ns) && website.default_language) {
-    _locale = website.default_language;
-  }
-
-  init({
-    initialLocale: _locale,
-    fallbackLocale: website.default_language
-  });
+    // <html lang dir> follow the locale: screen readers pick the right voice,
+    // CSS logical properties and `rtl:` variants flip, and `:lang()` works.
+    if (typeof document !== "undefined") {
+        locale.subscribe((code) => {
+            if (typeof code !== "string") return;
+            document.documentElement.lang = code;
+            document.documentElement.dir = isRtl(code) ? "rtl" : "ltr";
+        });
+    }
 }
 
-const rtl = ["ar", "fa", "ur", "ku"]; // Arabic, Farsi, Urdu, Kurdish
-
-const dir = derived(locale, $locale => rtl.indexOf($locale ? $locale : "") >= 0 ? 'rtl' : 'ltr');
-const isLocaleLoaded = derived(locale, $locale => typeof $locale === 'string');
-
-export { _, dir, setupI18n, time, date, number, locale, isLocaleLoaded, switchLocale, available_locales, actual_locales };
+export { _, dir, setupI18n, locale, isLocaleLoaded, switchLocale, available_locales, enabledLocales };

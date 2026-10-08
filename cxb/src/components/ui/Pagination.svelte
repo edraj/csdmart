@@ -1,6 +1,7 @@
 <script lang="ts">
     import { ChevronLeftOutline, ChevronRightOutline } from "flowbite-svelte-icons";
     import { _ } from "@/i18n";
+    import { formatNumber } from "@/utils/format";
     import { pageCount, pageRange, visiblePages } from "@/utils/paging";
 
     let {
@@ -39,7 +40,7 @@
     }
 
     const buttonBase =
-        "inline-flex items-center justify-center min-w-9 h-9 px-2 text-sm border border-[color:var(--color-border)] bg-[color:var(--color-bg)] text-[color:var(--color-text)] hover:bg-[color:var(--color-surface-hover)] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[color:var(--color-ring)] disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-[color:var(--color-bg)] cursor-pointer";
+        "inline-flex items-center justify-center min-w-9 h-9 px-2 text-sm border border-border bg-surface-2 text-text hover:bg-surface-3 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-primary disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-surface-2 cursor-pointer transition-colors";
 </script>
 
 <nav
@@ -47,10 +48,10 @@
     aria-label={$_("pagination")}
 >
     {#if onPageSizeChange}
-        <label class="flex items-center gap-2 text-sm text-[color:var(--color-text-muted)]">
+        <label class="flex items-center gap-2 text-sm text-text-muted">
             <span>{$_("items_per_page")}</span>
             <select
-                class="rounded-[var(--radius-sm)] border border-[color:var(--color-border)] bg-[color:var(--color-bg)] text-[color:var(--color-text)] text-sm py-1.5 ps-2 pe-8 tabular-nums"
+                class="rounded-control border border-border bg-surface-2 text-text text-sm py-1.5 ps-2 pe-8 tabular-nums"
                 value={String(pageSize)}
                 onchange={(e) => onPageSizeChange(Number(e.currentTarget.value))}
             >
@@ -62,8 +63,14 @@
     {/if}
 
     {#if showSummary}
-        <p class="text-sm text-[color:var(--color-text-muted)] tabular-nums">
-            {$_("showing_entries", { values: { from: range.from, to: range.to, total: total ?? 0 } })}
+        <p class="text-sm text-text-muted tabular-nums">
+            {$_("showing_entries", {
+                values: {
+                    from: formatNumber(range.from),
+                    to: formatNumber(range.to),
+                    total: formatNumber(total ?? 0),
+                },
+            })}
         </p>
     {/if}
 
@@ -71,7 +78,7 @@
         <li>
             <button
                 type="button"
-                class="{buttonBase} rounded-s-[var(--radius-sm)]"
+                class="{buttonBase} rounded-s-control"
                 aria-label={$_("previous")}
                 disabled={current <= 1}
                 onclick={() => go(current - 1)}
@@ -84,19 +91,20 @@
                 <button
                     type="button"
                     class="{buttonBase} tabular-nums {p === current
-                        ? 'bg-primary! text-white! border-primary! hover:bg-primary-hover!'
+                        ? 'bg-primary! text-text-on-primary! border-primary! hover:bg-primary-hover!'
                         : ''}"
                     aria-current={p === current ? "page" : undefined}
+                    aria-label={$_("page_n", { values: { page: formatNumber(p) } })}
                     onclick={() => go(p)}
                 >
-                    {p}
+                    {formatNumber(p)}
                 </button>
             </li>
         {/each}
         <li>
             <button
                 type="button"
-                class="{buttonBase} rounded-e-[var(--radius-sm)]"
+                class="{buttonBase} rounded-e-control"
                 aria-label={$_("next")}
                 disabled={current >= totalPages}
                 onclick={() => go(current + 1)}

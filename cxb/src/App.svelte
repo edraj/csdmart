@@ -1,9 +1,9 @@
 <script module lang="ts">
-    import {createRouter, Router} from "@roxi/routify";
+    import { createRouter, Router } from "@roxi/routify";
     import routes from "../.routify/routes.default";
-    import {SvelteToast, type SvelteToastOptions} from "@zerodevx/svelte-toast";
-    import './app.css'
-    import {theme} from "@/stores/theme.svelte";
+    import { SvelteToast, type SvelteToastOptions } from "@zerodevx/svelte-toast";
+    import "./app.css";
+    import { theme } from "@/stores/theme.svelte";
 
     // Initialise theme controller (side-effect: sets .dark class and color-scheme)
     void theme;
@@ -12,158 +12,70 @@
     const baseHref = document.querySelector("base")?.getAttribute("href") || "/";
     const prefix = baseHref.replace(/^\/|\/$/g, "");
 
-  const options: SvelteToastOptions = {
-    duration: 2500, // duration of progress bar tween to the `next` value
-    initial: 1, // initial progress bar value
-    next: 0, // next progress value
-    pausable: false, // pause progress bar tween on mouse hover
-    dismissable: true, // allow dismiss with close button
-    reversed: false, // insert new toast to bottom of stack
-    intro: { x: 256 }, // toast intro fly animation settings
-    theme: {
-      "--toastColor": "mintcream",
-    }, // css var overrides
-    classes: ["custom-toast"], // user-defined classes
-  };
+    const options: SvelteToastOptions = {
+        duration: 2500, // duration of progress bar tween to the `next` value
+        initial: 1, // initial progress bar value
+        next: 0, // next progress value
+        pausable: false, // pause progress bar tween on mouse hover
+        dismissable: true, // allow dismiss with close button
+        reversed: false, // insert new toast to bottom of stack
+        intro: { x: 256 }, // toast intro fly animation settings
+        theme: {
+            "--toastColor": "mintcream",
+        }, // css var overrides
+        classes: ["custom-toast"], // user-defined classes
+    };
 </script>
 
 <script lang="ts">
-  import { setupI18n, dir } from "./i18n";
-  import {locale} from "svelte-i18n";
-  function findRoute(routers, paths, lang) {
-    if (paths.length === 0) {
-      return routers;
-    }
+    import { setupI18n } from "./i18n";
 
-    const [currentPath, ...remainingPaths] = paths;
-
-    const matchingChild = routers.children.find(
-            (child) => child.name === `${currentPath}`
-    );
-    if (matchingChild) {
-      return findRoute(matchingChild, remainingPaths, lang);
-    } else {
-      return null;
-    }
-  }
-  let appRouter: Router | null = null;
-  async function prepareRouter() {
-    if (appRouter) return appRouter;
-    appRouter = createRouter({
-      routes: routes,
-      urlRewrite: {
-        toInternal: (url) => {
-          if(url.startsWith(`/${prefix}`)){
-              url = url.replace(`/${prefix}`, "");
-          }
-          url = url === "" ? "/" : url;
-          if (url.startsWith("/management")){
-            return url;
-          }
-          const lang = $locale;
-          const paths = url.split("/");
-          paths.shift();
-          let fileName = paths[paths.length - 1];
-          if (fileName === "") {
-            fileName = "index";
-          }
-
-          if (![".en", ".ar", ".ku"].includes(fileName)) {
-            paths[paths.length - 1] = `${fileName}.${lang}`;
-            let result = findRoute(routes, paths, lang);
-            // if the REQUIRED+LANG file is NOT found
-            // then look for the REQUIRED file
-            if (result === null) {
-              paths[paths.length - 1] = fileName;
-              result = findRoute(routes, paths, lang);
-              // if the REQUIRED file is NOT found
-              // then look for the INDEX+LANG file
-              if (result === null) {
-                paths[paths.length - 1] = `index.${lang}`;
-                result = findRoute(routes, paths, lang);
-                // if the INDEX+LANG file is NOT found
-                // then look for the INDEX file
-                if (result === null) {
-                  paths[paths.length - 1] = `index`;
-                  result = findRoute(routes, paths, lang);
-                  if (result !== null) {
-                    // return INDEX
-                    return (
-                            url
-                              .split("/")
-                              .slice(0, url.split("/").length - 1)
-                              .join("/") + `/${paths[paths.length - 1]}`
-                    );
-                  }
-                } else {
-                  // return INDEX+LANG
-                  return (
-                          url
-                            .split("/")
-                            .slice(0, url.split("/").length - 1)
-                            .join("/") + `/${paths[paths.length - 1]}`
-                  );
+    // The URL rewriter that used to live here looked for `.en`/`.ar`/`.ku`
+    // page variants that this app has never had; the only rewrite that matters
+    // is stripping and re-adding the <base href> prefix.
+    const router = createRouter({
+        routes,
+        urlRewrite: {
+            toInternal: (url) => {
+                if (url.startsWith(`/${prefix}`)) {
+                    url = url.replace(`/${prefix}`, "");
                 }
-              } else {
-                // return REQUIRED
-                return (
-                        url
-                          .split("/")
-                          .slice(0, url.split("/").length - 1)
-                          .join("/") + `/${paths[paths.length - 1]}`
-                );
-              }
-            } else {
-              // return REQUIRED+LANG
-              return (
-                      url
-                        .split("/")
-                        .slice(0, url.split("/").length - 1)
-                        .join("/") + `/${paths[paths.length - 1]}`
-              );
-            }
-          }
-
-          return url;
+                return url === "" ? "/" : url;
+            },
+            toExternal: (url) => `/${prefix}${url}`,
         },
-        //  toExternal: (url) => url,
-        toExternal: (url) => `/${prefix}${url}`,
-      },
     });
-    return appRouter;
-  }
-  setupI18n();
-  $effect(() => { document.dir = $dir; });
+
+    // Also keeps <html lang dir> in step with the locale.
+    setupI18n();
 </script>
 
 <div id="routify-app">
-  <SvelteToast {options} />
-  {#await prepareRouter() then router}
+    <SvelteToast {options} />
     <Router {router} />
-  {/await}
 </div>
 
 <style lang="postcss">
-  :global(.custom-toast.success),
-  :global(.custom-toast.info) {
-    --toastBackground: var(--color-success);
-    --toastBarBackground: #0f7a36;
-    z-index: 999;
-  }
-  :global(.custom-toast.error),
-  :global(.custom-toast.warn) {
-    --toastBackground: var(--color-danger);
-    --toastBarBackground: #8e1a1a;
-    --toastContainerZIndex: 99999999999999;
-  }
-  :global(.custom-toast.warning) {
-    --toastBackground: var(--color-warning);
-    --toastBarBackground: #a0560a;
-    z-index: 999;
-  }
-  :global(.custom-toast.informative) {
-    --toastBackground: var(--color-info);
-    --toastBarBackground: #1d4fa4;
-    z-index: 999;
-  }
+    :global(.custom-toast.success),
+    :global(.custom-toast.info) {
+        --toastBackground: var(--color-success);
+        --toastBarBackground: #0f7a36;
+        z-index: 999;
+    }
+    :global(.custom-toast.error),
+    :global(.custom-toast.warn) {
+        --toastBackground: var(--color-danger);
+        --toastBarBackground: #8e1a1a;
+        --toastContainerZIndex: 99999999999999;
+    }
+    :global(.custom-toast.warning) {
+        --toastBackground: var(--color-warning);
+        --toastBarBackground: #a0560a;
+        z-index: 999;
+    }
+    :global(.custom-toast.informative) {
+        --toastBackground: var(--color-info);
+        --toastBarBackground: #1d4fa4;
+        z-index: 999;
+    }
 </style>

@@ -1,56 +1,44 @@
 <script lang="ts">
-    import { _ } from "svelte-i18n";
-    import { onMount } from "svelte";
+    import { onMount, untrack } from "svelte";
+    import { Dmart, headers, QueryType, type ApiResponseRecord, type QueryRequest } from "@edraj/tsdmart";
+    import { Button, Label, Select, Spinner } from "flowbite-svelte";
+    import { FileExportOutline } from "flowbite-svelte-icons";
     import downloadFile from "@/utils/downloadFile";
     import { Level, showToast } from "@/utils/toast";
-    import {
-        Dmart,
-        type QueryRequest,
-        QueryType,
-    } from "@edraj/tsdmart";
+    import { errorMessage } from "@/utils/errorMessage";
     import { getChildren, getChildrenAndSubChildren } from "@/lib/dmart_services";
-    import { untrack } from "svelte";
-    import {
-        Button,
-        Card,
-        Label,
-        Select,
-    } from "flowbite-svelte";
-    import {
-        FileExportOutline,
-        ArrowLeftOutline,
-    } from "flowbite-svelte-icons";
+    import { createBaseQuery } from "@/utils/routes/queryHelpers";
+    import { _ } from "@/i18n";
     import Prism from "@/components/Prism.svelte";
-    import { goto } from "@roxi/routify";
-    import {
-        createBaseQuery,
-    } from "@/utils/routes/queryHelpers";
-    import { headers } from "@edraj/tsdmart";
+    import PageHeader from "@/components/ui/PageHeader.svelte";
+    import Card from "@/components/ui/Card.svelte";
+    import ErrorState from "@/components/ui/ErrorState.svelte";
+    import TransferLog, { type TransferEvent } from "@/components/management/tools/TransferLog.svelte";
 
-    let spaces: any[] = $state([]);
+    let spaces: ApiResponseRecord[] = $state([]);
+    let spacesError: unknown = $state(null);
     let space_name: string = $state("");
     let subpath: string = $state("/");
 
-    let response: any = $state(null);
+    let response: unknown = $state(null);
+    let previewError: unknown = $state(null);
+    let isPreviewing: boolean = $state(false);
     let isExporting: boolean = $state(false);
-    let exportEvents: Array<{
-        id: string;
-        timestamp: string;
-        status: "success" | "error";
-        filename: string;
-        size: string;
-        duration: string;
-    }> = $state([]);
+    let exportEvents: TransferEvent[] = $state([]);
 
     let subpaths: string[] = $state([]);
 
-    onMount(async () => {
+    async function loadSpaces() {
+        spacesError = null;
         try {
             spaces = (await Dmart.getSpaces())?.records ?? [];
-        } catch (e: any) {
-            showToast(Level.warn, e?.response?.data?.error?.message ?? $_("spaces_load_failed"));
+        } catch (e: unknown) {
+            spacesError = e;
+            showToast(Level.warn, errorMessage(e, $_("spaces_load_failed")));
         }
-    });
+    }
+
+    onMount(loadSpaces);
 
     // Monotonic id so a slow walk of the previous space cannot land after a
     // fast switch to the next one and populate the dropdown with its folders.
@@ -66,18 +54,14 @@
             await getChildrenAndSubChildren(collected, target, "", roots);
             if (seq !== subpathsSeq) return;
             subpaths = collected.sort();
-        } catch (e: any) {
+        } catch (e: unknown) {
             if (seq !== subpathsSeq) return;
-            showToast(Level.warn, e?.response?.data?.error?.message ?? $_("subpaths_load_failed"));
+            showToast(Level.warn, errorMessage(e, $_("subpaths_load_failed")));
         }
     }
 
-    async function handleResponse() {
-        if (!space_name || !subpath) {
-            return;
-        }
-
-        const query_request: QueryRequest = {
+    function buildQuery(): QueryRequest {
+        return {
             type: QueryType.search,
             exact_subpath: false,
             ...createBaseQuery({
@@ -89,95 +73,53 @@
                 retrieve_json_payload: true,
                 retrieve_attachments: true,
             }),
-        };
+        } as QueryRequest;
+    }
 
+    async function handlePreview() {
+        if (!space_name || !subpath) return;
+        isPreviewing = true;
+        previewError = null;
         try {
-            response = await Dmart.query(query_request);
-        } catch (e: any) {
-            response = e?.response?.data ?? { error: e?.message ?? $_("query_failed") };
-            showToast(Level.warn, e?.response?.data?.error?.message ?? $_("query_failed"));
+            response = await Dmart.query(buildQuery());
+        } catch (e: unknown) {
+            previewError = e;
+            // Keep the server's envelope in the result pane as well.
+            response = (e as { response?: { data?: unknown } })?.response?.data ?? null;
+        } finally {
+            isPreviewing = false;
         }
     }
 
-    function formatFileSize(bytes: number): string {
-        if (bytes < 1024) return bytes + " B";
-        if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(2) + " KB";
-        return (bytes / 1024 / 1024).toFixed(2) + " MB";
-    }
-
-    function formatDuration(ms: number): string {
-        if (ms < 1000) return ms + "ms";
-        return (ms / 1000).toFixed(1) + "s";
+    function record(status: TransferEvent["status"], filename: string, bytes: number | null, startedAt: number) {
+        exportEvents = [
+            { id: crypto.randomUUID(), at: new Date(), status, filename, bytes, durationMs: Date.now() - startedAt },
+            ...exportEvents,
+        ];
     }
 
     async function handleDownload() {
-        const body: any = {
-            type: QueryType.search,
-            exact_subpath: false,
-            ...createBaseQuery({
-                space_name,
-                subpath,
-                search: "",
-                offset: 0,
-                limit: 1_000_000,
-                retrieve_json_payload: true,
-                retrieve_attachments: true,
-            }),
-        };
-
+        if (!space_name || !subpath) return;
         isExporting = true;
         const fileName = `${space_name}/${subpath}.zip`;
         const startTime = Date.now();
 
         try {
-            const response = await Dmart.axiosDmartInstance.post(
-                `managed/export`,
-                body,
-                { headers, responseType: "arraybuffer" },
-            );
-
-            // Check if response is successful based on status code
-            if (response.status !== 200) {
-                showToast(Level.warn);
-                exportEvents = [
-                    {
-                        id: crypto.randomUUID(),
-                        timestamp: new Date().toLocaleTimeString(),
-                        status: "error",
-                        filename: fileName,
-                        size: "-",
-                        duration: formatDuration(Date.now() - startTime),
-                    },
-                    ...exportEvents,
-                ];
+            const res = await Dmart.axiosDmartInstance.post("managed/export", buildQuery(), {
+                headers,
+                responseType: "arraybuffer",
+            });
+            if (res.status !== 200) {
+                showToast(Level.warn, $_("export_failed"));
+                record("error", fileName, null, startTime);
             } else {
-                const fileSize = formatFileSize(response.data.byteLength);
-                downloadFile(response.data, fileName, "application/zip");
-                exportEvents = [
-                    {
-                        id: crypto.randomUUID(),
-                        timestamp: new Date().toLocaleTimeString(),
-                        status: "success",
-                        filename: fileName,
-                        size: fileSize,
-                        duration: formatDuration(Date.now() - startTime),
-                    },
-                    ...exportEvents,
-                ];
+                const bytes = (res.data as ArrayBuffer).byteLength;
+                downloadFile(res.data, fileName, "application/zip");
+                record("success", fileName, bytes, startTime);
             }
-        } catch {
-            showToast(Level.warn);
-            exportEvents = [
-                {
-                    id: crypto.randomUUID(),
-                    timestamp: new Date().toLocaleTimeString(),
-                    status: "error",
-                    filename: fileName,
-                    size: "-",
-                    duration: formatDuration(Date.now() - startTime),
-                },
-                ...exportEvents,
-            ];
+        } catch (e: unknown) {
+            showToast(Level.warn, errorMessage(e, $_("export_failed")));
+            record("error", fileName, null, startTime);
         } finally {
             isExporting = false;
         }
@@ -192,127 +134,66 @@
     });
 </script>
 
-<div class="container mx-auto p-8">
-    <button
-        class="flex items-center gap-2 text-gray-600 hover:text-primary-600 mb-6 transition-colors"
-        onclick={() => $goto("/management/tools")}
-    >
-        <ArrowLeftOutline size="sm" />
-        <span>Back to Tools</span>
-    </button>
+<div class="container mx-auto px-4 sm:px-6 py-6">
+    <PageHeader
+        title={$_("export")}
+        description={$_("export_description")}
+        icon={FileExportOutline}
+        backHref="/management/tools"
+        backLabel={$_("back_to_tools")}
+    />
 
-    <div class="flex items-center gap-3 mb-8">
-        <div class="p-3 bg-primary-100 rounded-full">
-            <FileExportOutline class="w-8 h-8 text-primary-600" />
-        </div>
-        <div>
-            <h1 class="text-2xl font-bold">Export</h1>
-            <p class="text-gray-500">Export entries as zip file.</p>
-        </div>
-    </div>
+    <div class="space-y-4">
+        {#if spacesError}
+            <ErrorState compact title={$_("spaces_load_failed")} error={spacesError} onRetry={loadSpaces} />
+        {/if}
 
-    <div class="min-w-11/12">
-
-        <Card class="min-w-full p-4">
-            <div class="space-y-4">
-                <div class="grid grid-cols-1 md:grid-cols-12 gap-4 mb-4">
-                    <div class="md:col-span-4">
-                        <Label for="space_name" class="mb-2"
-                            >{$_("space_name")}</Label
-                        >
-                        <Select
-                            id="space_name"
-                            bind:value={space_name}
-                            disabled={isExporting}
-                        >
-                            {#each spaces as space (space.shortname)}
-                                <option value={space.shortname}
-                                    >{space.shortname}</option
-                                >
-                            {/each}
-                        </Select>
-                    </div>
-                    <div class="md:col-span-4">
-                        <Label for="subpath" class="mb-2">{$_("subpath")}</Label
-                        >
-                        <Select
-                            id="subpath"
-                            bind:value={subpath}
-                            disabled={isExporting}
-                        >
-                            <option value="/">/</option>
-                            {#each subpaths as path (path)}
-                                <option value={path}>{path}</option>
-                            {/each}
-                        </Select>
-                    </div>
+        <Card>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                    <Label for="space_name" class="mb-2">{$_("space_name")}</Label>
+                    <Select id="space_name" bind:value={space_name} disabled={isExporting}>
+                        <option value="" disabled>{$_("select_space")}</option>
+                        {#each spaces as space (space.shortname)}
+                            <option value={space.shortname}>{space.shortname}</option>
+                        {/each}
+                    </Select>
                 </div>
-                <div class="md:col-span-4 mx-auto flex items-end justify-end">
-                    <Button
-                        onclick={handleResponse}
-                        color="blue"
-                        disabled={isExporting}>{$_("submit")}</Button
-                    >
-                    <Button
-                        class="mx-5"
-                        color="blue"
-                        outline
-                        disabled={isExporting}
-                        onclick={handleDownload}
-                        >{isExporting
-                            ? $_("uploading") + "..."
-                            : $_("download_zip")}</Button
-                    >
+                <div>
+                    <Label for="subpath" class="mb-2">{$_("subpath")}</Label>
+                    <Select id="subpath" bind:value={subpath} disabled={isExporting}>
+                        <option value="/">/</option>
+                        {#each subpaths as path (path)}
+                            <option value={path}>{path}</option>
+                        {/each}
+                    </Select>
                 </div>
+            </div>
+            <div class="flex flex-wrap items-center justify-end gap-2 mt-5">
+                <Button color="alternative" onclick={handlePreview} disabled={isExporting || isPreviewing || !space_name}>
+                    {#if isPreviewing}<Spinner class="me-2" size="4" />{/if}
+                    {$_("preview")}
+                </Button>
+                <Button color="primary" onclick={handleDownload} disabled={isExporting || !space_name}>
+                    {#if isExporting}
+                        <Spinner class="me-2" size="4" />
+                        {$_("exporting")}
+                    {:else}
+                        {$_("download_zip")}
+                    {/if}
+                </Button>
             </div>
         </Card>
 
-        {#if exportEvents.length}
-            <Card class="min-w-full p-4 mb-4">
-                <h2 class="text-lg font-semibold mb-3">Export Log</h2>
-                <div class="max-h-60 overflow-y-auto">
-                    <table class="w-full text-sm text-left">
-                        <thead
-                                class="text-xs uppercase bg-gray-50 sticky top-0"
-                        >
-                        <tr>
-                            <th class="px-3 py-2">Status</th>
-                            <th class="px-3 py-2">File</th>
-                            <th class="px-3 py-2">Size</th>
-                            <th class="px-3 py-2">Duration</th>
-                            <th class="px-3 py-2">Time</th>
-                        </tr>
-                        </thead>
-                        <tbody>
-                        {#each exportEvents as event (event.id)}
-                            <tr
-                                    class="border-b {event.status === 'success'
-                                        ? 'bg-green-50 text-green-800'
-                                        : 'bg-red-50 text-red-800'}"
-                            >
-                                <td class="px-3 py-2 font-semibold"
-                                >{event.status === "success"
-                                    ? "✓ Success"
-                                    : "✗ Failed"}</td
-                                >
-                                <td class="px-3 py-2">{event.filename}</td>
-                                <td class="px-3 py-2">{event.size}</td>
-                                <td class="px-3 py-2">{event.duration}</td>
-                                <td class="px-3 py-2 font-mono text-xs"
-                                >{event.timestamp}</td
-                                >
-                            </tr>
-                        {/each}
-                        </tbody>
-                    </table>
-                </div>
-            </Card>
+        <TransferLog title={$_("export_log")} events={exportEvents} />
+
+        {#if previewError}
+            <ErrorState compact title={$_("query_failed")} error={previewError} />
+        {/if}
+        {#if response === null}
+            <p class="text-sm text-text-muted text-center py-6">{$_("no_response_yet")}</p>
+        {:else}
+            <Prism code={response as object} />
         {/if}
     </div>
-
-    {#if response === null}
-        <p class="text-gray-500 text-center">No response yet.</p>
-    {:else}
-        <Prism bind:code={response} />
-    {/if}
 </div>

@@ -1,10 +1,15 @@
 <script lang="ts">
     import { Dmart } from "@edraj/tsdmart";
     import { onMount } from "svelte";
-    import { goto } from "@roxi/routify";
-    import { Spinner } from "flowbite-svelte";
-    import { ArrowLeftOutline, DatabaseSolid } from "flowbite-svelte-icons";
-
+    import { DatabaseSolid } from "flowbite-svelte-icons";
+    import { _ } from "@/i18n";
+    import { formatNumber } from "@/utils/format";
+    import PageHeader from "@/components/ui/PageHeader.svelte";
+    import Card from "@/components/ui/Card.svelte";
+    import Badge from "@/components/ui/Badge.svelte";
+    import ErrorState from "@/components/ui/ErrorState.svelte";
+    import LoadingState from "@/components/ui/LoadingState.svelte";
+    import EmptyState from "@/components/ui/EmptyState.svelte";
 
     interface DbSizeEntry {
         table_name: string;
@@ -12,7 +17,7 @@
     }
 
     let isLoading = $state(true);
-    let error: string | null = $state(null);
+    let error: unknown = $state(null);
     let data: DbSizeEntry[] = $state([]);
 
     /** Convert a pretty_size string (e.g. "8047 MB", "80 kB", "16 bytes") to bytes for sorting. */
@@ -32,116 +37,69 @@
         return value * (units[unit] ?? 0);
     }
 
-    onMount(async () => {
+    async function load() {
         try {
             isLoading = true;
+            error = null;
             const axiosInstance = Dmart.getAxiosInstance();
             const headers = Dmart.getHeaders();
-            const response = await axiosInstance.get("db_size_info/", {
-                headers,
-            });
+            const response = await axiosInstance.get("db_size_info/", { headers });
             if (response.data?.status === "success") {
                 const raw: DbSizeEntry[] = response.data.data ?? [];
-                data = raw
-                    .slice()
-                    .sort(
-                        (a, b) =>
-                            parseSizeToBytes(b.pretty_size) -
-                            parseSizeToBytes(a.pretty_size),
-                    );
+                data = raw.slice().sort((a, b) => parseSizeToBytes(b.pretty_size) - parseSizeToBytes(a.pretty_size));
             } else {
-                error =
-                    response.data?.error?.message ??
-                    "Failed to load DB size info.";
+                error = response.data?.error?.message ?? $_("db_size_load_failed");
             }
-        } catch (err: any) {
-            error =
-                err?.message ??
-                "An error occurred while fetching DB size info.";
+        } catch (err: unknown) {
+            error = err;
         } finally {
             isLoading = false;
         }
-    });
+    }
+
+    onMount(load);
 </script>
 
-<div class="container mx-auto p-8">
-    <button
-        class="flex items-center gap-2 text-gray-600 hover:text-primary-600 mb-6 transition-colors"
-        onclick={() => $goto("/management/tools")}
-    >
-        <ArrowLeftOutline size="sm" />
-        <span>Back to Tools</span>
-    </button>
-
-    <div class="flex items-center gap-3 mb-8">
-        <div class="p-3 bg-primary-100 rounded-full">
-            <DatabaseSolid class="w-8 h-8 text-primary-600" />
-        </div>
-        <div>
-            <h1 class="text-2xl font-bold">Database Size Info</h1>
-            <p class="text-gray-500">
-                View the size of each database table in the connected Dmart
-                instance.
-            </p>
-        </div>
-    </div>
+<div class="container mx-auto px-4 sm:px-6 py-6">
+    <PageHeader
+        title={$_("db_size_info")}
+        description={$_("db_size_info_description")}
+        icon={DatabaseSolid}
+        backHref="/management/tools"
+        backLabel={$_("back_to_tools")}
+    />
 
     {#if error}
-        <div
-            class="p-4 mb-4 text-sm text-red-800 rounded-lg bg-red-50"
-            role="alert"
-        >
-            <span class="font-medium">Error!</span>
-            {error}
-        </div>
-    {/if}
-
-    {#if isLoading}
-        <div class="flex justify-center items-center h-64">
-            <Spinner size="12" />
-        </div>
-    {:else if data.length === 0 && !error}
-        <p class="text-gray-500 text-center mt-16">No data available.</p>
+        <ErrorState title={$_("db_size_load_failed")} {error} onRetry={load} />
+    {:else if isLoading}
+        <LoadingState variant="skeleton" rows={8} />
+    {:else if data.length === 0}
+        <EmptyState title={$_("no_records_found")} />
     {:else}
-        <div
-            class="overflow-x-auto rounded-lg border border-gray-200 shadow-sm"
-        >
-            <table class="w-full text-sm text-left text-gray-700">
-                <thead
-                    class="text-xs text-gray-700 uppercase bg-gray-50 border-b border-gray-200"
-                >
-                    <tr>
-                        <th scope="col" class="px-6 py-4 font-semibold">#</th>
-                        <th scope="col" class="px-6 py-4 font-semibold"
-                            >Table Name</th
-                        >
-                        <th
-                            scope="col"
-                            class="px-6 py-4 font-semibold text-right">Size</th
-                        >
-                    </tr>
-                </thead>
-                <tbody>
-                    {#each data as row, index (row.table_name)}
-                        <tr
-                            class="border-b border-gray-100 hover:bg-gray-50 transition-colors"
-                        >
-                            <td class="px-6 py-3 text-gray-400">{index + 1}</td>
-                            <td class="px-6 py-3 font-medium"
-                                >{row.table_name}</td
-                            >
-                            <td class="px-6 py-3 text-right">
-                                <span
-                                    class="inline-block bg-blue-50 text-blue-700 text-xs font-semibold px-3 py-1 rounded-full"
-                                >
-                                    {row.pretty_size}
-                                </span>
-                            </td>
+        <Card padding="none">
+            <div class="overflow-x-auto">
+                <table class="w-full text-sm text-start text-text">
+                    <thead class="text-xs text-text-muted bg-surface border-b border-border">
+                        <tr>
+                            <th scope="col" class="px-4 sm:px-6 py-3 font-semibold text-start w-12">#</th>
+                            <th scope="col" class="px-4 sm:px-6 py-3 font-semibold text-start">{$_("table_name")}</th>
+                            <th scope="col" class="px-4 sm:px-6 py-3 font-semibold text-end">{$_("size")}</th>
                         </tr>
-                    {/each}
-                </tbody>
-            </table>
-        </div>
-        <p class="text-xs text-gray-400 mt-3">Total tables: {data.length}</p>
+                    </thead>
+                    <tbody>
+                        {#each data as row, index (row.table_name)}
+                            <tr class="border-b border-border last:border-0 hover:bg-surface-3 transition-colors">
+                                <td class="px-4 sm:px-6 py-2.5 text-text-faint tabular-nums">{formatNumber(index + 1)}</td>
+                                <td class="px-4 sm:px-6 py-2.5 font-medium font-mono" dir="ltr">{row.table_name}</td>
+                                <td class="px-4 sm:px-6 py-2.5 text-end">
+                                    <Badge variant="info" size="sm"><span dir="ltr">{row.pretty_size}</span></Badge>
+                                </td>
+                            </tr>
+                        {/each}
+                    </tbody>
+                </table>
+            </div>
+        </Card>
+        <p class="text-xs text-text-muted mt-3">{$_("total_tables", { values: { count: formatNumber(data.length) } })}</p>
     {/if}
 </div>

@@ -1,159 +1,153 @@
 <script lang="ts">
-    import {Dmart} from "@edraj/tsdmart";
-    import {Avatar, Badge, Card, Heading, Hr, Li, List, P} from "flowbite-svelte";
-    import {getAvatar} from "@/lib/dmart_services";
-    import {_} from "@/i18n";
-    import {get} from "svelte/store";
+    import { Dmart, type ApiResponseRecord } from "@edraj/tsdmart";
+    import { Avatar } from "flowbite-svelte";
+    import { EnvelopeOutline, PhoneOutline } from "flowbite-svelte-icons";
+    import { getAvatar } from "@/lib/dmart_services";
+    import { _ } from "@/i18n";
+    import { localizedText } from "@/utils/localized";
+    import { formatDate } from "@/utils/format";
+    import PageHeader from "@/components/ui/PageHeader.svelte";
+    import Card from "@/components/ui/Card.svelte";
+    import Badge from "@/components/ui/Badge.svelte";
+    import ErrorState from "@/components/ui/ErrorState.svelte";
+    import LoadingState from "@/components/ui/LoadingState.svelte";
 
-    async function getProfile(){
-        const profile: any = await Dmart.getProfile();
-        const record = profile?.records?.[0];
-        if (profile?.status !== "success" || !record) {
-            throw new Error(get(_)("profile_load_failed"));
+    type ProfileAttrs = {
+        displayname?: Record<string, string>;
+        email?: string;
+        msisdn?: string;
+        is_email_verified?: boolean;
+        is_msisdn_verified?: boolean;
+        roles?: string[];
+        groups?: string[];
+        type?: string;
+        language?: string;
+        force_password_change?: boolean;
+        created_at?: string;
+        updated_at?: string;
+    };
+
+    let profile = $state<ApiResponseRecord | null>(null);
+    let avatarUrl = $state<string | null>(null);
+    let loading = $state(true);
+    let error: unknown = $state(null);
+
+    async function load() {
+        loading = true;
+        error = null;
+        try {
+            const response = await Dmart.getProfile();
+            const record = response?.records?.[0];
+            if (response?.status !== "success" || !record) {
+                throw new Error($_("profile_load_failed"));
+            }
+            profile = record;
+            avatarUrl = await getAvatar(record.shortname).catch(() => null);
+        } catch (e) {
+            error = e;
+        } finally {
+            loading = false;
         }
-        return record;
     }
+
+    void load();
+
+    const attrs = $derived((profile?.attributes ?? {}) as ProfileAttrs);
 </script>
 
-{#await getProfile()}
-    <div class="flex justify-center items-center h-64">
-        <div class="text-center">
-            <div class="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-blue-500 mx-auto"></div>
-            <p class="mt-3">{$_("loading_profile")}</p>
-        </div>
-    </div>
-{:then profile}
-    {@const attrs = profile.attributes ?? {}}
-    <div class="flex min-w-full p-4">
-        <Card class="bg-white shadow-lg rounded-lg p-6 min-w-full">
-            <!-- Header with Avatar and basic info -->
-            <div class="flex flex-col sm:flex-row items-center gap-5 mb-6">
-                {#await getAvatar(profile.shortname)}
-                    <Avatar
-                        size="xl"
-                        class="w-24 h-24 rounded"
-                    >
-                        {profile.shortname?.charAt(0).toUpperCase() || "U"}
-                    </Avatar>
-                {:then url}
-                    <Avatar
-                        size="xl"
-                        class="w-24 h-24 rounded"
-                        src={url ?? undefined}
-                    >
-                        {profile.shortname?.charAt(0).toUpperCase() || "U"}
-                    </Avatar>
-                {:catch}
-                    <Avatar
-                        size="xl"
-                        class="w-24 h-24 rounded"
-                    >
-                        {profile.shortname?.charAt(0).toUpperCase() || "U"}
-                    </Avatar>
-                {/await}
+<div class="container mx-auto px-4 sm:px-6 py-6 max-w-4xl">
+    <PageHeader title={$_("profile")} />
 
-
-                <div class="flex flex-col items-center sm:items-start">
-                    <div class="flex flex-row">
-                        <Heading tag="h3" class="mb-1">{attrs.displayname?.en || $_("not_applicable")}</Heading>
-                        <Heading tag="h2" class="mb-1">•</Heading>
-                        <Heading tag="h3" class="mb-1">{attrs.displayname?.ar || $_("not_applicable")}</Heading>
-                    </div>
-                    <P class="text-gray-500 mb-2">@{profile.shortname}</P>
-
-                    <div class="flex flex-wrap gap-2 mt-2">
-                        {#each attrs.roles ?? [] as role (role)}
-                            <Badge color="blue">{role}</Badge>
-                        {/each}
+    {#if loading}
+        <LoadingState variant="skeleton" rows={6} />
+    {:else if error || !profile}
+        <ErrorState title={$_("profile_load_failed")} {error} onRetry={load} />
+    {:else}
+        <div class="space-y-4">
+            <Card>
+                <div class="flex flex-col sm:flex-row items-center sm:items-start gap-5">
+                    <Avatar size="xl" class="w-24 h-24 rounded-card shrink-0" src={avatarUrl ?? undefined}>
+                        {profile.shortname?.charAt(0).toUpperCase() || "?"}
+                    </Avatar>
+                    <div class="flex flex-col items-center sm:items-start text-center sm:text-start min-w-0">
+                        <h2 class="text-lg font-semibold text-text break-words">
+                            {localizedText(attrs.displayname, profile.shortname)}
+                        </h2>
+                        <p class="text-sm text-text-muted">@{profile.shortname}</p>
+                        {#if attrs.roles?.length}
+                            <div class="flex flex-wrap justify-center sm:justify-start gap-1.5 mt-3">
+                                {#each attrs.roles as role (role)}
+                                    <Badge variant="primary" size="sm">{role}</Badge>
+                                {/each}
+                            </div>
+                        {/if}
+                        {#if attrs.force_password_change}
+                            <div class="mt-3"><Badge variant="danger">{$_("password_change_required")}</Badge></div>
+                        {/if}
                     </div>
                 </div>
-            </div>
+            </Card>
 
-            <Hr class="my-4" />
+            <Card>
+                <h3 class="text-base font-semibold text-text mb-3">{$_("contact_information")}</h3>
+                {#if attrs.email || attrs.msisdn}
+                    <ul class="space-y-3 text-sm">
+                        {#if attrs.email}
+                            <li class="flex items-center gap-3">
+                                <EnvelopeOutline size="md" class="text-text-faint shrink-0" aria-hidden="true" />
+                                <span class="flex-1 break-all" dir="ltr">{attrs.email}</span>
+                                <Badge variant={attrs.is_email_verified ? "success" : "warning"} size="sm">
+                                    {attrs.is_email_verified ? $_("verified") : $_("not_verified")}
+                                </Badge>
+                            </li>
+                        {/if}
+                        {#if attrs.msisdn}
+                            <li class="flex items-center gap-3">
+                                <PhoneOutline size="md" class="text-text-faint shrink-0" aria-hidden="true" />
+                                <span class="flex-1 tabular-nums" dir="ltr">{attrs.msisdn}</span>
+                                <Badge variant={attrs.is_msisdn_verified ? "success" : "warning"} size="sm">
+                                    {attrs.is_msisdn_verified ? $_("verified") : $_("not_verified")}
+                                </Badge>
+                            </li>
+                        {/if}
+                    </ul>
+                {:else}
+                    <p class="text-sm text-text-muted">{$_("not_applicable")}</p>
+                {/if}
+            </Card>
 
-            <!-- Contact Information -->
-            <div class="mb-6">
-                <Heading tag="h3" class="text-xl font-semibold mb-3">Contact Information</Heading>
-
-                <List class="space-y-3">
-                    {#if attrs.email}
-                        <Li class="flex items-center">
-                        <span class="me-2">
-                            <svg class="w-5 h-5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"></path>
-                            </svg>
-                        </span>
-                            <span class="flex-1">{attrs.email}</span>
-                            {#if attrs.is_email_verified}
-                                <Badge color="green">Verified</Badge>
-                            {:else}
-                                <Badge color="yellow">Not Verified</Badge>
-                            {/if}
-                        </Li>
-                    {/if}
-
-                    {#if attrs.msisdn}
-                        <Li class="flex items-center">
-                        <span class="me-2">
-                            <svg class="w-5 h-5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z"></path>
-                            </svg>
-                        </span>
-                            <span class="flex-1">{attrs.msisdn}</span>
-                            {#if attrs.is_msisdn_verified}
-                                <Badge color="green">Verified</Badge>
-                            {:else}
-                                <Badge color="yellow">Not Verified</Badge>
-                            {/if}
-                        </Li>
-                    {/if}
-                </List>
-            </div>
-
-            <Hr class="my-4" />
-
-            <div class="mb-6">
-                <Heading tag="h3" class="text-xl font-semibold mb-3">Account Details</Heading>
-
-                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <Card>
+                <h3 class="text-base font-semibold text-text mb-3">{$_("account_details")}</h3>
+                <dl class="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-4 text-sm">
                     <div>
-                        <P size="sm" color="font-semibold text-gray-500">User Type</P>
-                        <P>{attrs.type ?? $_("not_applicable")}</P>
+                        <dt class="text-xs text-text-muted">{$_("user_type")}</dt>
+                        <dd class="mt-0.5 text-text">{attrs.type ?? $_("not_applicable")}</dd>
                     </div>
-
                     <div>
-                        <P size="sm" color="font-semibold text-gray-500">{$_("language")}</P>
-                        <P>{attrs.language ?? $_("not_applicable")}</P>
+                        <dt class="text-xs text-text-muted">{$_("language")}</dt>
+                        <dd class="mt-0.5 text-text">{attrs.language ?? $_("not_applicable")}</dd>
                     </div>
+                    <div>
+                        <dt class="text-xs text-text-muted">{$_("created_at")}</dt>
+                        <dd class="mt-0.5 text-text tabular-nums">{formatDate(attrs.created_at, "datetime") || $_("not_applicable")}</dd>
+                    </div>
+                    <div>
+                        <dt class="text-xs text-text-muted">{$_("updated")}</dt>
+                        <dd class="mt-0.5 text-text tabular-nums">{formatDate(attrs.updated_at, "datetime") || $_("not_applicable")}</dd>
+                    </div>
+                </dl>
+            </Card>
 
-                    {#if attrs.force_password_change}
-                        <div class="col-span-2">
-                            <Badge color="red">Password change required</Badge>
-                        </div>
-                    {/if}
-                </div>
-            </div>
-
-            <!-- Groups Section (if any) -->
-            {#if attrs.groups && attrs.groups.length > 0}
-                <Hr class="my-4" />
-
-                <div>
-                    <Heading tag="h3" class="text-xl font-semibold mb-3">Groups</Heading>
-                    <div class="flex flex-wrap gap-2">
+            {#if attrs.groups?.length}
+                <Card>
+                    <h3 class="text-base font-semibold text-text mb-3">{$_("groups")}</h3>
+                    <div class="flex flex-wrap gap-1.5">
                         {#each attrs.groups as group (group)}
-                            <Badge color="gray">{group}</Badge>
+                            <Badge size="sm">{group}</Badge>
                         {/each}
                     </div>
-                </div>
+                </Card>
             {/if}
-        </Card>
-    </div>
-{:catch error}
-    <div class="m-6 p-4 rounded border border-red-300 bg-red-50 text-red-800 dark:bg-red-900/20 dark:border-red-700 dark:text-red-300" role="alert">
-        <p class="font-medium">{$_("profile_load_failed")}</p>
-        {#if error?.message && error.message !== $_("profile_load_failed")}
-            <p class="text-sm mt-1">{error.message}</p>
-        {/if}
-    </div>
-{/await}
+        </div>
+    {/if}
+</div>

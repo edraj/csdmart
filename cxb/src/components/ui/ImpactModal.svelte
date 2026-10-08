@@ -1,5 +1,6 @@
 <script lang="ts">
-    import { Button, Modal } from "flowbite-svelte";
+    import { Button, Modal, Spinner } from "flowbite-svelte";
+    import { ExclamationCircleOutline } from "flowbite-svelte-icons";
     import { _ } from "@/i18n";
 
     // "Saving this will affect N other things — go ahead?" The one dialog
@@ -33,34 +34,39 @@
     } = $props();
 </script>
 
-<Modal bind:open size="md" {title}>
-    <div class="text-center mb-6">
+<Modal bind:open size="md" {title} permanent={loading} focustrap class="rounded-modal shadow-modal">
+    <div class="space-y-4">
         <div
-            class="bg-yellow-50 border-s-4 border-yellow-400 p-4 mb-4 text-start dark:bg-yellow-900/20 dark:border-yellow-500"
+            class="flex items-start gap-3 rounded-card border border-warning/30 bg-warning-soft p-4 text-start"
             role="alert"
         >
-            <p class="text-sm text-yellow-700 font-medium dark:text-yellow-400">
-                <span aria-hidden="true">&#9888;</span>
-                {message}
-            </p>
-            {#if details.length > 0}
-                <ul class="mt-2 list-disc list-inside text-sm text-yellow-700 dark:text-yellow-400">
-                    {#each details as item (item)}
-                        <li>{item}</li>
-                    {/each}
-                </ul>
-            {/if}
+            <ExclamationCircleOutline class="shrink-0 mt-0.5 text-warning" size="md" aria-hidden="true" />
+            <div class="min-w-0">
+                <p class="text-sm font-medium text-text">{message}</p>
+                {#if details.length > 0}
+                    <ul class="mt-2 list-disc list-inside text-sm text-text-muted">
+                        {#each details as item (item)}
+                            <li>{item}</li>
+                        {/each}
+                    </ul>
+                {/if}
+            </div>
         </div>
-        <p>
+        <p class="text-sm text-text">
             {question}
-            <span class="font-bold">{subject}</span>?
+            <span class="font-semibold">{subject}</span>?
         </p>
     </div>
 
-    <div class="flex justify-between w-full">
-        <Button class="cursor-pointer" color="alternative" onclick={onCancel}>{$_("cancel")}</Button>
-        <Button class="bg-primary cursor-pointer" onclick={onConfirm} disabled={loading}>
-            {loading ? $_("saving") : confirmLabel ?? $_("confirm_update")}
+    <div class="flex items-center justify-end gap-2 mt-6">
+        <Button color="alternative" onclick={onCancel} disabled={loading}>{$_("cancel")}</Button>
+        <Button color="primary" onclick={onConfirm} disabled={loading} data-autofocus>
+            {#if loading}
+                <Spinner class="me-2" size="4" />
+                {$_("saving")}
+            {:else}
+                {confirmLabel ?? $_("confirm_update")}
+            {/if}
         </Button>
     </div>
 </Modal>

@@ -1,367 +1,352 @@
-<script>
+<script lang="ts">
+    import { onMount } from "svelte";
+    import { Button, Dropdown, DropdownItem, Modal, Spinner } from "flowbite-svelte";
+    import { DotsHorizontalOutline, EyeOutline, PenOutline, PlusOutline, TrashBinOutline } from "flowbite-svelte-icons";
+    import { Dmart, RequestType, ResourceType, type ApiResponseRecord } from "@edraj/tsdmart";
     import { spaces } from "@/stores/management/spaces";
-    import {
-        Button,
-        Dropdown,
-        DropdownItem,
-        Modal,
-        Spinner,
-    } from "flowbite-svelte";
-    import {
-        DotsHorizontalOutline,
-        EyeSolid,
-        PenSolid,
-        PlusOutline,
-        TrashBinSolid,
-    } from "flowbite-svelte-icons";
-    import { JSONEditor, Mode } from "svelte-jsoneditor";
     import { jsonEditorContentParser } from "@/utils/jsonEditor";
     import { getSpaces } from "@/lib/dmart_services";
-    import { Dmart, RequestType, ResourceType } from "@edraj/tsdmart";
     import { Level, showToast } from "@/utils/toast";
-    import Prism from "@/components/Prism.svelte";
-    import { goto } from "@roxi/routify";
+    import { removeEmpty } from "@/utils/compare";
+    import { _ } from "@/i18n";
     import MetaForm from "@/components/management/forms/MetaForm.svelte";
+    import Prism from "@/components/Prism.svelte";
+    import PageHeader from "@/components/ui/PageHeader.svelte";
     import SpaceGrid from "@/components/ui/SpaceGrid.svelte";
-    import { removeEmpty } from "@/utils/compare.js";
+    import EmptyState from "@/components/ui/EmptyState.svelte";
+    import ErrorState from "@/components/ui/ErrorState.svelte";
+    import LoadingState from "@/components/ui/LoadingState.svelte";
+    import ConfirmDialog from "@/components/ui/ConfirmDialog.svelte";
+    import IconButton from "@/components/ui/IconButton.svelte";
+
+    type SpaceForm = {
+        shortname: string;
+        is_active: boolean;
+        slug: string;
+        displayname: Record<string, string>;
+        description: Record<string, string>;
+    };
+
+    const emptyForm = (): SpaceForm => ({
+        shortname: "",
+        is_active: true,
+        slug: "",
+        displayname: { en: "", ar: "" },
+        description: { en: "", ar: "" },
+    });
 
     let viewMetaModal = $state(false);
     let editModal = $state(false);
     let deleteModal = $state(false);
     let addSpaceModal = $state(false);
-    /** @type {any} */
-    let selectedSpace = $state(null);
-    /** @type {string | null | any} */
-    let modelError = $state(null);
+    let selectedSpace: ApiResponseRecord | null = $state(null);
+    let modelError: unknown = $state(null);
+    let loadError: unknown = $state(null);
+    let isLoadingSpaces = $state(false);
 
-    let spaceFormData = $state({
-        shortname: "",
-        is_active: true,
-        slug: "",
-        displayname: {
-            en: "",
-            ar: "",
-            ku: "",
-        },
-        description: {
-            en: "",
-            ar: "",
-            ku: "",
-        },
-    });
+    let spaceFormData: SpaceForm = $state(emptyForm());
     let validateSpaceForm = $state(() => true);
-
     let isActionLoading = $state(false);
 
-    let jeContent = $state({ json: undefined });
+    // svelte-jsoneditor is ~250 kB and only two modals need it: load it the
+    // first time one of them opens instead of on the spaces page itself.
+    let editorModule: Promise<typeof import("svelte-jsoneditor")> | null = null;
+    function loadEditor() {
+        editorModule ??= import("svelte-jsoneditor");
+        return editorModule;
+    }
+    let jeContent = $state<{ json: unknown }>({ json: undefined });
 
     const visibleSpaces = $derived(
         ($spaces ?? []).filter((space) => space?.attributes?.hide_space !== true),
     );
 
+    async function loadSpaces() {
+        isLoadingSpaces = true;
+        loadError = null;
+        try {
+            await getSpaces();
+        } catch (error) {
+            loadError = error;
+        } finally {
+            isLoadingSpaces = false;
+        }
+    }
+
+    onMount(() => {
+        // The layout fires this once at boot (best-effort); if that failed or
+        // has not landed yet, this page owns the retry.
+        if ($spaces === null) void loadSpaces();
+    });
+
     function showAddSpaceModal() {
         modelError = null;
-        spaceFormData = {
-            shortname: "",
-            is_active: true,
-            slug: "",
-            displayname: {
-                en: "",
-                ar: "",
-                ku: "",
-            },
-            description: {
-                en: "",
-                ar: "",
-                ku: "",
-            },
-        };
+        spaceFormData = emptyForm();
         addSpaceModal = true;
     }
 
     async function createSpace() {
-        if (!validateSpaceForm()) {
-            return;
-        }
-
-        if (spaceFormData.shortname.trim()) {
-            try {
-                isActionLoading = true;
-                modelError = null;
-                const attributes = {
-                    is_active: spaceFormData.is_active,
-                    slug: spaceFormData.slug,
-                    displayname: spaceFormData.displayname,
-                    description: spaceFormData.description,
-                };
-                await Dmart.request({
-                    space_name: spaceFormData.shortname.trim(),
-                    request_type: RequestType.create,
-                    records: [
-                        {
-                            resource_type: ResourceType.space,
-                            shortname: spaceFormData.shortname.trim(),
-                            subpath: "/",
-                            attributes: removeEmpty(attributes),
-                        },
-                    ],
-                });
-                showToast(
-                    Level.info,
-                    `Space "${spaceFormData.shortname.trim()}" created successfully!`,
-                );
-                await getSpaces();
-                addSpaceModal = false;
-            } catch (/** @type {any} */ error) {
-                modelError = error?.response?.data ?? error?.message;
-            } finally {
-                isActionLoading = false;
-            }
+        if (!validateSpaceForm()) return;
+        const shortname = spaceFormData.shortname.trim();
+        if (!shortname) return;
+        try {
+            isActionLoading = true;
+            modelError = null;
+            const attributes = {
+                is_active: spaceFormData.is_active,
+                slug: spaceFormData.slug,
+                displayname: spaceFormData.displayname,
+                description: spaceFormData.description,
+            };
+            await Dmart.request({
+                space_name: shortname,
+                request_type: RequestType.create,
+                records: [
+                    {
+                        resource_type: ResourceType.space,
+                        shortname,
+                        subpath: "/",
+                        attributes: removeEmpty(attributes),
+                    },
+                ],
+            });
+            showToast(Level.info, $_("space_created", { values: { shortname } }));
+            await getSpaces();
+            addSpaceModal = false;
+        } catch (error) {
+            modelError = error;
+        } finally {
+            isActionLoading = false;
         }
     }
 
-    function viewMeta(space) {
+    function viewMeta(space: ApiResponseRecord) {
         modelError = null;
-        selectedSpace = structuredClone(space);
+        selectedSpace = structuredClone($state.snapshot(space)) as ApiResponseRecord;
         jeContent = { json: selectedSpace ?? undefined };
         viewMetaModal = true;
     }
 
-    function editSpace(space) {
+    function editSpace(space: ApiResponseRecord) {
         modelError = null;
-        selectedSpace = structuredClone(space);
+        selectedSpace = structuredClone($state.snapshot(space)) as ApiResponseRecord;
         jeContent = { json: selectedSpace ?? undefined };
         editModal = true;
     }
 
     async function saveChanges() {
-        if (selectedSpace) {
-            let record;
-            try {
-                record = jsonEditorContentParser($state.snapshot(jeContent));
-            } catch {
-                modelError = "Invalid JSON format";
-                return;
-            }
-            delete record.uuid;
-            try {
-                isActionLoading = true;
-                modelError = null;
-                await Dmart.request({
-                    space_name: selectedSpace.shortname,
-                    request_type: RequestType.update,
-                    records: [
-                        {
-                            resource_type: ResourceType.space,
-                            shortname: selectedSpace.shortname,
-                            subpath: "/",
-                            attributes: record.attributes,
-                        },
-                    ],
-                });
-                editModal = false;
-                showToast(
-                    Level.info,
-                    `Space "${selectedSpace.shortname}" updated successfully!`,
-                );
-                await getSpaces();
-            } catch (/** @type {any} */ error) {
-                modelError = error;
-            } finally {
-                isActionLoading = false;
-            }
+        if (!selectedSpace) return;
+        let record: { attributes?: Record<string, unknown>; uuid?: string };
+        try {
+            record = jsonEditorContentParser($state.snapshot(jeContent));
+        } catch {
+            modelError = $_("invalid_json");
+            return;
+        }
+        delete record.uuid;
+        try {
+            isActionLoading = true;
+            modelError = null;
+            await Dmart.request({
+                space_name: selectedSpace.shortname,
+                request_type: RequestType.update,
+                records: [
+                    {
+                        resource_type: ResourceType.space,
+                        shortname: selectedSpace.shortname,
+                        subpath: "/",
+                        attributes: record.attributes ?? {},
+                    },
+                ],
+            });
+            editModal = false;
+            showToast(Level.info, $_("space_updated", { values: { shortname: selectedSpace.shortname } }));
+            await getSpaces();
+        } catch (error) {
+            modelError = error;
+        } finally {
+            isActionLoading = false;
         }
     }
 
-    function confirmDelete(space) {
+    function confirmDelete(space: ApiResponseRecord) {
         modelError = null;
         selectedSpace = space;
         deleteModal = true;
     }
 
     async function deleteSpace() {
-        if (selectedSpace) {
-            try {
-                isActionLoading = true;
-                modelError = null;
-                await Dmart.request({
-                    space_name: selectedSpace.shortname,
-                    request_type: RequestType.delete,
-                    records: [
-                        {
-                            resource_type: ResourceType.space,
-                            shortname: selectedSpace.shortname,
-                            subpath: "/",
-                            attributes: {},
-                        },
-                    ],
-                });
-                showToast(
-                    Level.info,
-                    `Space "${selectedSpace.shortname}" has been deleted successfully!`,
-                );
-                deleteModal = false;
-                selectedSpace = null;
-                await getSpaces();
-            } catch (/** @type {any} */ error) {
-                modelError = error;
-            } finally {
-                isActionLoading = false;
-            }
+        if (!selectedSpace) return;
+        const shortname = selectedSpace.shortname;
+        try {
+            isActionLoading = true;
+            modelError = null;
+            await Dmart.request({
+                space_name: shortname,
+                request_type: RequestType.delete,
+                records: [
+                    {
+                        resource_type: ResourceType.space,
+                        shortname,
+                        subpath: "/",
+                        attributes: {},
+                    },
+                ],
+            });
+            showToast(Level.info, $_("space_deleted", { values: { shortname } }));
+            deleteModal = false;
+            selectedSpace = null;
+            await getSpaces();
+        } catch (error) {
+            modelError = error;
+        } finally {
+            isActionLoading = false;
         }
     }
 
-    function handleSelectedSpace(spaceShortname) {
-        $goto(`/management/content/[space_name]`, {
-            space_name: spaceShortname,
-        });
+    /** The server's full error envelope, for the collapsible details block. */
+    function errorBody(error: unknown): object | null {
+        const data = (error as { response?: { data?: unknown } })?.response?.data;
+        return data && typeof data === "object" ? data : null;
     }
 </script>
 
-<div class="container mx-auto px-12 py-6">
-    <div class="flex justify-between items-center mb-1 px-1">
-        <h1 class="text-2xl font-bold mb-6">All Spaces</h1>
-        <Button
-            size="md"
-            class="bg-primary py-3!"
-            style="cursor: pointer"
-            onclick={showAddSpaceModal}
-        >
-            <PlusOutline class="me-2 h-5 w-5" />Add new space
-        </Button>
-    </div>
-    <hr class="mb-6 border-gray-300" />
-    <SpaceGrid spaces={visibleSpaces} onSelect={handleSelectedSpace}>
-        {#snippet actions(space)}
-            <Button class="!p-1" color="light">
-                <DotsHorizontalOutline />
-                <Dropdown simple>
-                    <DropdownItem class="w-full" onclick={() => viewMeta(space)}>
-                        <div class="flex items-center gap-2">
-                            <EyeSolid size="sm" /> View Meta
-                        </div>
-                    </DropdownItem>
-                    <DropdownItem class="w-full" onclick={() => editSpace(space)}>
-                        <div class="flex items-center gap-2">
-                            <PenSolid size="sm" /> Edit
-                        </div>
-                    </DropdownItem>
-                    <DropdownItem class="w-full" onclick={() => confirmDelete(space)}>
-                        <div class="flex items-center gap-2 text-red-600">
-                            <TrashBinSolid size="sm" /> Delete
-                        </div>
-                    </DropdownItem>
-                </Dropdown>
+<div class="container mx-auto px-4 sm:px-6 py-6">
+    <PageHeader title={$_("spaces")} description={$_("spaces_description")}>
+        {#snippet actions()}
+            <Button color="primary" onclick={showAddSpaceModal}>
+                <PlusOutline class="me-2 h-5 w-5" aria-hidden="true" />{$_("add_space")}
             </Button>
         {/snippet}
-    </SpaceGrid>
+    </PageHeader>
+
+    {#if loadError}
+        <ErrorState title={$_("spaces_load_failed")} error={loadError} onRetry={loadSpaces} />
+    {:else if $spaces === null || isLoadingSpaces}
+        <LoadingState variant="skeleton" rows={6} />
+    {:else if visibleSpaces.length === 0}
+        <EmptyState title={$_("no_spaces")} hint={$_("no_spaces_hint")}>
+            <Button color="primary" size="sm" onclick={showAddSpaceModal}>{$_("add_space")}</Button>
+        </EmptyState>
+    {:else}
+        <SpaceGrid spaces={visibleSpaces} href={(space) => `/management/content/${space.shortname}`}>
+            {#snippet actions(space)}
+                <IconButton
+                    id="space-menu-{space.shortname}"
+                    label={$_("space_actions", { values: { shortname: space.shortname } })}
+                    variant="outline"
+                    size="sm"
+                >
+                    <DotsHorizontalOutline size="sm" />
+                </IconButton>
+                <Dropdown simple triggeredBy="#space-menu-{space.shortname}" class="min-w-44">
+                    <DropdownItem onclick={() => viewMeta(space)}>
+                        <span class="flex items-center gap-2">
+                            <EyeOutline size="sm" aria-hidden="true" /> {$_("view_metadata")}
+                        </span>
+                    </DropdownItem>
+                    <DropdownItem onclick={() => editSpace(space)}>
+                        <span class="flex items-center gap-2">
+                            <PenOutline size="sm" aria-hidden="true" /> {$_("edit")}
+                        </span>
+                    </DropdownItem>
+                    <DropdownItem onclick={() => confirmDelete(space)}>
+                        <span class="flex items-center gap-2 text-danger">
+                            <TrashBinOutline size="sm" aria-hidden="true" /> {$_("delete")}
+                        </span>
+                    </DropdownItem>
+                </Dropdown>
+            {/snippet}
+        </SpaceGrid>
+    {/if}
 </div>
 
-<Modal bind:open={addSpaceModal} size="xl" title="Add New Space">
+<Modal bind:open={addSpaceModal} size="xl" title={$_("add_space")} class="rounded-modal shadow-modal">
     <div class="space-y-4">
-        <MetaForm
-            bind:formData={spaceFormData}
-            bind:validateFn={validateSpaceForm}
-            isCreate={true}
-        />
+        <MetaForm bind:formData={spaceFormData} bind:validateFn={validateSpaceForm} isCreate={true} />
 
         {#if modelError}
-            <div class="mt-4">
-                <p class="text-red-600 font-medium mb-2">Error:</p>
-                <div class="max-h-60 overflow-auto">
-                    <Prism code={modelError} />
-                </div>
-            </div>
+            <ErrorState compact error={modelError}>
+                {#if errorBody(modelError)}
+                    <details class="text-xs">
+                        <summary class="cursor-pointer text-text-muted">{$_("details")}</summary>
+                        <div class="mt-2 max-h-60 overflow-auto"><Prism code={errorBody(modelError) ?? {}} /></div>
+                    </details>
+                {/if}
+            </ErrorState>
         {/if}
     </div>
 
-    <div class="flex justify-between w-full mt-4">
-        <Button color="alternative" onclick={() => (addSpaceModal = false)}
-            >Cancel</Button
-        >
-        <Button class="bg-primary" onclick={createSpace}>
+    <div class="flex items-center justify-end gap-2 mt-6">
+        <Button color="alternative" onclick={() => (addSpaceModal = false)} disabled={isActionLoading}>{$_("cancel")}</Button>
+        <Button color="primary" onclick={createSpace} disabled={isActionLoading}>
             {#if isActionLoading}
-                <Spinner class="me-3" size="4" color="blue" />
-                Creating ...
+                <Spinner class="me-2" size="4" />
+                {$_("creating")}
             {:else}
-                Create
+                {$_("create")}
             {/if}
         </Button>
     </div>
 </Modal>
 
-<Modal bind:open={viewMetaModal} size="xl" title="Space Metadata" autoclose>
-    <div>
-        {#if selectedSpace}
-            <JSONEditor content={jeContent} readOnly={true} />
-        {/if}
-    </div>
-</Modal>
-
-<Modal bind:open={editModal} size="xl" title="Edit Space">
-    <div>
-        {#if selectedSpace}
-            <JSONEditor
-                bind:content={jeContent}
-                readOnly={false}
-                mode={Mode.text}
-            />
-        {/if}
-
-        {#if modelError}
-            <div class="mt-4">
-                <p class="text-red-600 font-medium mb-2">Error:</p>
-                <div class="max-h-60 overflow-auto">
-                    <Prism code={modelError} />
-                </div>
-            </div>
-        {/if}
-    </div>
-    <div class="flex justify-between w-full">
-        <Button color="alternative" onclick={() => (editModal = false)}
-            >Cancel</Button
-        >
-        <Button class="bg-primary" onclick={saveChanges}>
-            {#if isActionLoading}
-                <Spinner class="me-3" size="4" color="blue" />
-                Saving Changes ...
-            {:else}
-                Save Changes
-            {/if}
-        </Button>
-    </div>
-</Modal>
-
-<Modal bind:open={deleteModal} size="md" title="Confirm Deletion">
+<Modal bind:open={viewMetaModal} size="xl" title={$_("space_metadata")} class="rounded-modal shadow-modal">
     {#if selectedSpace}
-        <p class="text-center mb-6">
-            Are you sure you want to delete the space <span class="font-bold"
-                >{selectedSpace.shortname}</span
-            >?<br />
-            This action cannot be undone.
-        </p>
+        {#await loadEditor()}
+            <LoadingState />
+        {:then editor}
+            {@const JSONEditor = editor.JSONEditor}
+            <JSONEditor content={jeContent} readOnly={true} />
+        {/await}
     {/if}
+</Modal>
 
-    {#if modelError}
-        <div class="mt-4">
-            <p class="text-red-600 font-medium mb-2">Error:</p>
-            <div class="max-h-60 overflow-auto">
-                <Prism code={modelError} />
-            </div>
-        </div>
-    {/if}
+<Modal bind:open={editModal} size="xl" title={$_("edit_space")} class="rounded-modal shadow-modal">
+    <div class="space-y-4">
+        {#if selectedSpace}
+            {#await loadEditor()}
+                <LoadingState />
+            {:then editor}
+                {@const JSONEditor = editor.JSONEditor}
+                <JSONEditor bind:content={jeContent} readOnly={false} mode={editor.Mode.text} />
+            {/await}
+        {/if}
 
-    <div class="flex justify-between w-full">
-        <Button color="alternative" onclick={() => (deleteModal = false)}
-            >Cancel</Button
-        >
-        <Button color="red" onclick={deleteSpace}>
+        {#if modelError}
+            <ErrorState compact error={modelError}>
+                {#if errorBody(modelError)}
+                    <details class="text-xs">
+                        <summary class="cursor-pointer text-text-muted">{$_("details")}</summary>
+                        <div class="mt-2 max-h-60 overflow-auto"><Prism code={errorBody(modelError) ?? {}} /></div>
+                    </details>
+                {/if}
+            </ErrorState>
+        {/if}
+    </div>
+    <div class="flex items-center justify-end gap-2 mt-6">
+        <Button color="alternative" onclick={() => (editModal = false)} disabled={isActionLoading}>{$_("cancel")}</Button>
+        <Button color="primary" onclick={saveChanges} disabled={isActionLoading}>
             {#if isActionLoading}
-                <Spinner class="me-3" size="4" color="blue" />
-                Deleting ...
+                <Spinner class="me-2" size="4" />
+                {$_("saving")}
             {:else}
-                Delete
+                {$_("save_changes")}
             {/if}
         </Button>
     </div>
 </Modal>
+
+<ConfirmDialog
+    bind:open={deleteModal}
+    title={$_("delete_space")}
+    body={selectedSpace
+        ? `${$_("confirm_delete_space", { values: { shortname: selectedSpace.shortname } })}\n${$_("cannot_be_undone")}`
+        : ""}
+    variant="danger"
+    confirmLabel={$_("delete_space")}
+    loading={isActionLoading}
+    loadingLabel={$_("deleting")}
+    error={modelError}
+    onConfirm={deleteSpace}
+    onCancel={() => (selectedSpace = null)}
+/>

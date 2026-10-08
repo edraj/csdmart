@@ -1,17 +1,17 @@
 <script lang="ts">
     import { Dmart } from "@edraj/tsdmart";
     import { onMount } from "svelte";
-    import { goto } from "@roxi/routify";
-    import { Spinner, Card } from "flowbite-svelte";
-    import {
-        ArrowLeftOutline,
-        ChartLineUpOutline,
-        FolderSolid,
-        TableColumnOutline,
-        ExpandOutline,
-        CloseOutline,
-    } from "flowbite-svelte-icons";
-
+    import { Modal } from "flowbite-svelte";
+    import { ChartLineUpOutline, ExpandOutline, FolderSolid, TableColumnOutline } from "flowbite-svelte-icons";
+    import { _ } from "@/i18n";
+    import { formatDate, formatNumber } from "@/utils/format";
+    import PageHeader from "@/components/ui/PageHeader.svelte";
+    import Card from "@/components/ui/Card.svelte";
+    import Badge from "@/components/ui/Badge.svelte";
+    import IconButton from "@/components/ui/IconButton.svelte";
+    import ErrorState from "@/components/ui/ErrorState.svelte";
+    import LoadingState from "@/components/ui/LoadingState.svelte";
+    import EmptyState from "@/components/ui/EmptyState.svelte";
 
     interface HistoryEntry {
         entries_count: number;
@@ -24,58 +24,47 @@
     }
 
     let isLoading = $state(true);
-    let error: string | null = $state(null);
+    let error: unknown = $state(null);
     let spaces: SpaceHistory[] = $state([]);
 
     // Per-card view mode: "graph" | "table"
     let viewModes: Record<string, "graph" | "table"> = $state({});
 
-    // Fullscreen modal
+    // Fullscreen chart
     let fullscreenSpace: SpaceHistory | null = $state(null);
+    let fullscreenOpen = $state(false);
 
     function openFullscreen(space: SpaceHistory) {
         fullscreenSpace = space;
-    }
-    function closeFullscreen() {
-        fullscreenSpace = null;
-    }
-    function onKeydown(e: KeyboardEvent) {
-        if (e.key === "Escape") closeFullscreen();
+        fullscreenOpen = true;
     }
 
-    onMount(async () => {
+    async function load() {
         try {
             isLoading = true;
+            error = null;
             const axiosInstance = Dmart.getAxiosInstance();
             const headers = Dmart.getHeaders();
-            const response = await axiosInstance.get(
-                "db_entries_count_history/",
-                { headers },
-            );
+            const response = await axiosInstance.get("db_entries_count_history/", { headers });
             if (response.data?.status === "success") {
                 spaces = response.data.data ?? [];
-                // Default: graph mode for spaces with ≥2 points, table otherwise
+                // Default: graph mode for spaces with >= 2 points, table otherwise
+                const modes: Record<string, "graph" | "table"> = {};
                 for (const s of spaces) {
-                    viewModes[s.spacename] =
-                        s.data?.length >= 2 ? "graph" : "table";
+                    modes[s.spacename] = s.data?.length >= 2 ? "graph" : "table";
                 }
+                viewModes = modes;
             } else {
-                error =
-                    response.data?.error?.message ??
-                    "Failed to load DB entries count history.";
+                error = response.data?.error?.message ?? $_("db_history_load_failed");
             }
-        } catch (err: any) {
-            error =
-                err?.message ??
-                "An error occurred while fetching DB entries count history.";
+        } catch (err: unknown) {
+            error = err;
         } finally {
             isLoading = false;
         }
-    });
-
-    function formatDate(dt: string): string {
-        return dt.replace("T", " ");
     }
+
+    onMount(load);
 
     function latestCount(space: SpaceHistory): number {
         if (!space.data || space.data.length === 0) return 0;
@@ -84,15 +73,15 @@
 
     function trend(space: SpaceHistory): "up" | "down" | "flat" {
         if (!space.data || space.data.length < 2) return "flat";
-        const delta =
-            space.data[space.data.length - 1].entries_count -
-            space.data[0].entries_count;
+        const delta = space.data[space.data.length - 1].entries_count - space.data[0].entries_count;
         if (delta > 0) return "up";
         if (delta < 0) return "down";
         return "flat";
     }
 
     // ── SVG chart helpers ──────────────────────────────────────────────────────
+    // One series per chart, so one hue (the primary) and no legend; grid and
+    // axis text are recessive tokens; the line is 2px and the markers 8px.
     const W = 300;
     const H = 120;
     const PAD = { top: 10, right: 12, bottom: 24, left: 44 };
@@ -107,14 +96,10 @@
         const maxY = Math.max(...counts);
         const rangeY = maxY - minY || 1;
 
-        const scaleX = (i: number) =>
-            pad.left + (i / (data.length - 1)) * innerW;
-        const scaleY = (v: number) =>
-            pad.top + innerH - ((v - minY) / rangeY) * innerH;
+        const scaleX = (i: number) => pad.left + (i / Math.max(1, data.length - 1)) * innerW;
+        const scaleY = (v: number) => pad.top + innerH - ((v - minY) / rangeY) * innerH;
 
-        const points = data.map(
-            (d, i) => `${scaleX(i)},${scaleY(d.entries_count)}`,
-        );
+        const points = data.map((d, i) => `${scaleX(i)},${scaleY(d.entries_count)}`);
         const polyline = points.join(" ");
 
         // Fill area under curve
@@ -129,17 +114,8 @@
 
         // X-axis labels: first and last
         const xLabels = [
-            {
-                x: scaleX(0),
-                label: formatDate(data[0].recorded_at).slice(0, 10),
-            },
-            {
-                x: scaleX(data.length - 1),
-                label: formatDate(data[data.length - 1].recorded_at).slice(
-                    0,
-                    10,
-                ),
-            },
+            { x: scaleX(0), label: formatDate(data[0].recorded_at, "date") },
+            { x: scaleX(data.length - 1), label: formatDate(data[data.length - 1].recorded_at, "date") },
         ];
 
         // Dot positions for all points
@@ -147,311 +123,177 @@
             cx: scaleX(i),
             cy: scaleY(d.entries_count),
             count: d.entries_count,
-            label: formatDate(d.recorded_at),
+            label: formatDate(d.recorded_at, "datetime"),
         }));
 
-        return {
-            polyline,
-            areaPoints,
-            yTicks,
-            xLabels,
-            dots,
-            scaleX,
-            scaleY,
-            minY,
-            maxY,
-            innerH,
-            pad,
-        };
+        return { polyline, areaPoints, yTicks, xLabels, dots, scaleX, scaleY, minY, maxY, innerH, pad };
     }
+
+    const trendVariant = { up: "success", down: "danger", flat: "neutral" } as const;
+    const trendKey = { up: "trend_growing", down: "trend_shrinking", flat: "trend_stable" } as const;
 </script>
 
-<div class="container mx-auto p-8">
-    <button
-        class="flex items-center gap-2 text-gray-600 hover:text-primary-600 mb-6 transition-colors"
-        onclick={() => $goto("/management/tools")}
+{#snippet chart(space: SpaceHistory, pad: typeof PAD, idSuffix: string, fullscreen: boolean)}
+    {@const c = buildChart(space.data, pad)}
+    <svg
+        viewBox="0 0 {W} {H}"
+        width="100%"
+        height={fullscreen ? "100%" : undefined}
+        preserveAspectRatio={fullscreen ? "xMidYMid meet" : undefined}
+        class="overflow-visible"
+        role="img"
+        aria-label={$_("entries_over_time", { values: { space: space.spacename } })}
+        direction="ltr"
     >
-        <ArrowLeftOutline size="sm" />
-        <span>Back to Tools</span>
-    </button>
+        <defs>
+            <linearGradient id="grad-{idSuffix}" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stop-color="var(--color-primary)" stop-opacity="0.35" />
+                <stop offset="100%" stop-color="var(--color-primary)" stop-opacity="0" />
+            </linearGradient>
+        </defs>
 
-    <div class="flex items-center gap-3 mb-8">
-        <div class="p-3 bg-primary-100 rounded-full">
-            <ChartLineUpOutline class="w-8 h-8 text-primary-600" />
-        </div>
-        <div>
-            <h1 class="text-2xl font-bold">DB Entries Count History</h1>
-            <p class="text-gray-500">
-                Track the growth of entries across spaces over time.
-            </p>
-        </div>
-    </div>
+        <polygon points={c.areaPoints} fill="url(#grad-{idSuffix})" />
+
+        {#each c.yTicks as tick, i (i)}
+            {@const cy = c.scaleY(tick)}
+            <line x1={pad.left} y1={cy} x2={W - pad.right} y2={cy} stroke="var(--color-border)" stroke-width="1" />
+            <text x={pad.left - 4} y={cy + 3} text-anchor="end" font-size={fullscreen ? 7 : 9} fill="var(--color-text-faint)">
+                {formatNumber(tick)}
+            </text>
+        {/each}
+
+        <polyline
+            points={c.polyline}
+            fill="none"
+            stroke="var(--color-primary)"
+            stroke-width="2"
+            stroke-linejoin="round"
+            stroke-linecap="round"
+            vector-effect="non-scaling-stroke"
+        />
+
+        {#each c.dots as dot (dot.cx)}
+            <g>
+                <title>{dot.label}: {formatNumber(dot.count)}</title>
+                <!-- Hit target larger than the mark -->
+                <circle cx={dot.cx} cy={dot.cy} r="8" fill="transparent" />
+                <circle cx={dot.cx} cy={dot.cy} r="4" fill="var(--color-surface-2)" stroke="var(--color-primary)" stroke-width="2" />
+            </g>
+        {/each}
+
+        {#if fullscreen}
+            {#each space.data as entry, i (entry.recorded_at)}
+                <text x={c.scaleX(i)} y={H - 2} text-anchor="middle" font-size="4" fill="var(--color-text-faint)">
+                    {formatDate(entry.recorded_at, "date")}
+                </text>
+            {/each}
+        {:else}
+            {#each c.xLabels as lbl, i (i)}
+                <text x={lbl.x} y={H - 4} text-anchor={i === 0 ? "start" : "end"} font-size="8" fill="var(--color-text-faint)">
+                    {lbl.label}
+                </text>
+            {/each}
+        {/if}
+    </svg>
+{/snippet}
+
+<div class="container mx-auto px-4 sm:px-6 py-6">
+    <PageHeader
+        title={$_("db_entries_count_history")}
+        description={$_("db_entries_count_history_description")}
+        icon={ChartLineUpOutline}
+        backHref="/management/tools"
+        backLabel={$_("back_to_tools")}
+    />
 
     {#if error}
-        <div
-            class="p-4 mb-4 text-sm text-red-800 rounded-lg bg-red-50"
-            role="alert"
-        >
-            <span class="font-medium">Error!</span>
-            {error}
-        </div>
-    {/if}
-
-    {#if isLoading}
-        <div class="flex justify-center items-center h-64">
-            <Spinner size="12" />
-        </div>
-    {:else if spaces.length === 0 && !error}
-        <p class="text-gray-500 text-center mt-16">No data available.</p>
+        <ErrorState title={$_("db_history_load_failed")} {error} onRetry={load} />
+    {:else if isLoading}
+        <LoadingState variant="skeleton" rows={8} />
+    {:else if spaces.length === 0}
+        <EmptyState title={$_("no_records_found")} />
     {:else}
-        <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
+        <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
             {#each spaces as space (space.spacename)}
                 {@const t = trend(space)}
                 {@const canGraph = space.data?.length >= 2}
                 {@const mode = viewModes[space.spacename] ?? "table"}
 
-                <Card class="w-full max-w-none p-0 overflow-hidden">
+                <Card padding="none" class="overflow-hidden">
                     <!-- Header -->
-                    <div
-                        class="flex items-center justify-between px-5 py-4 border-b border-gray-100 bg-gray-50"
-                    >
-                        <div class="flex items-center gap-3">
-                            <div class="p-2 bg-primary-100 rounded-lg">
-                                <FolderSolid class="w-5 h-5 text-primary-600" />
+                    <div class="flex items-center justify-between gap-3 px-4 py-3 border-b border-border bg-surface">
+                        <div class="flex items-center gap-3 min-w-0">
+                            <div class="p-2 bg-primary-soft rounded-control shrink-0" aria-hidden="true">
+                                <FolderSolid class="w-4 h-4 text-primary" />
                             </div>
-                            <h3
-                                class="text-base font-bold truncate max-w-[160px]"
-                                title={space.spacename}
-                            >
-                                {space.spacename}
-                            </h3>
+                            <h3 class="text-sm font-semibold text-text truncate" title={space.spacename}>{space.spacename}</h3>
                         </div>
 
-                        <div class="flex items-center gap-3">
+                        <div class="flex items-center gap-2 shrink-0">
                             {#if canGraph}
-                                <button
-                                    class="p-1.5 rounded-lg border border-gray-200 bg-white hover:bg-primary-50 hover:border-primary-300 transition-colors"
-                                    title={mode === "graph"
-                                        ? "Switch to table"
-                                        : "Switch to graph"}
+                                <IconButton
+                                    label={mode === "graph" ? $_("switch_to_table") : $_("switch_to_graph")}
+                                    variant="outline"
+                                    size="sm"
                                     onclick={() => {
-                                        viewModes[space.spacename] =
-                                            mode === "graph"
-                                                ? "table"
-                                                : "graph";
+                                        viewModes[space.spacename] = mode === "graph" ? "table" : "graph";
                                     }}
                                 >
                                     {#if mode === "graph"}
-                                        <TableColumnOutline
-                                            class="w-4 h-4 text-gray-500"
-                                        />
+                                        <TableColumnOutline size="sm" />
                                     {:else}
-                                        <ChartLineUpOutline
-                                            class="w-4 h-4 text-gray-500"
-                                        />
+                                        <ChartLineUpOutline size="sm" />
                                     {/if}
-                                </button>
-
+                                </IconButton>
                                 {#if mode === "graph"}
-                                    <button
-                                        class="p-1.5 rounded-lg border border-gray-200 bg-white hover:bg-primary-50 hover:border-primary-300 transition-colors"
-                                        title="Fullscreen"
-                                        onclick={() => openFullscreen(space)}
-                                    >
-                                        <ExpandOutline
-                                            class="w-4 h-4 text-gray-500"
-                                        />
-                                    </button>
+                                    <IconButton label={$_("fullscreen")} variant="outline" size="sm" onclick={() => openFullscreen(space)}>
+                                        <ExpandOutline size="sm" />
+                                    </IconButton>
                                 {/if}
                             {/if}
-
-                            <div class="flex flex-col items-end">
-                                <span class="text-2xl font-bold text-gray-800"
-                                    >{latestCount(space).toLocaleString()}</span
-                                >
-                                <span class="text-xs text-gray-400"
-                                    >entries</span
-                                >
+                            <div class="flex flex-col items-end leading-tight">
+                                <span class="text-xl font-semibold tabular-nums text-text">{formatNumber(latestCount(space))}</span>
+                                <span class="text-xs text-text-muted">{$_("entries")}</span>
                             </div>
                         </div>
                     </div>
 
                     <!-- Body: graph or table -->
                     {#if mode === "graph" && canGraph}
-                        {@const chart = buildChart(space.data)}
                         <div class="px-2 pt-3 pb-1">
-                            <svg
-                                viewBox="0 0 {W} {H}"
-                                width="100%"
-                                class="overflow-visible"
-                                aria-label="Entries over time"
-                            >
-                                <!-- Area fill -->
-                                <polygon
-                                    points={chart.areaPoints}
-                                    fill="url(#grad-{space.spacename})"
-                                    opacity="0.18"
-                                />
-
-                                <!-- Gradient def -->
-                                <defs>
-                                    <linearGradient
-                                        id="grad-{space.spacename}"
-                                        x1="0"
-                                        y1="0"
-                                        x2="0"
-                                        y2="1"
-                                    >
-                                        <stop
-                                            offset="0%"
-                                            stop-color="#3b82f6"
-                                            stop-opacity="1"
-                                        />
-                                        <stop
-                                            offset="100%"
-                                            stop-color="#3b82f6"
-                                            stop-opacity="0"
-                                        />
-                                    </linearGradient>
-                                </defs>
-
-                                <!-- Y-axis grid lines + labels -->
-                                {#each chart.yTicks as tick, i (i)}
-                                    {@const cy = chart.scaleY(tick)}
-                                    <line
-                                        x1={PAD.left}
-                                        y1={cy}
-                                        x2={W - PAD.right}
-                                        y2={cy}
-                                        stroke="#e5e7eb"
-                                        stroke-width="1"
-                                    />
-                                    <text
-                                        x={PAD.left - 4}
-                                        y={cy + 4}
-                                        text-anchor="end"
-                                        font-size="9"
-                                        fill="#9ca3af"
-                                        >{tick.toLocaleString()}</text
-                                    >
-                                {/each}
-
-                                <!-- Line -->
-                                <polyline
-                                    points={chart.polyline}
-                                    fill="none"
-                                    stroke="#3b82f6"
-                                    stroke-width="2"
-                                    stroke-linejoin="round"
-                                    stroke-linecap="round"
-                                />
-
-                                <!-- Dots with tooltips -->
-                                {#each chart.dots as dot (dot.cx)}
-                                    <g>
-                                        <title
-                                            >{dot.label}: {dot.count.toLocaleString()}</title
-                                        >
-                                        <circle
-                                            cx={dot.cx}
-                                            cy={dot.cy}
-                                            r="3.5"
-                                            fill="#ffffff"
-                                            stroke="#3b82f6"
-                                            stroke-width="2"
-                                        />
-                                    </g>
-                                {/each}
-
-                                <!-- X-axis labels -->
-                                {#each chart.xLabels as lbl, i (i)}
-                                    <text
-                                        x={lbl.x}
-                                        y={H - 4}
-                                        text-anchor="middle"
-                                        font-size="8"
-                                        fill="#9ca3af">{lbl.label}</text
-                                    >
-                                {/each}
-                            </svg>
+                            {@render chart(space, PAD, space.spacename, false)}
                         </div>
                     {:else}
-                        <!-- Table mode -->
                         <div class="overflow-y-auto max-h-52">
                             {#if space.data && space.data.length > 0}
-                                <table
-                                    class="w-full text-xs text-left text-gray-600"
-                                >
-                                    <thead
-                                        class="sticky top-0 bg-white border-b border-gray-100 text-gray-400 uppercase"
-                                    >
+                                <table class="w-full text-xs text-start text-text">
+                                    <thead class="sticky top-0 bg-surface-2 border-b border-border text-text-muted">
                                         <tr>
-                                            <th class="px-4 py-2 font-medium"
-                                                >Recorded At</th
-                                            >
-                                            <th
-                                                class="px-4 py-2 font-medium text-right"
-                                                >Count</th
-                                            >
+                                            <th scope="col" class="px-4 py-2 font-medium text-start">{$_("recorded_at")}</th>
+                                            <th scope="col" class="px-4 py-2 font-medium text-end">{$_("count")}</th>
                                         </tr>
                                     </thead>
                                     <tbody>
                                         {#each [...space.data].reverse() as entry (entry.recorded_at)}
-                                            <tr
-                                                class="border-b border-gray-50 hover:bg-gray-50"
-                                            >
-                                                <td
-                                                    class="px-4 py-2 font-mono text-gray-500"
-                                                >
-                                                    {formatDate(
-                                                        entry.recorded_at,
-                                                    )}
-                                                </td>
-                                                <td
-                                                    class="px-4 py-2 text-right font-semibold text-gray-700"
-                                                >
-                                                    {entry.entries_count.toLocaleString()}
-                                                </td>
+                                            <tr class="border-b border-border last:border-0 hover:bg-surface-3">
+                                                <td class="px-4 py-2 tabular-nums text-text-muted">{formatDate(entry.recorded_at, "datetime")}</td>
+                                                <td class="px-4 py-2 text-end font-semibold tabular-nums">{formatNumber(entry.entries_count)}</td>
                                             </tr>
                                         {/each}
                                     </tbody>
                                 </table>
                             {:else}
-                                <p
-                                    class="text-center text-gray-400 py-6 text-xs"
-                                >
-                                    No history entries.
-                                </p>
+                                <p class="text-center text-text-muted py-6 text-xs">{$_("no_history_records")}</p>
                             {/if}
                         </div>
                     {/if}
 
                     <!-- Footer: trend badge -->
-                    <div
-                        class="px-5 py-3 border-t border-gray-100 flex items-center gap-2"
-                    >
-                        {#if t === "up"}
-                            <span
-                                class="inline-flex items-center gap-1 text-xs font-semibold text-green-700 bg-green-50 px-2 py-0.5 rounded-full"
-                            >
-                                ↑ Growing
-                            </span>
-                        {:else if t === "down"}
-                            <span
-                                class="inline-flex items-center gap-1 text-xs font-semibold text-red-700 bg-red-50 px-2 py-0.5 rounded-full"
-                            >
-                                ↓ Shrinking
-                            </span>
-                        {:else}
-                            <span
-                                class="inline-flex items-center gap-1 text-xs font-semibold text-gray-600 bg-gray-100 px-2 py-0.5 rounded-full"
-                            >
-                                → Stable
-                            </span>
-                        {/if}
-                        <span class="text-xs text-gray-400"
-                            >{space.data?.length ?? 0} snapshot(s)</span
-                        >
+                    <div class="px-4 py-2.5 border-t border-border flex items-center gap-2">
+                        <Badge variant={trendVariant[t]} size="sm">{$_(trendKey[t])}</Badge>
+                        <span class="text-xs text-text-muted">
+                            {$_("snapshots_count", { values: { count: space.data?.length ?? 0 } })}
+                        </span>
                     </div>
                 </Card>
             {/each}
@@ -459,169 +301,21 @@
     {/if}
 </div>
 
-<!-- Fullscreen chart overlay -->
-{#if fullscreenSpace}
-    {@const fs = fullscreenSpace}
-    {@const fsChart = buildChart(fs.data, FS_PAD)}
-    {@const fst = trend(fs)}
-
-    <!-- Backdrop -->
-    <!-- svelte-ignore a11y_click_events_have_key_events -->
-    <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <div
-        class="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex flex-col"
-        onclick={(e) => {
-            if (e.target === e.currentTarget) closeFullscreen();
-        }}
-    >
-        <!-- Modal panel -->
-        <div
-            class="relative flex-1 flex flex-col bg-white m-6 rounded-2xl shadow-2xl overflow-hidden"
-        >
-            <!-- Modal header -->
-            <div
-                class="flex items-center justify-between px-6 py-4 border-b border-gray-100 bg-gray-50"
-            >
-                <div class="flex items-center gap-3">
-                    <div class="p-2 bg-primary-100 rounded-lg">
-                        <FolderSolid class="w-5 h-5 text-primary-600" />
-                    </div>
-                    <div>
-                        <h2 class="text-lg font-bold">{fs.spacename}</h2>
-                        <p class="text-xs text-gray-400">
-                            {fs.data.length} snapshot(s)
-                        </p>
-                    </div>
-                </div>
-
-                <div class="flex items-center gap-4">
-                    <div class="text-right">
-                        <div class="text-3xl font-bold text-gray-800">
-                            {latestCount(fs).toLocaleString()}
-                        </div>
-                        <div class="text-xs text-gray-400">entries</div>
-                    </div>
-                    {#if fst === "up"}
-                        <span
-                            class="inline-flex items-center gap-1 text-xs font-semibold text-green-700 bg-green-50 px-2 py-1 rounded-full"
-                            >↑ Growing</span
-                        >
-                    {:else if fst === "down"}
-                        <span
-                            class="inline-flex items-center gap-1 text-xs font-semibold text-red-700 bg-red-50 px-2 py-1 rounded-full"
-                            >↓ Shrinking</span
-                        >
-                    {:else}
-                        <span
-                            class="inline-flex items-center gap-1 text-xs font-semibold text-gray-600 bg-gray-100 px-2 py-1 rounded-full"
-                            >→ Stable</span
-                        >
-                    {/if}
-                    <button
-                        class="p-2 rounded-lg border border-gray-200 bg-white hover:bg-red-50 hover:border-red-300 transition-colors"
-                        title="Close (Esc)"
-                        onclick={closeFullscreen}
-                    >
-                        <CloseOutline class="w-5 h-5 text-gray-500" />
-                    </button>
-                </div>
+<!-- Fullscreen chart: a native dialog, so Escape/overlay close and focus is trapped -->
+<Modal bind:open={fullscreenOpen} fullscreen title={fullscreenSpace?.spacename ?? ""} class="rounded-modal shadow-modal">
+    {#if fullscreenSpace}
+        {@const fs = fullscreenSpace}
+        {@const fst = trend(fs)}
+        <div class="flex flex-col h-full gap-4">
+            <div class="flex flex-wrap items-center gap-3">
+                <span class="text-3xl font-semibold tabular-nums text-text">{formatNumber(latestCount(fs))}</span>
+                <span class="text-sm text-text-muted">{$_("entries")}</span>
+                <Badge variant={trendVariant[fst]}>{$_(trendKey[fst])}</Badge>
+                <span class="text-sm text-text-muted">{$_("snapshots_count", { values: { count: fs.data.length } })}</span>
             </div>
-
-            <!-- Full chart -->
-            <div class="flex-1 p-6 overflow-hidden">
-                <svg
-                    viewBox="0 0 {W} {H}"
-                    width="100%"
-                    height="100%"
-                    preserveAspectRatio="xMidYMid meet"
-                    class="overflow-visible"
-                    aria-label="Entries over time — fullscreen"
-                >
-                    <polygon
-                        points={fsChart.areaPoints}
-                        fill="url(#fs-grad)"
-                        opacity="0.15"
-                    />
-                    <defs>
-                        <linearGradient
-                            id="fs-grad"
-                            x1="0"
-                            y1="0"
-                            x2="0"
-                            y2="1"
-                        >
-                            <stop
-                                offset="0%"
-                                stop-color="#3b82f6"
-                                stop-opacity="1"
-                            />
-                            <stop
-                                offset="100%"
-                                stop-color="#3b82f6"
-                                stop-opacity="0"
-                            />
-                        </linearGradient>
-                    </defs>
-
-                    {#each fsChart.yTicks as tick, i (i)}
-                        {@const cy = fsChart.scaleY(tick)}
-                        <line
-                            x1={fsChart.pad.left}
-                            y1={cy}
-                            x2={W - fsChart.pad.right}
-                            y2={cy}
-                            stroke="#e5e7eb"
-                            stroke-width="0.5"
-                        />
-                        <text
-                            x={fsChart.pad.left - 4}
-                            y={cy + 4}
-                            text-anchor="end"
-                            font-size="7"
-                            fill="#9ca3af">{tick.toLocaleString()}</text
-                        >
-                    {/each}
-
-                    <!-- X-axis tick for every point -->
-                    {#each fs.data as entry, i (entry.recorded_at)}
-                        <text
-                            x={fsChart.scaleX(i)}
-                            y={H - 2}
-                            text-anchor="middle"
-                            font-size="4"
-                            fill="#d1d5db"
-                            >{formatDate(entry.recorded_at).slice(5, 16)}</text
-                        >
-                    {/each}
-
-                    <polyline
-                        points={fsChart.polyline}
-                        fill="none"
-                        stroke="#3b82f6"
-                        stroke-width="1.5"
-                        stroke-linejoin="round"
-                        stroke-linecap="round"
-                    />
-
-                    {#each fsChart.dots as dot (dot.cx)}
-                        <g>
-                            <title
-                                >{dot.label}: {dot.count.toLocaleString()}</title
-                            >
-                            <circle
-                                cx={dot.cx}
-                                cy={dot.cy}
-                                r="3"
-                                fill="#fff"
-                                stroke="#3b82f6"
-                                stroke-width="1.5"
-                            />
-                        </g>
-                    {/each}
-                </svg>
+            <div class="flex-1 min-h-[50vh]">
+                {@render chart(fs, FS_PAD, "fullscreen", true)}
             </div>
         </div>
-    </div>
-{/if}
-
-<svelte:window onkeydown={onKeydown} />
+    {/if}
+</Modal>
