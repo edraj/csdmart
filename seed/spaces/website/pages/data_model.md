@@ -41,7 +41,13 @@ graph TD
 
 A **Space** is the top-level organizational unit and the unit of isolation. It is itself an entry (`resource_type=space`) and carries configuration: which languages it supports, which plugins are active, whether indexing is enabled, whether it is hidden, its display ordinal, and which subfolders to hide.
 
-**management** Always present. Holds users, groups, roles, permissions and the meta-schemas. Bootstrapped on first run. **applications** Built-in catalog of app definitions, saved queries, configurations and translations. **personal** Per-user private space for user-owned content. **your spaces** Any number of custom spaces you create for your own domains.
+**management** Always present. Holds users, groups, roles, permissions and the meta-schemas. Bootstrapped on first run.
+
+**applications** Built-in catalog of app definitions, saved queries, configurations and translations.
+
+**personal** Per-user private space for user-owned content.
+
+**your spaces** Any number of custom spaces you create for your own domains.
 
 ### Subpath — the folder hierarchy
 
@@ -55,13 +61,19 @@ Every entry is composed of up to four layers. Only **Meta** is mandatory; the re
 
 ```mermaid
 graph LR
-    Entry["Entry"] --> Meta["① Metaidentity, ownership,timestamps, tags"]
-    Entry --> Payload["② PayloadJSON body (schema-validated)or file reference"]
-    Entry --> Att["③ Attachmentscomments, media, reactions,relationships, locks, shares"]
-    Entry --> Hist["④ Historyimmutable diffof every change"]
+    Entry["Entry"] --> Meta["① Meta<br/>identity, ownership,<br/>timestamps, tags"]
+    Entry --> Payload["② Payload<br/>JSON body (schema-validated)<br/>or file reference"]
+    Entry --> Att["③ Attachments<br/>comments, media, reactions,<br/>relationships, locks, shares"]
+    Entry --> Hist["④ History<br/>immutable diff<br/>of every change"]
 ```
 
-**① Meta** System-level identity: uuid, shortname, ownership, ACLs, tags, display names, timestamps. Always present. **② Payload** The actual content — a JSON object validated against a schema, or a pointer to an attached file. Optional. **③ Attachments** Secondary entries bound to this one: comments, media, reactions, relationships, locks. Optional, unbounded. **④ History** Append-only diff log. Every create/update/delete writes a row; the entry points at the latest one.
+**① Meta** System-level identity: uuid, shortname, ownership, ACLs, tags, display names, timestamps. Always present.
+
+**② Payload** The actual content — a JSON object validated against a schema, or a pointer to an attached file. Optional.
+
+**③ Attachments** Secondary entries bound to this one: comments, media, reactions, relationships, locks. Optional, unbounded.
+
+**④ History** Append-only diff log. Every create/update/delete writes a row; the entry points at the latest one.
 
 ## 4. Meta — the fields every entry shares
 
@@ -122,7 +134,21 @@ Selected resource types add their own fields on top of Meta:
 
 There are 30 resource types. They all share the Meta base; the type only changes which extra fields exist, which table stores the entry, and which validation runs.
 
-**Identity** `user`, `group` **Structure** `folder`, `space` **Content** `content`, `schema`, `data_asset`, `csv`, `jsonl`, `sqlite`, `parquet` **Workflow** `ticket` **Social** `comment`, `reply`, `post`, `reaction`, `notification`, `share` **Attachments** `media`, `log`, `relationship`, `alteration`, `history`, `lock` **Management** `role`, `permission`, `acl` **Extensions** `locator`, `json`, `plugin_wrapper`
+**Identity** `user`, `group`
+
+**Structure** `folder`, `space`
+
+**Content** `content`, `schema`, `data_asset`, `csv`, `jsonl`, `sqlite`, `parquet`
+
+**Workflow** `ticket`
+
+**Social** `comment`, `reply`, `post`, `reaction`, `notification`, `share`
+
+**Attachments** `media`, `log`, `relationship`, `alteration`, `history`, `lock`
+
+**Management** `role`, `permission`, `acl`
+
+**Extensions** `locator`, `json`, `plugin_wrapper`
 
 On the wire, resource types are lowercase snake_case strings (`plugin_wrapper`, `data_asset`).
 
@@ -191,6 +217,8 @@ Key idea: a folder's **meta** lives at `<subpath>/.dm/meta.folder.json`, while i
 
 DMART keeps a single, authoritative store — and guarantees you can always get your data back out as plain files. Those are two different things, not two competing storage modes.
 
-**PostgreSQL — the sole source of truth** Every live read and write goes to PostgreSQL (via Npgsql). Narrow per-type tables (`users`, `roles`, `permissions`, `spaces`) plus a generic `entries` table, with `attachments` and `histories` alongside. ACID, relational integrity, and trigram (`pg_trgm` + GIN jsonb) full-text search — plus optional pgvector semantic search. There is no filesystem runtime store and no Redis; in-process caches only. **The `.dm` tree — the export & backup format** The human-readable folder tree shown above is how a space is _exported, seeded and backed up_, not how it is served. `dmart export` writes a space to a zip in this on-disk layout; `import` and `seed` read it back. Human-readable, diff-friendly, and trivially archived with `git` or `tar`.
+**PostgreSQL — the sole source of truth** Every live read and write goes to PostgreSQL (via Npgsql). Narrow per-type tables (`users`, `roles`, `permissions`, `spaces`) plus a generic `entries` table, with `attachments` and `histories` alongside. ACID, relational integrity, and trigram (`pg_trgm` + GIN jsonb) full-text search — plus optional pgvector semantic search. There is no filesystem runtime store and no Redis; in-process caches only.
+
+**The `.dm` tree — the export & backup format** The human-readable folder tree shown above is how a space is _exported, seeded and backed up_, not how it is served. `dmart export` writes a space to a zip in this on-disk layout; `import` and `seed` read it back. Human-readable, diff-friendly, and trivially archived with `git` or `tar`.
 
 The wire format is the same in both directions: clients always send and receive the same `Record` envelope, whether it is being persisted to PostgreSQL or round-tripped through a `.dm` archive. This is what lets DMART promise **data longevity with zero vendor lock-in**: your data is standard PostgreSQL _and_ can be exported to plain JSON files on disk at any time.

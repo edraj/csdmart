@@ -2,7 +2,13 @@ Integrate DMART with official client libraries.
 
 ## Python
 
-**pydmart** Official Python client. pip install pydmart Usage
+**pydmart** Official Python client.
+
+```bash
+pip install pydmart
+```
+
+Usage
 
 ```python
 from pydmart import DmartService
@@ -24,7 +30,13 @@ for record in resp.records:
 
 ## C# / .NET
 
-**Dmart.Client** Async C# client for .NET Standard 2.1, .NET 8 & .NET 10 (AOT-friendly). dotnet add package Dmart.Client Usage
+**Dmart.Client** Async C# client for .NET Standard 2.1, .NET 8 & .NET 10 (AOT-friendly).
+
+```bash
+dotnet add package Dmart.Client
+```
+
+Usage
 
 ```csharp
 using Dmart.Client;
@@ -50,7 +62,13 @@ foreach (var record in resp.Records ?? [])
 
 ## TypeScript / JavaScript
 
-**@edraj/tsdmart** Fully typed client for Node, Deno, Bun, and browsers. npm install @edraj/tsdmart Usage
+**@edraj/tsdmart** Fully typed client for Node, Deno, Bun, and browsers.
+
+```bash
+npm install @edraj/tsdmart
+```
+
+Usage
 
 ```typescript
 import { Dmart, QueryType } from "@edraj/tsdmart";
@@ -71,7 +89,13 @@ console.log(resp?.records?.map((r) => r.shortname));
 
 ## Dart / Flutter
 
-**dmart** Native Dart package for cross-platform apps. flutter pub add dmart Usage
+**dmart** Native Dart package for cross-platform apps.
+
+```
+flutter pub add dmart
+```
+
+Usage
 
 ```
 import 'package:dmart/dmart.dart';

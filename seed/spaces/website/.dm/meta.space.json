@@ -7,7 +7,7 @@
     "ar": "الموقع"
   },
   "description": {
-    "en": "Public website content, rendered by the catalog SSG."
+    "en": "Public website content, published by `dmart website build`."
   },
   "tags": [],
   "created_at": "2026-10-01T00:00:00",

@@ -4,7 +4,9 @@ A technical overview of the entity lifecycle within DMART. Entities are the fund
 
 Every entity consists of two main parts:
 
-**Meta** System-level metadata: UUID, shortname, ownership, timestamps, and access control lists (ACLs). **Payload** The actual content body, along with its type (JSON, Markdown, Image) and schema reference.
+**Meta** System-level metadata: UUID, shortname, ownership, timestamps, and access control lists (ACLs).
+
+**Payload** The actual content body, along with its type (JSON, Markdown, Image) and schema reference.
 
 ### Meta Structure
 
@@ -195,7 +197,17 @@ spaces/
 
 DMART supports various resource types, each serving a specific purpose:
 
-**Core** `space`, `folder`, `user`, `group`, `role`, `permission` **Data** `content`, `schema`, `json`, `data_asset`, `media` **Social** `post`, `comment`, `reaction`, `share` **Workflow** `ticket` **System** `log`, `notification`, `plugin_wrapper`, `history` **Big Data** `parquet`, `csv`, `jsonl`, `sqlite`
+**Core** `space`, `folder`, `user`, `group`, `role`, `permission`
+
+**Data** `content`, `schema`, `json`, `data_asset`, `media`
+
+**Social** `post`, `comment`, `reaction`, `share`
+
+**Workflow** `ticket`
+
+**System** `log`, `notification`, `plugin_wrapper`, `history`
+
+**Big Data** `parquet`, `csv`, `jsonl`, `sqlite`
 
 ## Management Space
 

@@ -29,6 +29,19 @@
   `'unsafe-inline'` for scripts, so script in an `html`-typed page doesn't
   run in the origin the admin UI shares.
 
+### Fixed
+
+- **Ten of the bundled website pages lost structure in their conversion
+  from dmart.cc's Svelte markup.** The HTML-to-markdown converter treated
+  `<div>` as transparent, so sibling cards ran together into one paragraph
+  (features, data model, plugins, tickets, access control and more). It
+  also dropped `<br/>` inside mermaid labels ("① Metaidentity, ownership"),
+  and turned the drivers page's install commands into plain prose. The
+  converter is fixed. The pages were updated by merging in only the
+  converter's change, which keeps every edit made to them since (#345,
+  #357). Tables, diagrams and headings are unchanged in count, and no
+  words were lost.
+
 ### Removed
 
 - `catalog/ssg/generate.mjs` and the catalog's `ssg:dmart` script. The Node

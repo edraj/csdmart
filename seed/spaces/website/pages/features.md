@@ -4,7 +4,13 @@ DMART is a versatile Data-as-a-Service (DaaS) platform designed to simplify data
 
 DMART treats data as a first-class citizen, moving beyond traditional database constraints.
 
-**Flexible "Entries"** The core unit of data — can represent anything from a simple record to a complex document. **Structured & Unstructured** Seamlessly handle JSON data alongside text, markdown, and binary files (images, PDFs, videos). **Attachments** Associate any number of files (documents, media) directly with an entry, keeping related information together. **Hierarchical** Organize data into intuitive Spaces and Subpaths, similar to a file system.
+**Flexible "Entries"** The core unit of data — can represent anything from a simple record to a complex document.
+
+**Structured & Unstructured** Seamlessly handle JSON data alongside text, markdown, and binary files (images, PDFs, videos).
+
+**Attachments** Associate any number of files (documents, media) directly with an entry, keeping related information together.
+
+**Hierarchical** Organize data into intuitive Spaces and Subpaths, similar to a file system.
 
 ```mermaid
 graph TD
