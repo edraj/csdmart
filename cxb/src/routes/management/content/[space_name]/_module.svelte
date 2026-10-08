@@ -1,5 +1,4 @@
 <script lang="ts">
-    import type { Snippet } from "svelte";
     import { CloseButton, Drawer } from "flowbite-svelte";
     import { BarsOutline } from "flowbite-svelte-icons";
     import { params } from "@roxi/routify";
@@ -7,7 +6,6 @@
     import IconButton from "@/components/ui/IconButton.svelte";
     import { _, dir } from "@/i18n";
 
-    let { children }: { children?: Snippet } = $props();
 
     let drawerOpen = $state(false);
 </script>
@@ -52,7 +50,14 @@
         </div>
 
         <div class="flex-1 overflow-auto w-full pb-8">
-            {@render children?.()}
+            <!-- Routify 3.6 renders route components with `let:` directives
+                 (RenderFragment.svelte), so the child route arrives as a Svelte 4 slot;
+                 a layout that renders {@render children()} throws
+                 invalid_default_snippet at runtime. svelte-check flags the slot as
+                 deprecated; ESLint's compile pass does not, hence both comments. -->
+            <!-- eslint-disable-next-line svelte/no-unused-svelte-ignore -- only svelte-check emits slot_element_deprecated here -->
+            <!-- svelte-ignore slot_element_deprecated -->
+            <slot />
         </div>
     </div>
 </div>

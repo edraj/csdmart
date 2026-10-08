@@ -1,6 +1,5 @@
 <!-- routify:meta reset -->
 <script lang="ts">
-    import type { Snippet } from "svelte";
     import { Dmart, DmartScope } from "@edraj/tsdmart";
     import { clearLocalSession, ensureDmartAxios } from "@/lib/dmart_axios";
     import Login from "@/components/Login.svelte";
@@ -9,7 +8,6 @@
     import { getSpaces } from "@/lib/dmart_services";
     import { user } from "@/stores/user";
 
-    let { children }: { children?: Snippet } = $props();
 
     // The axios instance (and its 401 interceptor) now lives in
     // src/lib/dmart_axios.ts so routes outside /management — the
@@ -88,6 +86,13 @@
         <ManagementHeader />
     {/if}
     <div class="flex-grow overflow-auto">
-        {@render children?.()}
+        <!-- Routify 3.6 renders route components with `let:` directives
+             (RenderFragment.svelte), so the child route arrives as a Svelte 4 slot;
+             a layout that renders {@render children()} throws
+             invalid_default_snippet at runtime. svelte-check flags the slot as
+             deprecated; ESLint's compile pass does not, hence both comments. -->
+        <!-- eslint-disable-next-line svelte/no-unused-svelte-ignore -- only svelte-check emits slot_element_deprecated here -->
+        <!-- svelte-ignore slot_element_deprecated -->
+        <slot />
     </div>
 </div>
