@@ -1,201 +1,78 @@
 <script lang="ts">
+  import { CalendarMonthOutline, FileLinesOutline } from "flowbite-svelte-icons";
+  import Avatar from "@/components/Avatar.svelte";
+  import Badge from "@/components/ui/Badge.svelte";
   import { _ } from "@/i18n";
   import { formatDate } from "@/lib/format";
+  import { getAvatarCached } from "@/lib/dmart_services/avatars";
   import { getAuthorInfo, getPostTitle } from "@/lib/utils/postUtils";
 
-  let { postData, locale }: { postData: any; locale: string } = $props();
+  // The top of an entry page: who wrote it (name once — not "name @name"),
+  // when, which schema it follows, the title and its tags. Nothing here is
+  // decorative state: no static "Hot" badge, no read time computed from
+  // fields the record does not have.
+  interface PostHeaderData {
+    owner_shortname?: string;
+    created_at?: string;
+    tags?: unknown;
+    payload?: { schema_shortname?: string };
+    [key: string]: unknown;
+  }
 
-  const authorInfo = $derived(getAuthorInfo(postData, $_("common.unknown")));
+  let { postData, locale }: { postData: PostHeaderData; locale: string } = $props();
+
+  const author = $derived(getAuthorInfo(postData, $_("common.unknown")));
+  const title = $derived(getPostTitle(postData));
+  const schema = $derived(postData.payload?.schema_shortname ?? "");
+  const tags = $derived(
+    Array.isArray(postData.tags) ? postData.tags.filter((t): t is string => typeof t === "string" && t.trim() !== "") : [],
+  );
+
+  // One cached lookup for the author's picture; Avatar shows initials meanwhile.
+  let avatarUrl = $state<string | null>(null);
+  $effect(() => {
+    const owner = postData.owner_shortname;
+    let cancelled = false;
+    avatarUrl = null;
+    if (!owner) return;
+    void getAvatarCached(owner).then((url) => {
+      if (!cancelled) avatarUrl = url;
+    });
+    return () => {
+      cancelled = true;
+    };
+  });
 </script>
 
-<header class="post-header mb-6">
-  <div class="author-row">
-    <div class="author-avatar-wrapper">
-      <div class="author-avatar">
-        {authorInfo ? authorInfo.substring(0, 2).toUpperCase() : "U"}
-      </div>
-    </div>
-
-    <div class="author-details-container">
-      <div class="author-identity">
-        <span class="author-name">{authorInfo}</span>
-        <span class="author-handle"
-          >@{authorInfo.toLowerCase().replace(/\s+/g, "")}</span
-        >
-      </div>
-      <div class="post-meta">
-        <svg
-          class="clock-icon"
-          fill="none"
-          viewBox="0 0 24 24"
-          stroke="currentColor"
-        >
-          <path
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            stroke-width="2"
-            d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"
-          />
-        </svg>
-        <span class="post-time">
-          {formatDate(postData.created_at, "date", locale) || $_("common.not_available")}
-        </span>
-        <span class="separator">·</span>
-        <span class="folder-badge">
-          <svg
-            class="folder-icon"
-            fill="none"
-            viewBox="0 0 24 24"
-            stroke="currentColor"
-          >
-            <path
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              stroke-width="2"
-              d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"
-            />
-          </svg>
-          {postData.payload?.schema_shortname ||
-            $_("post_detail.content_type.content")}
-        </span>
-      </div>
-    </div>
-  </div>
-
-  <h1 class="post-title break-words">{getPostTitle(postData)}</h1>
-
-  <div class="post-tags">
-    {#if postData.tags && postData.tags.length > 0}
-      {#each postData.tags as tag (tag)}
-        {#if tag && tag.trim()}
-          <span class="badge badge-tag">#{tag}</span>
+<header>
+  <div class="flex items-center gap-3 min-w-0">
+    <Avatar src={avatarUrl} alt="" size={44} />
+    <div class="min-w-0">
+      <p class="text-sm font-semibold text-text truncate">{author}</p>
+      <div class="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-text-muted">
+        {#if postData.created_at}
+          <time datetime={postData.created_at} class="inline-flex items-center gap-1">
+            <CalendarMonthOutline size="xs" aria-hidden="true" />
+            {formatDate(postData.created_at, "datetime", locale) || $_("common.not_available")}
+          </time>
         {/if}
-      {/each}
-    {/if}
+        {#if schema}
+          <Badge size="sm">
+            <FileLinesOutline size="xs" aria-hidden="true" />
+            {schema}
+          </Badge>
+        {/if}
+      </div>
+    </div>
   </div>
+
+  <h1 class="mt-5 text-2xl sm:text-3xl font-semibold text-text leading-tight break-words">{title}</h1>
+
+  {#if tags.length > 0}
+    <div class="mt-3 flex flex-wrap gap-1.5">
+      {#each tags as tag (tag)}
+        <Badge variant="primary">#{tag}</Badge>
+      {/each}
+    </div>
+  {/if}
 </header>
-
-<style>
-  .post-header {
-    background: transparent;
-    padding: 0;
-    margin-bottom: 32px;
-    border: none;
-    box-shadow: none;
-  }
-
-  .author-row {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    margin-bottom: 24px;
-  }
-
-  .author-avatar-wrapper {
-    position: relative;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-  }
-
-  .author-avatar {
-    width: 44px;
-    height: 44px;
-    border-radius: 50%;
-    background-color: #f8fafc;
-    color: #0f172a;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-weight: 700;
-    font-size: 16px;
-    border: 1px solid #e2e8f0;
-  }
-
-
-  .author-details-container {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-  }
-
-  .author-identity {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    font-size: 15px;
-  }
-
-  .author-name {
-    font-weight: 700;
-    color: #0f172a;
-  }
-
-  .author-handle {
-    color: #94a3b8;
-    font-weight: 500;
-  }
-
-  .post-meta {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    font-size: 12px;
-    color: #94a3b8;
-    font-weight: 500;
-  }
-
-  .separator {
-    color: #cbd5e1;
-    margin: 0 4px;
-  }
-
-  .clock-icon,
-  .folder-icon,
-
-  .folder-badge {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    background-color: #f1f5f9;
-    color: #64748b;
-    padding: 2px 8px;
-    border-radius: 6px;
-    font-size: 12px;
-    font-weight: 600;
-  }
-
-
-
-
-  .post-title {
-    font-size: 32px;
-    font-weight: 800;
-    color: #0f172a;
-    margin: 0 0 16px 0;
-    line-height: 1.25;
-    letter-spacing: -0.02em;
-  }
-
-  .post-tags {
-    display: flex;
-    gap: 8px;
-    flex-wrap: wrap;
-    align-items: center;
-  }
-
-  .badge {
-    display: inline-flex;
-    align-items: center;
-    padding: 6px 12px;
-    border-radius: 9999px;
-    font-size: 13px;
-    font-weight: 600;
-  }
-
-  .badge-tag {
-    background-color: #e0e7ff; /* light blue/indigo */
-    color: #4f46e5;
-    border: none;
-  }
-</style>

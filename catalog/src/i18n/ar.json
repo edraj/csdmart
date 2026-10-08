@@ -624,7 +624,13 @@
       "posted_by": "نشر بواسطة",
       "read_more": "قراءة المزيد",
       "share": "مشاركة",
-      "report": "تقرير"
+      "report": "تقرير",
+      "share_text": "ألقِ نظرة على هذا المحتوى: {title}",
+      "comments_aria": "{count} تعليقات",
+      "reactions_aria": "{count} تفاعلات",
+      "media_aria": "{count} مرفقات",
+      "folder": "مجلد",
+      "actions_aria": "إجراءات {title}"
     },
     "empty": {
       "folder_empty": "يبدو أن هذا المجلد فارغ.",
@@ -684,13 +690,19 @@
       "remove_tag": "إزالة الوسم {tag}",
       "selected_tags": "الوسوم المحددة",
       "show_all": "عرض الكل",
-      "show_less": "عرض أقل"
+      "show_less": "عرض أقل",
+      "filter_by_tag_aria": "تصفية حسب الوسم {tag}",
+      "more": "+{count} أخرى"
     },
     "time": {
       "days_ago": "ايام مضت",
       "hours_ago": "ساعات مضت",
       "just_now": "الآن",
       "minutes_ago": "دقائق مضت"
+    },
+    "csv": {
+      "import": "استيراد CSV",
+      "export": "تصدير CSV"
     }
   },
   "catalog_user_permissions_info": "صلاحيات المستخدم في الكتالوج تنطبق على المستخدمين المسجلين الذين لديهم حق الوصول إلى الكتالوج. يمكن لهؤلاء المستخدمين التفاعل مع المحتوى.",
@@ -729,7 +741,8 @@
       "clear": "مسح البحث",
       "placeholder": "البحث في المساحات...",
       "results_subtitle": "نتائج البحث بناءً على استفسارك",
-      "results_title": "نتائج البحث"
+      "results_title": "نتائج البحث",
+      "results_count": "{count} نتائج لـ \"{query}\""
     },
     "showing_spaces": "عرض {count} مساحة",
     "stats": {
@@ -737,7 +750,12 @@
       "members": "الأعضاء",
       "posts": "المنشورات"
     },
-    "unnamed_space": "مساحة بدون اسم"
+    "unnamed_space": "مساحة بدون اسم",
+    "page_title": "استكشف المساحات",
+    "card": {
+      "entries_aria": "{count} مدخلات",
+      "owner_aria": "المالك: {name}"
+    }
   },
   "chat": "دردشة",
   "common": {
@@ -1381,7 +1399,8 @@
       "catalogs": "الكتالوجات"
     },
     "content_type": {
-      "content": "المحتوى"
+      "content": "المحتوى",
+      "json": "محتوى JSON"
     },
     "error": {
       "failed_load": "فشل في تحميل بيانات المنشور",
@@ -1405,7 +1424,8 @@
       "title": "لا توجد بيانات"
     },
     "relationships": {
-      "related": "ذو صلة"
+      "related": "ذو صلة",
+      "view_aria": "عرض العلاقة مع {name}"
     },
     "sections": {
       "description": "الوصف",
@@ -1433,14 +1453,30 @@
       "reply_placeholder": "اكتب ردك هنا...",
       "submit": "نشر التعليق",
       "submit_reply": "نشر الرد",
-      "placeholder": "شاركنا رأيك…"
+      "placeholder": "شاركنا رأيك…",
+      "shift_enter_hint": "Shift + Enter لسطر جديد",
+      "anonymous": "مجهول",
+      "go_to_comments": "الانتقال إلى التعليقات"
     },
     "reactions": {
       "add_failed": "فشل في إضافة التفاعل. حاول مرة أخرى.",
       "added_successfully": "تمت إضافة التفاعل بنجاح!",
       "remove_failed": "فشل في إزالة التفاعل. حاول مرة أخرى.",
       "removed_successfully": "تمت إزالة التفاعل بنجاح!",
-      "toggle_error": "حدث خطأ أثناء معالجة تفاعلك."
+      "toggle_error": "حدث خطأ أثناء معالجة تفاعلك.",
+      "like": "إعجاب",
+      "unlike": "إزالة الإعجاب",
+      "count_aria": "{count} إعجابات"
+    },
+    "template": {
+      "not_found": "لم يُعثر على القالب \"{name}\"",
+      "empty": "القالب لا يحتوي على محتوى",
+      "load_failed": "تعذّر تحميل القالب",
+      "loading": "جارٍ تحميل القالب…",
+      "label": "القالب: {name}"
+    },
+    "markdown": {
+      "diagram_source": "مصدر المخطط (Mermaid)"
     }
   },
   "previous": "السابق",
@@ -1636,7 +1672,7 @@
     "hot": "شائع",
     "new_post": "منشور جديد",
     "search_posts_placeholder": "البحث في المنشورات...",
-    "search_results_count": "تم العثور على <strong>{count}</strong> نتائج لـ \"{query}\"",
+    "search_results_count": "تم العثور على {count} نتائج لـ \"{query}\"",
     "show_all_tags": "عرض جميع الوسوم",
     "show_less_tags": "عرض وسوم أقل",
     "showing_all_content": "عرض كل المحتوى",

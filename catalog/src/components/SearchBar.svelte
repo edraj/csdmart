@@ -1,21 +1,26 @@
 <script lang="ts">
   import { onDestroy, onMount } from "svelte";
   import { streamEntitiesAcrossSpaces } from "@/lib/dmart_services";
-  import { goto as gotoStore, params } from "@roxi/routify";
+  import { params } from "@roxi/routify";
   import { _, locale } from "@/i18n";
   import { formatDate } from "@/lib/format";
   import SkeletonBlock from "@/components/SkeletonBlock.svelte";
-  import { encodeSubpath, ROOT_SUBPATH_SEGMENT } from "@/lib/paths";
+  import { encodeSubpath, ROOT_SUBPATH_SEGMENT, withBase } from "@/lib/paths";
 
-  // Routify's helpers read the fragment context when first subscribed, and
-  // Svelte 5 subscribes to a `$store` lazily on first read — so a `$gotoStore`
-  // first touched inside an async callback logs "Unable to access context".
-  // Capture the navigate function once, during component init.
-  const goto = $gotoStore;
+  // One hit in the dropdown, flattened from the query record.
+  interface SearchEntity {
+    shortname: string;
+    space_name: string;
+    folder: string;
+    subpath: string;
+    resource_type: string;
+    created_at: string;
+  }
+
   let isProjectBeingFetched = $state(false);
   let searchString = $state("");
-  let entities: any[] = $state([]);
-  let searchInput: any = $state(null);
+  let entities: SearchEntity[] = $state([]);
+  let searchInput: HTMLInputElement | null = $state(null);
   let triggerElement: HTMLDivElement | null = $state(null);
   let dropdownElement: HTMLDivElement | null = $state(null);
 
@@ -23,8 +28,9 @@
   let tags: TagItem[] = $state([]);
   let showDropdown = $state(false);
 
-  let currentSpace = $derived(($params as any)?.space_name || "");
-  let currentFolder = $derived(($params as any)?.subpath || "");
+  const routeParams = $derived($params as Record<string, string | undefined>);
+  const currentSpace = $derived(routeParams.space_name || "");
+  const currentFolder = $derived(routeParams.subpath || "");
 
   let availableTagOptions: TagItem[] = $derived.by(() => {
     const opts: TagItem[] = [];
@@ -140,7 +146,7 @@
         (records, space) => {
           if (token !== searchToken) return;
 
-          const enriched = records.map((item: any) => {
+          const enriched: SearchEntity[] = records.map((item) => {
             const subpath: string = item.subpath ?? "";
             const folder = subpath.replace(/^\/+|\/+$/g, "") || "/";
             return {
@@ -148,7 +154,7 @@
               space_name: item.space_name ?? space,
               folder,
               subpath,
-              resource_type: item.resource_type,
+              resource_type: item.resource_type ?? "content",
               created_at: formatDate(item.attributes?.created_at, "datetime", $locale),
             };
           });
@@ -172,35 +178,24 @@
     }, 500);
   }
 
-  function gotoEntityDetails(entity: any) {
+  // The admin route for a hit: a folder opens its listing, an entry its page,
+  // and an entry at the root (no folder segment to put in the URL) opens the
+  // space. Hits are real links so middle-click and "open in new tab" work.
+  function entityPath(entity: SearchEntity): string {
     const parentRouteSubpath = encodeSubpath(entity.subpath);
     const atRoot = parentRouteSubpath === ROOT_SUBPATH_SEGMENT;
-
+    const space = encodeURIComponent(entity.space_name);
     if (entity.resource_type === "folder") {
-      const folderSubpath = atRoot
-        ? entity.shortname
-        : `${parentRouteSubpath}-${entity.shortname}`;
-      goto("/dashboard/admin/[space_name]/[subpath]", {
-        space_name: entity.space_name,
-        subpath: folderSubpath,
-      });
-    } else if (!atRoot) {
-      goto(
-        "/dashboard/admin/[space_name]/[subpath]/[shortname]/[resource_type]",
-        {
-          space_name: entity.space_name,
-          subpath: parentRouteSubpath,
-          shortname: entity.shortname,
-          resource_type: entity.resource_type,
-        },
-      );
-    } else {
-      goto("/dashboard/admin/[space_name]", {
-        space_name: entity.space_name,
-      });
+      const folderSubpath = atRoot ? entity.shortname : `${parentRouteSubpath}-${entity.shortname}`;
+      return `/dashboard/admin/${space}/${encodeURIComponent(folderSubpath)}`;
     }
-
-    showDropdown = false;
+    if (!atRoot) {
+      return (
+        `/dashboard/admin/${space}/${encodeURIComponent(parentRouteSubpath)}` +
+        `/${encodeURIComponent(entity.shortname)}/${encodeURIComponent(entity.resource_type)}`
+      );
+    }
+    return `/dashboard/admin/${space}`;
   }
 
   onMount(() => {
@@ -220,22 +215,8 @@
 </script>
 
 <div class="search-trigger-wrap">
-  <div
-    class="search-trigger"
-    bind:this={triggerElement}
-    role="button"
-    tabindex="0"
-    aria-label={$_("route_labels.aria_search")}
-    title={$_("route_labels.aria_search")}
-    onclick={openDropdown}
-    onkeydown={(e) => {
-      if (e.key === "Enter" || e.key === " ") {
-        e.preventDefault();
-        openDropdown();
-      }
-    }}
-  >
-    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <div class="search-trigger" bind:this={triggerElement}>
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
       <path d="M7.33333 12.6667C10.2789 12.6667 12.6667 10.2789 12.6667 7.33333C12.6667 4.38781 10.2789 2 7.33333 2C4.38781 2 2 4.38781 2 7.33333C2 10.2789 4.38781 12.6667 7.33333 12.6667Z" stroke="currentColor" stroke-width="1.33333" stroke-linecap="round" stroke-linejoin="round"/>
       <path d="M14 14L11.1333 11.1333" stroke="currentColor" stroke-width="1.33333" stroke-linecap="round" stroke-linejoin="round"/>
     </svg>
@@ -261,11 +242,13 @@
 
     <input
       bind:this={searchInput}
-      type="text"
+      type="search"
       placeholder={$_("route_labels.search_placeholder_short")}
+      aria-label={$_("route_labels.aria_search")}
       bind:value={searchString}
       oninput={handleSearchChange}
       onfocus={openDropdown}
+      onclick={openDropdown}
       class="search-trigger-input"
     />
 
@@ -275,12 +258,7 @@
   </div>
 
   {#if showDropdown}
-    <div
-      class="search-dropdown"
-      bind:this={dropdownElement}
-      role="listbox"
-      aria-busy={isProjectBeingFetched}
-    >
+    <div class="search-dropdown" bind:this={dropdownElement} aria-busy={isProjectBeingFetched}>
       {#if searchString.trim().length === 0}
         {#if availableTagOptions.length === 0}
           <div class="search-dropdown-empty">{$_("route_labels.search_no_filters_available")}</div>
@@ -321,13 +299,7 @@
         {:else if entities.length > 0}
           <div class="search-results-list">
             {#each entities as entity (`${entity.space_name}/${entity.subpath}/${entity.shortname}`)}
-              <div
-                class="search-result-item"
-                role="button"
-                tabindex="0"
-                onkeydown={() => gotoEntityDetails(entity)}
-                onclick={() => gotoEntityDetails(entity)}
-              >
+              <a class="search-result-item" href={withBase(entityPath(entity))} onclick={() => (showDropdown = false)}>
                 <div class="search-result-content">
                   <div class="search-result-info">
                     <h3 class="search-result-title">{entity.shortname}</h3>
@@ -348,7 +320,7 @@
                   </div>
                   <div class="search-result-date">{entity.created_at}</div>
                 </div>
-              </div>
+              </a>
             {/each}
           </div>
         {/if}
@@ -373,19 +345,19 @@
     flex-wrap: wrap;
     gap: 0.25rem;
     min-height: 2.375rem;
-    border-radius: var(--radius-xl);
-    background: var(--color-gray-50);
+    border-radius: var(--radius-card);
+    background: var(--color-surface-3);
     padding: 0.25rem 0.625rem;
-    color: var(--color-gray-400);
+    color: var(--color-text-faint);
     border: 1px solid transparent;
     transition: all var(--duration-normal) var(--ease-out);
     cursor: text;
   }
 
   .search-trigger:focus-within {
-    border-color: var(--color-primary-200);
-    background: white;
-    box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.08);
+    border-color: var(--color-primary);
+    background: var(--color-surface-2);
+    box-shadow: 0 0 0 1px var(--color-primary);
   }
 
   .search-trigger-input {
@@ -395,13 +367,13 @@
     background: transparent;
     border: none;
     outline: none;
-    color: var(--color-gray-900);
+    color: var(--color-text);
     font-size: 0.875rem;
     padding-inline-start: 0.5rem;
   }
 
   .search-trigger-input::placeholder {
-    color: var(--color-gray-400);
+    color: var(--color-text-faint);
   }
 
   .search-tag-chip {
@@ -409,9 +381,9 @@
     align-items: center;
     gap: 0.25rem;
     padding: 0.125rem 0.25rem 0.125rem 0.5rem;
-    background: var(--color-primary-50);
-    color: var(--color-primary-700);
-    border: 1px solid var(--color-primary-200);
+    background: var(--color-primary-soft);
+    color: var(--color-primary);
+    border: 1px solid var(--color-primary);
     border-radius: var(--radius-full);
     font-size: 0.75rem;
     font-weight: 500;
@@ -434,14 +406,14 @@
     border-radius: var(--radius-full);
     background: transparent;
     border: none;
-    color: var(--color-primary-600);
+    color: var(--color-primary);
     cursor: pointer;
     flex-shrink: 0;
   }
 
   .search-tag-chip-remove:hover {
-    background: var(--color-primary-100);
-    color: var(--color-primary-800);
+    background: var(--color-primary-soft);
+    color: var(--color-primary-hover);
   }
 
   /* ── Unified Dropdown ── */
@@ -451,10 +423,10 @@
     inset-inline-start: 0;
     inset-inline-end: 0;
     z-index: 60;
-    background: var(--surface-card);
-    border: 1px solid var(--color-gray-200);
-    border-radius: var(--radius-lg);
-    box-shadow: var(--shadow-lg);
+    background: var(--color-surface-2);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-card);
+    box-shadow: var(--shadow-modal);
     padding: 0.375rem;
     display: flex;
     flex-direction: column;
@@ -466,7 +438,7 @@
   .search-dropdown-empty {
     padding: 0.625rem 0.75rem;
     font-size: 0.8125rem;
-    color: var(--color-gray-400);
+    color: var(--color-text-faint);
     text-align: center;
   }
 
@@ -477,8 +449,8 @@
     padding: 0.5rem 0.625rem;
     background: transparent;
     border: none;
-    border-radius: var(--radius-md);
-    color: var(--color-gray-700);
+    border-radius: var(--radius-control);
+    color: var(--color-text-muted);
     font-size: 0.8125rem;
     text-align: start;
     cursor: pointer;
@@ -486,12 +458,12 @@
   }
 
   .search-tag-option:hover {
-    background: var(--color-gray-100);
-    color: var(--color-gray-900);
+    background: var(--color-surface-3);
+    color: var(--color-text);
   }
 
   .search-tag-option-icon {
-    color: var(--color-gray-400);
+    color: var(--color-text-faint);
     flex-shrink: 0;
   }
 
@@ -508,7 +480,7 @@
     justify-content: space-between;
     gap: 1rem;
     padding: 0.5rem 0.625rem;
-    border-radius: var(--radius-md);
+    border-radius: var(--radius-control);
   }
 
   .search-skeleton-col {
@@ -532,8 +504,11 @@
   }
 
   .search-result-item {
+    display: block;
+    color: inherit;
+    text-decoration: none;
     padding: 0.5rem 0.625rem;
-    border-radius: var(--radius-md);
+    border-radius: var(--radius-control);
     border: 1px solid transparent;
     cursor: pointer;
     transition: background var(--duration-fast) ease, border-color var(--duration-fast) ease;
@@ -541,8 +516,8 @@
 
   .search-result-item:hover,
   .search-result-item:focus-visible {
-    background: var(--color-gray-100);
-    border-color: var(--color-gray-200);
+    background: var(--color-surface-3);
+    border-color: var(--color-border);
     outline: none;
   }
 
@@ -561,7 +536,7 @@
 
   .search-result-title {
     font-weight: 600;
-    color: var(--color-gray-900);
+    color: var(--color-text);
     font-size: 0.9375rem;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -582,8 +557,8 @@
     gap: 0.25rem;
     padding: 0.0625rem 0.5rem;
     border-radius: var(--radius-full);
-    background: var(--color-gray-100);
-    color: var(--color-gray-700);
+    background: var(--color-surface-3);
+    color: var(--color-text-muted);
     font-size: 0.6875rem;
     font-weight: 500;
     line-height: 1.4;
@@ -595,12 +570,12 @@
 
   .search-result-meta-pill svg {
     flex-shrink: 0;
-    color: var(--color-gray-400);
+    color: var(--color-text-faint);
   }
 
   .search-result-date {
     font-size: 0.75rem;
-    color: var(--color-gray-500);
+    color: var(--color-text-muted);
     flex-shrink: 0;
     white-space: nowrap;
   }
@@ -611,10 +586,10 @@
     gap: 0.125rem;
     padding: 0.125rem 0.375rem;
     margin-inline-start: 0.25rem;
-    border: 1px solid var(--color-gray-200);
-    border-radius: var(--radius-sm);
-    background: var(--surface-card);
-    color: var(--color-gray-500);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-control);
+    background: var(--color-surface-2);
+    color: var(--color-text-muted);
     font-size: 0.6875rem;
     font-family: var(--font-sans);
     font-weight: var(--font-weight-medium);

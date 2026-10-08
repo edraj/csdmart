@@ -1,126 +1,118 @@
 <script lang="ts">
-  import { _ } from "@/i18n";
+  import { HeartOutline, HeartSolid, MessageDotsOutline } from "flowbite-svelte-icons";
+  import { _, locale } from "@/i18n";
+  import { formatNumberInText } from "@/lib/helpers";
 
-  interface Props {
-    reactionsCount: number;
-    commentsCount: number;
-    userReactionId: string | null;
-    isSubmittingReaction: boolean;
-    onToggleReaction: () => void;
-  }
-
+  // Reactions and comments under an entry. The like button is a real toggle
+  // (aria-pressed + a named label); the comment counter jumps to the
+  // comments section rather than looking clickable and doing nothing.
   let {
     reactionsCount,
     commentsCount,
     userReactionId,
     isSubmittingReaction,
     onToggleReaction,
-  }: Props = $props();
+    commentsId = "comments",
+  }: {
+    reactionsCount: number;
+    commentsCount: number;
+    userReactionId: string | null;
+    isSubmittingReaction: boolean;
+    onToggleReaction: () => void;
+    /** id of the comments section the counter scrolls to. */
+    commentsId?: string;
+  } = $props();
+
+  const liked = $derived(!!userReactionId);
+  const number = (n: number) => formatNumberInText(n, $locale ?? "");
+  const likeLabel = $derived(
+    `${liked ? $_("post_detail.reactions.unlike") : $_("post_detail.reactions.like")} · ${$_(
+      "post_detail.reactions.count_aria",
+      { values: { count: number(reactionsCount) } },
+    )}`,
+  );
+  const commentsLabel = $derived(
+    `${$_("post_detail.comments.go_to_comments")} · ${$_("catalog_contents.card.comments_aria", {
+      values: { count: number(commentsCount) },
+    })}`,
+  );
+
+  function goToComments() {
+    const target = document.getElementById(commentsId);
+    if (!target) return;
+    target.scrollIntoView({ behavior: "smooth", block: "start" });
+    target.focus({ preventScroll: true });
+  }
 </script>
 
-<div class="action-bar-container">
-  <div class="action-stats-left">
-    <div class="stat-item clickable">
-      <svg
-        class="icon-comment"
-        fill="none"
-        stroke="currentColor"
-        viewBox="0 0 24 24"
-      >
-        <path
-          stroke-linecap="round"
-          stroke-linejoin="round"
-          stroke-width="2"
-          d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"
-        ></path>
-      </svg>
-      <span class="stat-count">{commentsCount}</span>
-    </div>
+<div class="interactions" role="group" aria-label={$_("post_detail.sections.comments")}>
+  <button type="button" class="stat" onclick={goToComments} aria-label={commentsLabel} title={$_("post_detail.comments.go_to_comments")}>
+    <MessageDotsOutline size="md" aria-hidden="true" />
+    <span class="tabular-nums" aria-hidden="true">{number(commentsCount)}</span>
+  </button>
 
-    <button
-      class="stat-item clickable heart-btn {userReactionId ? 'liked' : ''}"
-      onclick={onToggleReaction}
-      disabled={isSubmittingReaction}
-    >
-      <svg
-        class="icon-heart"
-        fill={userReactionId ? "currentColor" : "none"}
-        stroke="currentColor"
-        viewBox="0 0 24 24"
-      >
-        <path
-          stroke-linecap="round"
-          stroke-linejoin="round"
-          stroke-width="2"
-          d="M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z"
-        ></path>
-      </svg>
-      <span class="stat-count">{reactionsCount}</span>
-    </button>
-  </div>
-
-  <div class="action-stats-right">
-  </div>
+  <button
+    type="button"
+    class="stat like"
+    class:liked
+    onclick={onToggleReaction}
+    disabled={isSubmittingReaction}
+    aria-pressed={liked}
+    aria-busy={isSubmittingReaction}
+    aria-label={likeLabel}
+    title={liked ? $_("post_detail.reactions.unlike") : $_("post_detail.reactions.like")}
+  >
+    {#if liked}
+      <HeartSolid size="md" aria-hidden="true" />
+    {:else}
+      <HeartOutline size="md" aria-hidden="true" />
+    {/if}
+    <span class="tabular-nums" aria-hidden="true">{number(reactionsCount)}</span>
+  </button>
 </div>
 
 <style>
-  .action-bar-container {
+  .interactions {
     display: flex;
-    justify-content: space-between;
+    flex-wrap: wrap;
     align-items: center;
-    border-top: 1px solid #f1f5f9;
-    padding-top: 24px;
-    margin-top: 32px;
+    gap: 0.5rem 1rem;
+    margin-top: 2rem;
+    padding-top: 1.25rem;
+    border-top: 1px solid var(--color-border);
   }
 
-  .action-stats-left {
-    display: flex;
-    gap: 24px;
+  .stat {
+    display: inline-flex;
     align-items: center;
-  }
-
-  .action-stats-right {
-    display: flex;
-    align-items: center;
-  }
-
-  .stat-item {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    color: #94a3b8;
-    background: none;
-    border: none;
-    padding: 0;
-    font-size: 14px;
-    font-weight: 500;
-    transition: color 0.2s ease;
-  }
-
-  .stat-item.clickable {
+    gap: 0.5rem;
+    padding: 0.375rem 0.75rem;
+    border-radius: var(--radius-full);
+    border: 1px solid transparent;
+    background: transparent;
+    color: var(--color-text-muted);
+    font-size: var(--font-size-sm);
+    font-weight: var(--font-weight-medium);
     cursor: pointer;
+    transition: color var(--duration-fast) var(--ease-out), background var(--duration-fast) var(--ease-out);
   }
 
-  .stat-item:hover {
-    color: #475569;
+  .stat:hover:not(:disabled) {
+    color: var(--color-text);
+    background: var(--color-surface-3);
   }
 
-  .stat-count {
-    color: #64748b;
+  .stat:disabled {
+    cursor: progress;
+    opacity: 0.7;
   }
 
-  .icon-comment,
-  .icon-heart {
-    width: 20px;
-    height: 20px;
+  .like:hover:not(:disabled),
+  .like.liked {
+    color: var(--color-danger);
   }
 
-  .heart-btn:hover .icon-heart {
-    color: #ef4444;
+  .like.liked {
+    background: var(--color-danger-soft);
   }
-
-  .heart-btn.liked .icon-heart {
-    color: #ef4444;
-  }
-
 </style>

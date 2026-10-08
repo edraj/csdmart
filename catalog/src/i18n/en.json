@@ -624,7 +624,13 @@
       "posted_by": "posted by",
       "read_more": "Read more...",
       "report": "Report",
-      "share": "Share"
+      "share": "Share",
+      "share_text": "Check out this content: {title}",
+      "comments_aria": "{count} comments",
+      "reactions_aria": "{count} reactions",
+      "media_aria": "{count} attachments",
+      "folder": "Folder",
+      "actions_aria": "Actions for {title}"
     },
     "empty": {
       "folder_empty": "This folder appears to be empty.",
@@ -684,13 +690,19 @@
       "remove_tag": "Remove {tag} tag",
       "selected_tags": "Selected Tags",
       "show_all": "Show All",
-      "show_less": "Show Less"
+      "show_less": "Show Less",
+      "filter_by_tag_aria": "Filter by tag {tag}",
+      "more": "+{count} more"
     },
     "time": {
       "days_ago": "d ago",
       "hours_ago": "h ago",
       "just_now": "Just now",
       "minutes_ago": "m ago"
+    },
+    "csv": {
+      "import": "Import CSV",
+      "export": "Export CSV"
     }
   },
   "catalog_user_permissions_info": "Catalog User permissions apply to authenticated users with catalog access. These users can interact with content.",
@@ -729,7 +741,8 @@
       "clear": "Clear Search",
       "placeholder": "Search spaces by name, topic, or tag...",
       "results_subtitle": "Search results based on your query",
-      "results_title": "Search Results"
+      "results_title": "Search Results",
+      "results_count": "{count} results for \"{query}\""
     },
     "showing_spaces": "Showing {count} spaces",
     "stats": {
@@ -737,7 +750,12 @@
       "members": "Members",
       "posts": "Posts"
     },
-    "unnamed_space": "Unnamed Space"
+    "unnamed_space": "Unnamed Space",
+    "page_title": "Explore spaces",
+    "card": {
+      "entries_aria": "{count} entries",
+      "owner_aria": "Owner: {name}"
+    }
   },
   "chat": "Chat",
   "common": {
@@ -1427,7 +1445,8 @@
       "catalogs": "Catalogs"
     },
     "content_type": {
-      "content": "Content"
+      "content": "Content",
+      "json": "JSON content"
     },
     "error": {
       "failed_load": "Failed to load post data",
@@ -1451,7 +1470,8 @@
       "title": "No Data Available"
     },
     "relationships": {
-      "related": "Related"
+      "related": "Related",
+      "view_aria": "View relationship with {name}"
     },
     "sections": {
       "description": "Description",
@@ -1479,14 +1499,30 @@
       "reply_placeholder": "Write a reply...",
       "submit": "Post Comment",
       "submit_reply": "Submit Reply",
-      "placeholder": "Share your thoughts…"
+      "placeholder": "Share your thoughts…",
+      "shift_enter_hint": "Shift + Enter for a new line",
+      "anonymous": "Anonymous",
+      "go_to_comments": "Go to comments"
     },
     "reactions": {
       "add_failed": "Failed to add reaction. Please try again.",
       "added_successfully": "Reaction added successfully!",
       "remove_failed": "Failed to remove reaction. Please try again.",
       "removed_successfully": "Reaction removed successfully!",
-      "toggle_error": "An error occurred while processing your reaction."
+      "toggle_error": "An error occurred while processing your reaction.",
+      "like": "Like",
+      "unlike": "Remove like",
+      "count_aria": "{count} likes"
+    },
+    "template": {
+      "not_found": "Template \"{name}\" was not found",
+      "empty": "The template has no content",
+      "load_failed": "Could not load the template",
+      "loading": "Loading template…",
+      "label": "Template: {name}"
+    },
+    "markdown": {
+      "diagram_source": "Diagram source (Mermaid)"
     }
   },
   "previous": "Previous",
@@ -1682,7 +1718,7 @@
     "hot": "Hot",
     "new_post": "New Post",
     "search_posts_placeholder": "Search posts...",
-    "search_results_count": "Found <strong>{count}</strong> results for \"{query}\"",
+    "search_results_count": "{count} results for \"{query}\"",
     "show_all_tags": "Show all tags",
     "show_less_tags": "Show less tags",
     "showing_all_content": "Showing all content",

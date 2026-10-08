@@ -1,7 +1,7 @@
 <script lang="ts">
   import { _ } from "@/i18n";
   import { createReport } from "@/lib/dmart_services";
-  import { errorToastMessage } from "@/lib/toasts_messages";
+  import { toasts } from "@/lib/toast";
   import ReportThankYouModal from "./ReportThankYouModal.svelte";
   import Modal from "./Modal.svelte";
   import { FlagSolid } from "flowbite-svelte-icons";
@@ -32,25 +32,20 @@
   let showThankYouModal = $state(false);
   let selectedReportType = $state("other");
 
+  const uid = $props.id();
+  const DESCRIPTION_MAX = 1000;
+
   // $derived so the labels follow a locale switch while the modal is open.
   const reportTypes = $derived([
-    {
-      value: "inappropriate_content",
-      label: $_("reports.types.inappropriate_content"),
-    },
+    { value: "inappropriate_content", label: $_("reports.types.inappropriate_content") },
     { value: "spam", label: $_("reports.types.spam") },
     { value: "misinformation", label: $_("reports.types.misinformation") },
-    {
-      value: "copyright_violation",
-      label: $_("reports.types.copyright_violation"),
-    },
+    { value: "copyright_violation", label: $_("reports.types.copyright_violation") },
     { value: "harassment", label: $_("reports.types.harassment") },
     { value: "other", label: $_("reports.types.other") },
   ]);
 
-  const canSubmit = $derived(
-    !isSubmitting && reportTitle.trim() !== "" && reportDescription.trim() !== "",
-  );
+  const canSubmit = $derived(!isSubmitting && reportTitle.trim() !== "" && reportDescription.trim() !== "");
 
   function closeModal() {
     isVisible = false;
@@ -67,12 +62,11 @@
 
   async function submitReport() {
     if (!reportTitle.trim() || !reportDescription.trim()) {
-      errorToastMessage($_("reports.validation.required_fields"));
+      toasts.error($_("reports.validation.required_fields"));
       return;
     }
 
     isSubmitting = true;
-
     try {
       const success = await createReport({
         title: reportTitle,
@@ -91,11 +85,11 @@
         showThankYouModal = true;
         onReportSubmitted();
       } else {
-        errorToastMessage($_("reports.error.submission_failed"));
+        toasts.error($_("reports.error.submission_failed"));
       }
     } catch (error) {
       console.error("Error submitting report:", error);
-      errorToastMessage($_("reports.error.submission_failed"));
+      toasts.error($_("reports.error.submission_failed"));
     } finally {
       isSubmitting = false;
     }
@@ -103,115 +97,77 @@
 </script>
 
 {#if isVisible}
-  <Modal
-    onClose={closeModal}
-    title={$_("reports.modal.title")}
-    ariaLabel={$_("reports.modal.title")}
-    size="lg"
-  >
+  <Modal onClose={closeModal} title={$_("reports.modal.title")} ariaLabel={$_("reports.modal.title")} size="lg">
     {#snippet icon()}
       <FlagSolid class="w-6 h-6" />
     {/snippet}
 
-    <div class="reporting-info">
-      <h3 class="info-title">{$_("reports.modal.reporting_entry")}</h3>
-      <p class="entry-info">
-        <span class="entry-title">{entryTitle}</span>
-        <span class="entry-id">({entryShortname})</span>
+    <div class="rounded-card border border-border bg-surface px-4 py-3 mb-5">
+      <p class="text-sm font-semibold text-text-muted">{$_("reports.modal.reporting_entry")}</p>
+      <p class="mt-1 text-sm text-text break-words">
+        <span class="font-medium">{entryTitle}</span>
+        <span class="text-text-faint">({entryShortname})</span>
       </p>
     </div>
 
     <form
+      id="{uid}-report-form"
       onsubmit={(e) => {
         e.preventDefault();
-        submitReport();
+        void submitReport();
       }}
-      class="report-form"
+      class="flex flex-col gap-5"
     >
-      <div class="form-group">
-        <label for="reportType" class="form-label">
-          {$_("reports.modal.report_type")}
-        </label>
-        <select
-          id="reportType"
-          bind:value={selectedReportType}
-          class="form-select"
-          required
-        >
+      <div class="flex flex-col gap-1.5">
+        <label for="{uid}-type" class="text-sm font-medium text-text">{$_("reports.modal.report_type")}</label>
+        <select id="{uid}-type" bind:value={selectedReportType} class="field" required>
           {#each reportTypes as type (type.value)}
             <option value={type.value}>{type.label}</option>
           {/each}
         </select>
       </div>
 
-      <div class="form-group">
-        <label for="reportTitle" class="form-label">
+      <div class="flex flex-col gap-1.5">
+        <label for="{uid}-title" class="text-sm font-medium text-text">
           {$_("reports.modal.report_title")}
-          <span class="required">*</span>
+          <span class="text-danger" aria-hidden="true">*</span>
         </label>
         <input
-          id="reportTitle"
+          id="{uid}-title"
           type="text"
           bind:value={reportTitle}
-          class="form-input"
+          class="field"
           placeholder={$_("reports.modal.title_placeholder")}
           required
           maxlength="200"
         />
       </div>
 
-      <div class="form-group">
-        <label for="reportDescription" class="form-label">
+      <div class="flex flex-col gap-1.5">
+        <label for="{uid}-description" class="text-sm font-medium text-text">
           {$_("reports.modal.description")}
-          <span class="required">*</span>
+          <span class="text-danger" aria-hidden="true">*</span>
         </label>
         <textarea
-          id="reportDescription"
+          id="{uid}-description"
           bind:value={reportDescription}
-          class="form-textarea"
+          class="field resize-y min-h-24"
           placeholder={$_("reports.modal.description_placeholder")}
           required
           rows="4"
-          maxlength="1000"
+          maxlength={DESCRIPTION_MAX}
         ></textarea>
-        <div class="character-count">
-          {reportDescription.length}/1000
-        </div>
+        <p class="text-end text-xs text-text-faint tabular-nums">{reportDescription.length}/{DESCRIPTION_MAX}</p>
       </div>
     </form>
 
     {#snippet footer()}
-      <button
-        type="button"
-        class="cancel-button"
-        onclick={closeModal}
-        disabled={isSubmitting}
-      >
+      <button type="button" class="app-btn app-btn-secondary" onclick={closeModal} disabled={isSubmitting}>
         {$_("common.cancel")}
       </button>
-      <button
-        type="button"
-        class="submit-button"
-        onclick={submitReport}
-        disabled={!canSubmit}
-      >
+      <button type="submit" form="{uid}-report-form" class="app-btn app-btn-danger" disabled={!canSubmit} aria-busy={isSubmitting}>
         {#if isSubmitting}
-          <svg class="spinner" viewBox="0 0 24 24" aria-hidden="true">
-            <circle
-              cx="12"
-              cy="12"
-              r="10"
-              stroke="currentColor"
-              stroke-width="4"
-              fill="none"
-              opacity="0.25"
-            />
-            <path
-              fill="currentColor"
-              d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-              opacity="0.75"
-            />
-          </svg>
+          <span class="spinner spinner-xs spinner-white" aria-hidden="true"></span>
           {$_("reports.modal.submitting")}
         {:else}
           {$_("reports.modal.submit_report")}
@@ -221,142 +177,28 @@
   </Modal>
 {/if}
 
-<ReportThankYouModal
-  show={showThankYouModal}
-  onClose={() => (showThankYouModal = false)}
-/>
+<ReportThankYouModal show={showThankYouModal} onClose={() => (showThankYouModal = false)} />
 
 <style>
-  .reporting-info {
-    background-color: var(--color-gray-50);
-    border: 1px solid var(--color-gray-200);
-    border-radius: var(--radius-md);
-    padding: 1rem;
-    margin-bottom: 1.5rem;
+  .field {
+    width: 100%;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-control);
+    padding: 0.625rem 0.75rem;
+    font-size: var(--font-size-sm);
+    font-family: inherit;
+    background: var(--color-surface-2);
+    color: var(--color-text);
+    transition: border-color var(--duration-fast) var(--ease-out), box-shadow var(--duration-fast) var(--ease-out);
   }
 
-  .info-title {
-    font-size: 0.875rem;
-    font-weight: 600;
-    color: var(--color-gray-700);
-    margin: 0 0 0.5rem 0;
+  .field::placeholder {
+    color: var(--color-text-faint);
   }
 
-  .entry-info {
-    margin: 0;
-    color: var(--color-gray-500);
-  }
-
-  .entry-title {
-    font-weight: 500;
-    color: var(--color-gray-900);
-  }
-
-  .entry-id {
-    font-size: 0.875rem;
-    color: var(--color-gray-400);
-  }
-
-  .report-form {
-    display: flex;
-    flex-direction: column;
-    gap: 1.25rem;
-  }
-
-  .form-group {
-    display: flex;
-    flex-direction: column;
-  }
-
-  .form-label {
-    font-size: 0.875rem;
-    font-weight: 500;
-    color: var(--color-gray-700);
-    margin-bottom: 0.5rem;
-  }
-
-  .required {
-    color: var(--color-error);
-  }
-
-  .form-input,
-  .form-select,
-  .form-textarea {
-    border: 1px solid var(--color-gray-300);
-    border-radius: var(--radius-md);
-    padding: 0.75rem;
-    font-size: 0.875rem;
-    background: var(--surface-card);
-    color: var(--color-gray-900);
-    transition:
-      border-color var(--duration-fast) ease,
-      box-shadow var(--duration-fast) ease;
-  }
-
-  .form-input:focus,
-  .form-select:focus,
-  .form-textarea:focus {
+  .field:focus {
     outline: none;
-    border-color: var(--color-primary-400);
-    box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1);
+    border-color: var(--color-primary);
+    box-shadow: 0 0 0 1px var(--color-primary);
   }
-
-  .form-textarea {
-    resize: vertical;
-    min-height: 4rem;
-  }
-
-  .character-count {
-    text-align: end;
-    font-size: 0.75rem;
-    color: var(--color-gray-400);
-    margin-top: 0.25rem;
-  }
-
-  .cancel-button,
-  .submit-button {
-    padding: 0.625rem 1.5rem;
-    border-radius: 0.75rem;
-    font-size: 0.875rem;
-    font-weight: 600;
-    cursor: pointer;
-    transition: all var(--duration-normal) var(--ease-out);
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-  }
-
-  .cancel-button {
-    background-color: transparent;
-    color: var(--color-gray-600);
-    border: 1px solid transparent;
-  }
-
-  .cancel-button:hover:not(:disabled) {
-    background-color: var(--color-gray-100);
-    color: var(--color-gray-900);
-  }
-
-  .submit-button {
-    background-color: var(--color-error);
-    color: white;
-    border: 1px solid var(--color-error);
-  }
-
-  .submit-button:hover:not(:disabled) {
-    filter: brightness(0.9);
-  }
-
-  .submit-button:disabled,
-  .cancel-button:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-
-  .spinner {
-    width: 1rem;
-    height: 1rem;
-    animation: spin 1s linear infinite;
-  }
-
 </style>

@@ -242,6 +242,9 @@ export async function getSpaceContentsByTags(
     ))!;
 }
 
+// A tags query answers with one aggregate record (`tags`, `tag_counts`);
+// asking for payloads and attachments on it only made the response heavier
+// for the landing page, which sends one of these per space.
 export async function getSpaceTags(
     spaceName: string
 ): Promise<ApiQueryResponse> {
@@ -255,8 +258,8 @@ export async function getSpaceTags(
             sort_by: "",
             sort_type: SortType.ascending,
             offset: 0,
-            retrieve_json_payload: true,
-            retrieve_attachments: true,
+            retrieve_json_payload: false,
+            retrieve_attachments: false,
             exact_subpath: false,
         },
         getCurrentScope()

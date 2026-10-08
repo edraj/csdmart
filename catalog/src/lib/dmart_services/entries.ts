@@ -157,32 +157,10 @@ export async function getMyEntities(shortname: string = "") {
 
 
 
-export async function getEntityAttachmentsCount(
-    shortname: string,
-    spaceName: string,
-    subpath: string
-) {
-    let cleanSubpath = subpath ? (subpath.startsWith("/") ? subpath.substring(1) : subpath) : "";
-    if (cleanSubpath === "__root__") cleanSubpath = "";
-    const targetSubpath = cleanSubpath ? `${cleanSubpath}/${shortname}` : shortname;
-
-    const query: QueryRequest = {
-        filter_shortnames: [],
-        type: QueryType.attachments_aggregation,
-        space_name: spaceName,
-        subpath: targetSubpath,
-        limit: 100,
-        sort_by: "shortname",
-        sort_type: SortType.ascending,
-        offset: 0,
-        search: "",
-        retrieve_json_payload: true,
-        retrieve_attachments: true,
-    };
-    const response = await Dmart.query(query, getCurrentScope());
-
-    return response?.records ?? [];
-}
+// getEntityAttachmentsCount used to live here: one attachments-aggregation
+// query per card on the space page. The browse pages now count comments,
+// reactions and media from the `attachments` the listing query already
+// returns (lib/catalogItems attachmentCounts), so nothing calls it.
 
 export async function attachAttachmentsToEntity(
     shortname: string,
