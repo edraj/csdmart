@@ -20,7 +20,7 @@
     let space_name: string = $state("");
     let subpath: string = $state("/");
 
-    let response: unknown = $state(null);
+    let response: unknown = $state.raw(null);
     let previewError: unknown = $state(null);
     let isPreviewing: boolean = $state(false);
     let isExporting: boolean = $state(false);
@@ -60,7 +60,12 @@
         }
     }
 
-    function buildQuery(): QueryRequest {
+    // The preview only has to show the shape of the data; the full set with
+    // payload and attachments is what the download streams. Asking for a
+    // million records just to render a sample froze the tab on big folders.
+    const PREVIEW_LIMIT = 100;
+
+    function buildQuery(limit = 1_000_000): QueryRequest {
         return {
             type: QueryType.search,
             exact_subpath: false,
@@ -69,7 +74,7 @@
                 subpath,
                 search: "",
                 offset: 0,
-                limit: 1_000_000,
+                limit,
                 retrieve_json_payload: true,
                 retrieve_attachments: true,
             }),
@@ -81,7 +86,7 @@
         isPreviewing = true;
         previewError = null;
         try {
-            response = await Dmart.query(buildQuery());
+            response = await Dmart.query(buildQuery(PREVIEW_LIMIT));
         } catch (e: unknown) {
             previewError = e;
             // Keep the server's envelope in the result pane as well.
@@ -193,6 +198,7 @@
         {#if response === null}
             <p class="text-sm text-text-muted text-center py-6">{$_("no_response_yet")}</p>
         {:else}
+            <p class="text-xs text-text-muted mb-1">{$_("preview_limited", { values: { limit: PREVIEW_LIMIT } })}</p>
             <Prism code={response as object} />
         {/if}
     </div>

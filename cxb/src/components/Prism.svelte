@@ -1,22 +1,37 @@
 <script lang="ts">
+    import { _ } from "svelte-i18n";
     import pkg from "@/lib/prism-init";
     import "prismjs/components/prism-json";
     import "prismjs/components/prism-bash";
 
     const { highlight, languages } = pkg;
 
-    let { language = "json", code = $bindable() }: { language?: string | null; code: object | string } = $props();
+    // Highlighting runs on the main thread over the full text: a response
+    // with thousands of payload-bearing records (the tools' Preview) used to
+    // freeze the tab. Anything past maxChars is cut, and the cut is said.
+    let {
+        language = "json",
+        code = $bindable(),
+        maxChars = 200_000,
+    }: { language?: string | null; code: object | string; maxChars?: number } = $props();
 
+    const source = $derived.by(() => {
+        const lang = language ?? "json";
+        return lang === "json" ? (JSON.stringify(code, undefined, 1) ?? "") : String(code ?? "");
+    });
+    const truncated = $derived(source.length > maxChars);
     const formatted = $derived.by(() => {
         const lang = language ?? "json";
         const grammar = languages[lang] ?? languages.json;
-        const source = lang === "json" ? JSON.stringify(code, undefined, 1) : String(code ?? "");
-        return highlight(source ?? "", grammar, lang);
+        return highlight(truncated ? source.slice(0, maxChars) : source, grammar, lang);
     });
 </script>
 
 <!-- eslint-disable-next-line svelte/no-at-html-tags -- Prism's own escaped markup -->
 <pre class="cxb-code language-{language}"><code class="language-{language}">{@html formatted}</code></pre>
+{#if truncated}
+    <p class="text-xs text-text-muted mt-1">{$_("output_truncated", { values: { shown: maxChars, total: source.length } })}</p>
+{/if}
 
 <style>
     /* One theme, both modes: the token colours come from the app palette and

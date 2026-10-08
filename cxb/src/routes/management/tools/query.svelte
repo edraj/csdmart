@@ -41,7 +41,7 @@
         reducers: [],
     });
 
-    let response: unknown = $state(null);
+    let response: unknown = $state.raw(null);
     let queryError: unknown = $state(null);
     let isQuerying = $state(false);
     let isDownloading = $state(false);

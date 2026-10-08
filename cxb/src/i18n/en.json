@@ -378,5 +378,7 @@
   "add": "Add",
   "alias": "Alias",
   "args": "Args",
-  "remove": "Remove"
+  "remove": "Remove",
+  "output_truncated": "Showing the first {shown} of {total} characters.",
+  "preview_limited": "Preview shows the first {limit} entries; the download includes everything."
 }
