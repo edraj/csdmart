@@ -4,7 +4,23 @@ DMART ships with a plugin system that lets you extend the platform without forki
 
 These managed plugins are compiled into the single self-contained binary and registered at startup. The tag shows whether each is a hook or an API plugin.
 
-**audit** Records create, update, and delete actions for audit trails. Hook **semantic_indexer** Generates and maintains pgvector embeddings so entries can be found by semantic (vector) search. Hook **realtime_updates_notifier** The live notification path: for each matching event it computes the set of subscription channels (walking subpath prefixes × schema × action × state) and broadcasts a `notification_subscription` message directly to connected clients via the in-process WebSocket manager. Hook **mcp_sse_bridge** Bridges entry events to the MCP server so Model Context Protocol clients receive live updates. Hook **resource_folders_creation** Automatically provisions the folder structures a new user or space needs. Hook **admin_notification_sender** Registered no-op stub. The Python original pushed admin notifications through an SMS/push gateway (Firebase/SMS); that gateway is out of scope for the port, so `HookAsync` only logs today. Hook Stub **system_notification_sender** Registered no-op stub. The original fanned out per-user notification entries and pushed via the gateway; the query + push sides aren't ported yet, so it only logs. Hook Stub **local_notification** Registered no-op stub. The real body needs the notification-persistence pipeline (attachment-first notification entries) which hasn't been ported; activating it in a space is a no-op today. Hook Stub **db_size_info** Exposes an endpoint reporting PostgreSQL storage usage for the deployment. API
+**audit** Records create, update, and delete actions for audit trails. Hook
+
+**semantic_indexer** Generates and maintains pgvector embeddings so entries can be found by semantic (vector) search. Hook
+
+**realtime_updates_notifier** The live notification path: for each matching event it computes the set of subscription channels (walking subpath prefixes × schema × action × state) and broadcasts a `notification_subscription` message directly to connected clients via the in-process WebSocket manager. Hook
+
+**mcp_sse_bridge** Bridges entry events to the MCP server so Model Context Protocol clients receive live updates. Hook
+
+**resource_folders_creation** Automatically provisions the folder structures a new user or space needs. Hook
+
+**admin_notification_sender** Registered no-op stub. The Python original pushed admin notifications through an SMS/push gateway (Firebase/SMS); that gateway is out of scope for the port, so `HookAsync` only logs today. Hook Stub
+
+**system_notification_sender** Registered no-op stub. The original fanned out per-user notification entries and pushed via the gateway; the query + push sides aren't ported yet, so it only logs. Hook Stub
+
+**local_notification** Registered no-op stub. The real body needs the notification-persistence pipeline (attachment-first notification entries) which hasn't been ported; activating it in a space is a no-op today. Hook Stub
+
+**db_size_info** Exposes an endpoint reporting PostgreSQL storage usage for the deployment. API
 
 The three notification-sender plugins are marked _Stub_: they are registered only so `config.json` references don't warn `PLUGIN_UNKNOWN`, but their hook body is a no-op pending a push/SMS gateway integration. The one live notification path today is `realtime_updates_notifier`, which broadcasts changes over WebSocket.
 
@@ -12,7 +28,9 @@ The three notification-sender plugins are marked _Stub_: they are registered onl
 
 There are two ways to add your own plugins, each suited to a different workflow.
 
-**Managed C# plugins** Implement `IHookPlugin` or `IApiPlugin` in-process. Fastest and fully typed, but compiled into the binary. **Native plugins** Dropped into `~/.dmart/plugins/<name>/` and loaded at runtime — no recompilation needed. Ship them as a subprocess executable or a shared library.
+**Managed C# plugins** Implement `IHookPlugin` or `IApiPlugin` in-process. Fastest and fully typed, but compiled into the binary.
+
+**Native plugins** Dropped into `~/.dmart/plugins/<name>/` and loaded at runtime — no recompilation needed. Ship them as a subprocess executable or a shared library.
 
 Each plugin keeps a `config.json` alongside it that declares its `shortname`, whether it is a `hook` or `api` plugin, and — for hooks — the event filters and ordering that decide when it runs. Ready-made examples live in the `custom_plugins_sdk/` directory.
 
@@ -95,7 +113,9 @@ Endpoints are served under `/{shortname}/...` — the example above answers on `
 
 To extend a running deployment without recompiling the binary, drop a plugin into `~/.dmart/plugins/<name>/`. DMART supports two native modes and prefers the executable when both are present.
 
-**Subprocess (recommended)** A standalone executable in any language. DMART speaks JSON-lines over stdin/stdout; if the process crashes it is respawned automatically, so it can never take the server down. **Shared library** A `.so`, `.dylib`, or `.dll` loaded in-process via a small C ABI (`get_info`, `hook`, `handle_request`, `free_string`, `init`, `dmart_plugin_version`). Lowest latency, but a crash takes down the host.
+**Subprocess (recommended)** A standalone executable in any language. DMART speaks JSON-lines over stdin/stdout; if the process crashes it is respawned automatically, so it can never take the server down.
+
+**Shared library** A `.so`, `.dylib`, or `.dll` loaded in-process via a small C ABI (`get_info`, `hook`, `handle_request`, `free_string`, `init`, `dmart_plugin_version`). Lowest latency, but a crash takes down the host.
 
 The subprocess protocol is a simple request/response over JSON lines:
 

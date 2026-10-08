@@ -23,7 +23,11 @@ graph TD
     end
 ```
 
-**Ownership** Your data lives in a standard PostgreSQL database you control, and can be exported in full to plain JSON files at any time — no proprietary lock-in. **Accessibility** A unified, standardized API layer means any application or microservice can access your data securely through one consistent interface. **Resilience** Data is stored in battle-tested PostgreSQL and can be exported to human-readable JSON files, keeping it structured for longevity, version control, and easy inspection.
+**Ownership** Your data lives in a standard PostgreSQL database you control, and can be exported in full to plain JSON files at any time — no proprietary lock-in.
+
+**Accessibility** A unified, standardized API layer means any application or microservice can access your data securely through one consistent interface.
+
+**Resilience** Data is stored in battle-tested PostgreSQL and can be exported to human-readable JSON files, keeping it structured for longevity, version control, and easy inspection.
 
 ## Tailored Benefits for Every Scale
 

@@ -6,7 +6,15 @@ The access control logic is centralized in the `PermissionService` class. Data m
 
 ### Key Components
 
-**Permission** The atomic unit of access. Defines _what_ can be done on _which_ resources under _what_ conditions. **Role** A named collection of Permission shortnames. **Group** A named collection of Roles. Users are assigned to Groups. **User** The actor. Can have direct Roles and inherit Roles from Groups. **ACL** Optional list embedded in a Resource that grants specific users specific actions, bypassing standard RBAC.
+**Permission** The atomic unit of access. Defines _what_ can be done on _which_ resources under _what_ conditions.
+
+**Role** A named collection of Permission shortnames.
+
+**Group** A named collection of Roles. Users are assigned to Groups.
+
+**User** The actor. Can have direct Roles and inherit Roles from Groups.
+
+**ACL** Optional list embedded in a Resource that grants specific users specific actions, bypassing standard RBAC.
 
 ## The Authorization Algorithm
 
@@ -148,7 +156,21 @@ Conditions gate access to _existing_ entries, so the `create` and `query` action
 
 Any of the platform's [resource types](/data-model) may be listed. An empty `resource_types` array applies to **all** types. The full set, grouped:
 
-**Identity**`user`, `group` **Structure**`folder`, `space` **Content**`content`, `schema`, `data_asset`, `csv`, `jsonl`, `sqlite`, `parquet` **Workflow**`ticket` **Social**`comment`, `reply`, `post`, `reaction`, `notification`, `share` **Attachments**`media`, `log`, `relationship`, `alteration`, `history`, `lock` **Management**`role`, `permission`, `acl` **Extensions**`locator`, `json`, `plugin_wrapper`
+**Identity** `user`, `group`
+
+**Structure** `folder`, `space`
+
+**Content** `content`, `schema`, `data_asset`, `csv`, `jsonl`, `sqlite`, `parquet`
+
+**Workflow** `ticket`
+
+**Social** `comment`, `reply`, `post`, `reaction`, `notification`, `share`
+
+**Attachments** `media`, `log`, `relationship`, `alteration`, `history`, `lock`
+
+**Management** `role`, `permission`, `acl`
+
+**Extensions** `locator`, `json`, `plugin_wrapper`
 
 ## Permission Examples
 

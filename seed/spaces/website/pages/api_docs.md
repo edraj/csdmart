@@ -6,7 +6,9 @@ The API is served by the self-contained DMART binary (.NET 10 Native AOT) on ASP
 
 Most endpoints require authentication with a JWT bearer token (HS256), supplied either as a header or a cookie:
 
-**Header** `Authorization: Bearer <your_token>` **Cookie** `auth_token=<your_token>`
+**Header** `Authorization: Bearer <your_token>`
+
+**Cookie** `auth_token=<your_token>`
 
 Tokens are obtained via `/user/login` (password or OTP) or through OAuth social login (Google, Facebook, Apple). DMART also exposes a full **OAuth 2.1 Authorization Server** — discovery, Dynamic Client Registration, and authorize/token endpoints under `/.well-known` — used for automatic onboarding of MCP clients.
 

@@ -41,6 +41,16 @@ Output is the dmart import/export layout (`Services/ImportExportService.cs:21`):
 
 Usage:
     python3 tools/website-migrate/convert.py --src ../website/src --out /tmp/site
+
+THE SEED IS NOW THE SOURCE
+--------------------------
+seed/spaces/website has been edited directly since the migration (#345's
+ENABLE_MCP notes, #357's WEBSITE_* settings and `website` command), and the
+Svelte pages are being retired. Never copy a fresh run over the seed — that
+silently reverts those edits. To land a converter fix, run the old and the
+fixed converter and apply only their difference to each page:
+
+    git merge-file seed/spaces/website/pages/X.md old/website/pages/X.md new/website/pages/X.md
 """
 from __future__ import annotations
 
@@ -226,6 +236,11 @@ def list_to_md(list_html: str, ordered: bool) -> str:
 # into the prose as literal text.
 SKIP_SUBTREE = {"button", "svg", "nav", "script", "style", "noscript"}
 
+# Containers whose boundaries are paragraph boundaries. Treating them as
+# transparent ran sibling cards together: features.md read `Flexible "Entries"
+# The core unit… Structured & Unstructured Seamlessly handle…` as one paragraph.
+BLOCK_CONTAINERS = {"div", "section", "article", "aside", "header", "footer", "main", "figure"}
+
 INLINE_TAGS = {"strong", "b", "em", "i", "code", "a", "span", "br", "small", "kbd", "abbr"}
 
 # Svelte control blocks arrive as text. Expressions are left alone: `{` appears
@@ -242,6 +257,8 @@ class MarkdownWriter(HTMLParser):
         self.skip_depth = 0              # >0 while inside a SKIP_SUBTREE
         self.pre: list[str] | None = None   # raw buffer while inside <pre>
         self.pre_mermaid = False
+        self.pre_tag = "pre"             # the end tag that closes the raw buffer
+        self.after_label = False         # just closed a <strong>/<b>
         self.heading: str | None = None  # 'h2' | 'h3' | 'h4' when open
         self.lists: list[tuple[str, int]] = []
         self.table: list[list[str]] | None = None
@@ -268,7 +285,28 @@ class MarkdownWriter(HTMLParser):
             self.skip_depth += 1
             return
         if self.pre is not None:
-            return                      # inside <pre>: tags are content, handled in handle_data
+            # Inside <pre> tags are not structure. The one that carries
+            # meaning is <br/> in a mermaid label: mermaid reads it as a line
+            # break, and dropping it fused "① Meta" and "identity, ownership"
+            # into "① Metaidentity, ownership".
+            if tag == "br" and self.pre_mermaid:
+                self.pre.append("<br/>")
+            return
+        # `<strong>Identity</strong><span><code>user</code>…` has no
+        # whitespace between label and value, so markdown would print
+        # "**Identity**`user`" — two tokens fused into one word.
+        if self.after_label and tag in ("span", "code", "a") \
+                and self.inline and not self.inline[-1].endswith(" "):
+            self.inline.append(" ")
+        self.after_label = False
+        # drivers.md's install commands are <div class="code-block">, not
+        # <pre>: a code block in everything but the tag.
+        if tag == "div" and "code-block" in (a.get("class") or "").split():
+            self.flush_inline()
+            self.pre = []
+            self.pre_mermaid = False
+            self.pre_tag = "div"
+            return
         if tag == "pre":
             # Flush first: a card with "Official Python client" before its code
             # block would otherwise emit the code, then the sentence, inverting
@@ -276,6 +314,7 @@ class MarkdownWriter(HTMLParser):
             self.flush_inline()
             self.pre = []
             self.pre_mermaid = "mermaid" in (a.get("class") or "")
+            self.pre_tag = "pre"
             return
         if tag == "table":
             self.flush_inline()
@@ -319,14 +358,17 @@ class MarkdownWriter(HTMLParser):
                 self.link = a.get("href") or ""
                 self.inline.append("[")
             return
-        # div/section/article/main/figure/…: transparent.
+        if tag in BLOCK_CONTAINERS and self.can_break():
+            self.flush_inline()
+            return
+        # Other unknown tags: transparent.
 
     def handle_endtag(self, tag):
         if self.skip_depth:
             self.skip_depth -= 1
             return
         if self.pre is not None:
-            if tag == "pre":
+            if tag == self.pre_tag:
                 raw = "".join(self.pre)
                 if self.pre_mermaid:
                     self.emit("```mermaid\n" + raw.strip() + "\n```")
@@ -378,6 +420,7 @@ class MarkdownWriter(HTMLParser):
             return
         if tag in ("strong", "b"):
             self.inline.append("**")
+            self.after_label = True
             return
         if tag in ("em", "i"):
             self.inline.append("_")
@@ -386,6 +429,16 @@ class MarkdownWriter(HTMLParser):
             self.inline.append(f"]({self.link or ''})")
             self.link = None
             return
+        if tag in BLOCK_CONTAINERS and self.can_break():
+            self.flush_inline()
+            return
+
+    # A container boundary ends the current paragraph — unless that would cut
+    # through a construct whose markdown is one line: a list item (it would
+    # lose its marker), a heading, a table cell or an open link.
+    def can_break(self) -> bool:
+        return (not self.lists and self.heading is None and self.table is None
+                and self.link is None and self.code_depth == 0)
 
     def handle_data(self, data):
         if self.skip_depth:
@@ -394,6 +447,8 @@ class MarkdownWriter(HTMLParser):
             self.pre.append(data)
             return
         text = SVELTE_CONTROL.sub("", data)
+        if text.strip():
+            self.after_label = False
         if not text.strip():
             # Keep a single space so `<strong>a</strong> <em>b</em>` does not
             # become "**a**_b_".
@@ -437,7 +492,7 @@ def write_space(out: Path, pages: list[dict]) -> None:
         "shortname": "website",
         "is_active": True,
         "displayname": {"en": "Website", "ar": "الموقع"},
-        "description": {"en": "Public website content, rendered by the catalog SSG."},
+        "description": {"en": "Public website content, published by `dmart website build`."},
         "tags": [],
         "created_at": CREATED_AT,
         "updated_at": CREATED_AT,

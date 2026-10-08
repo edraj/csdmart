@@ -49,7 +49,13 @@ A workflow is _not_ code. It is a `content` entry (resource type `content`) stor
 
 ### Anatomy of a workflow body
 
-**initial_state** The state a new ticket starts in. May be a plain string, or an array of `{name, roles}` objects — in the array form the engine prefers the entry whose `roles` contains `"default"`, falling back to the first named entry. **states[]** The list of states. Each has a machine `state` key, an optional display `name`, and a `next` array of outgoing transitions. A state with _no_ `next` is terminal (closed). **next[] transition** An `action` (the verb the caller invokes), a target `state` (the engine also accepts `to` for back-compat), an optional `roles` gate, and an optional `resolution_required` flag. **resolutions[]** Optional per-state catalogue of allowed resolution reasons (each a `key` plus localized labels). Presentational — surfaced by the admin UI when a resolution is required.
+**initial_state** The state a new ticket starts in. May be a plain string, or an array of `{name, roles}` objects — in the array form the engine prefers the entry whose `roles` contains `"default"`, falling back to the first named entry.
+
+**states[]** The list of states. Each has a machine `state` key, an optional display `name`, and a `next` array of outgoing transitions. A state with _no_ `next` is terminal (closed).
+
+**next[] transition** An `action` (the verb the caller invokes), a target `state` (the engine also accepts `to` for back-compat), an optional `roles` gate, and an optional `resolution_required` flag.
+
+**resolutions[]** Optional per-state catalogue of allowed resolution reasons (each a `key` plus localized labels). Presentational — surfaced by the admin UI when a resolution is required.
 
 ### Full workflow definition (payload.body)
 
@@ -151,7 +157,15 @@ The body accepts `resolution` _or_ `resolution_reason` (both map to the ticket's
 
 `WorkflowService.ProgressAsync` + `WorkflowEngine.EvaluateAsync` apply these checks, in order, before any write happens:
 
-**1 · Ticket & workflow exist** The ticket must exist and carry a non-empty `workflow_shortname`, and that workflow entry must load and contain a `states` array. **2 · Current state is known** The ticket's `state` must match a state in the workflow, and that state must have a `next` array (not terminal). **3 · Action is a valid transition** Some entry in `next` must have `action` equal to the URL's action, with a non-empty target `state`. **4 · Actor holds a required role** If the transition lists `roles`, the actor (resolved to their user's roles) must hold at least one of them — otherwise the transition is refused. **5 · Resolution when required** If the transition sets `resolution_required: true`, a `resolution_reason` must be present in the body — else the request fails with `MISSING_DATA`.
+**1 · Ticket & workflow exist** The ticket must exist and carry a non-empty `workflow_shortname`, and that workflow entry must load and contain a `states` array.
+
+**2 · Current state is known** The ticket's `state` must match a state in the workflow, and that state must have a `next` array (not terminal).
+
+**3 · Action is a valid transition** Some entry in `next` must have `action` equal to the URL's action, with a non-empty target `state`.
+
+**4 · Actor holds a required role** If the transition lists `roles`, the actor (resolved to their user's roles) must hold at least one of them — otherwise the transition is refused.
+
+**5 · Resolution when required** If the transition sets `resolution_required: true`, a `resolution_reason` must be present in the body — else the request fails with `MISSING_DATA`.
 
 When all checks pass, the service builds a patch — `state` = the new state, `is_open` = whether that state is open, and `resolution_reason` if supplied — and applies it through `EntryService.UpdateAsync` with the action override `progress_ticket` (so the permission walk gates on the `progress_ticket` action, not `update`). The success envelope echoes the outcome:
 
@@ -203,7 +217,11 @@ POST /managed/request
 
 The dispatcher's contract:
 
-**owner_shortname required** Absent or empty → `MISSING_DATA` ("The owner_shortname is required"). **Target must exist** The new owner must be a real user in `management/users` → otherwise `OBJECT_NOT_FOUND`. **Only ownership + collaborators change** The patch mutates `owner_shortname` plus optional `collaborators`; all other restricted fields stay untouched.
+**owner_shortname required** Absent or empty → `MISSING_DATA` ("The owner_shortname is required").
+
+**Target must exist** The new owner must be a real user in `management/users` → otherwise `OBJECT_NOT_FOUND`.
+
+**Only ownership + collaborators change** The patch mutates `owner_shortname` plus optional `collaborators`; all other restricted fields stay untouched.
 
 ## Reporter & Provenance
 
@@ -251,4 +269,8 @@ While a lock is held, a plain `update` by anyone other than the lock holder is b
 
 ## Related Concepts
 
-**[Access Control](/access-control)** The `progress_ticket`, `assign`, `lock` and `unlock` action types are all defined and gated here alongside the other 11 actions. **[Folders & Rendering](/folders)** A folder's `workflow_shortnames` setting constrains which workflows tickets created there may use. **[Entity Lifecycle](/entity-lifecycle)** Tickets are created, updated and deleted through the same `/managed/request` envelope as every other entry.
+**[Access Control](/access-control)** The `progress_ticket`, `assign`, `lock` and `unlock` action types are all defined and gated here alongside the other 11 actions.
+
+**[Folders & Rendering](/folders)** A folder's `workflow_shortnames` setting constrains which workflows tickets created there may use.
+
+**[Entity Lifecycle](/entity-lifecycle)** Tickets are created, updated and deleted through the same `/managed/request` envelope as every other entry.

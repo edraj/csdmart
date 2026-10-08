@@ -8,10 +8,10 @@ All of a folder's "rendering" power lives entirely in its **payload body**, a JS
 
 ```mermaid
 graph TD
-    F["Folder entry(resource_type = folder)"] --> M["Metauuid, shortname, owner, tags…"]
+    F["Folder entry<br/>(resource_type = folder)"] --> M["Meta<br/>uuid, shortname, owner, tags…"]
     F --> P["Payload"]
-    P --> SS["schema_shortname:folder_rendering"]
-    P --> B["body = the rendering configindex_attributes, allow_*, query, icons…"]
+    P --> SS["schema_shortname:<br/>folder_rendering"]
+    P --> B["body = the rendering config<br/>index_attributes, allow_*, query, icons…"]
     B --> UI["Admin UI reads it → renders the listing"]
     B --> BE["Backend reads it → enforces what may be created here"]
 ```
@@ -51,7 +51,11 @@ The meta simply references the body file and names the schema:
 
 Every folder in every space is validated against a **single** canonical schema that lives in the `management` space at `management/schema/folder_rendering`. Two design decisions make it strict and safe:
 
-**Centralized** The schema validator special-cases the shortname `folder_rendering` and always resolves it from the `management` space — so one definition governs all spaces, and you never copy it per space. **Exact** `additionalProperties: false` at every level. An unknown or _misspelled_ field is rejected, not silently ignored — you find the typo immediately instead of debugging a prop that "does nothing". **Minimal required** The only required property is `index_attributes`. A folder with nothing but one index attribute is valid; everything else is optional and defaulted.
+**Centralized** The schema validator special-cases the shortname `folder_rendering` and always resolves it from the `management` space — so one definition governs all spaces, and you never copy it per space.
+
+**Exact** `additionalProperties: false` at every level. An unknown or _misspelled_ field is rejected, not silently ignored — you find the typo immediately instead of debugging a prop that "does nothing".
+
+**Minimal required** The only required property is `index_attributes`. A folder with nothing but one index attribute is valid; everything else is optional and defaulted.
 
 Because validation is exact, the props below are the **complete** vocabulary. There is no hidden `columns`, `render_type` or `list_columns` — those don't exist here. What you see is what a folder can declare.
 
@@ -126,7 +130,9 @@ This is the one required property and the heart of folder rendering. It is an or
 ]
 ```
 
-**key** Which value to read from each entry. It can be a Meta field (`shortname`, `created_at`, `owner_shortname`) or a field inside the entry's `payload.body` (`end_point`, `verb`). **name** The human-friendly column header rendered in the table. Purely presentational.
+**key** Which value to read from each entry. It can be a Meta field (`shortname`, `created_at`, `owner_shortname`) or a field inside the entry's `payload.body` (`end_point`, `verb`).
+
+**name** The human-friendly column header rendered in the table. Purely presentational.
 
 ### Fallback columns
 
@@ -188,7 +194,11 @@ The three content arrays plus uniqueness are not merely UI conveniences. On ever
 
 Semantics that matter in practice:
 
-**Empty = open** An empty or absent array imposes no restriction. Restrictions are opt-in. **Fails open** If the parent folder can't be read, enforcement is skipped rather than blocking the write. **Toggleable** Global enforcement is controlled by `ENFORCE_FOLDER_CONTENT_POLICY` (default `true`).
+**Empty = open** An empty or absent array imposes no restriction. Restrictions are opt-in.
+
+**Fails open** If the parent folder can't be read, enforcement is skipped rather than blocking the write.
+
+**Toggleable** Global enforcement is controlled by `ENFORCE_FOLDER_CONTENT_POLICY` (default `true`).
 
 ## 11. Default values
 
