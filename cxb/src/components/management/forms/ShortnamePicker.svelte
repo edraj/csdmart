@@ -17,7 +17,8 @@
         required = false,
         emptyText,
     }: {
-        selected: string[];
+        /** The chosen shortnames; a parent whose list is not there yet starts empty. */
+        selected?: string[];
         /** Management-space folder the options come from. */
         subpath?: string;
         label: string;

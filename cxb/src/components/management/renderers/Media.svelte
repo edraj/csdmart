@@ -4,6 +4,7 @@
     import LoadingState from "@/components/ui/LoadingState.svelte";
     import { renderMarkdown } from "@/utils/markdown";
     import { limitJsonForDisplay } from "@/utils/displayJson";
+    import { isRecord } from "@/utils/compare";
     import { _ } from "@/i18n";
 
     // Shows one attachment's content inside the view modal. Props are reactive
@@ -15,14 +16,18 @@
         url,
         displayname = "",
     }: {
-        attributes?: Record<string, any>;
+        /** The attachment record's `attributes`; the payload inside is read defensively. */
+        attributes?: Record<string, unknown>;
         resource_type: ResourceType;
         url: string;
         displayname?: string;
     } = $props();
 
-    const contentType = $derived<string>(attributes?.payload?.content_type || "");
-    const body = $derived(attributes?.payload?.body);
+    const payload = $derived(isRecord(attributes.payload) ? attributes.payload : undefined);
+    const contentType = $derived<string>(typeof payload?.content_type === "string" ? payload.content_type : "");
+    const body = $derived(payload?.body);
+    // A comment's body is `{ state, body }`.
+    const commentBody = $derived(isRecord(body) ? body : undefined);
     const jsonPreview = $derived(limitJsonForDisplay(body));
 </script>
 
@@ -30,11 +35,11 @@
     <dl class="w-full text-sm space-y-2">
         <div>
             <dt class="font-medium text-text-muted">{$_("state")}</dt>
-            <dd class="text-text">{attributes?.payload?.body?.state ?? $_("not_applicable")}</dd>
+            <dd class="text-text">{commentBody?.state ?? $_("not_applicable")}</dd>
         </div>
         <div>
             <dt class="font-medium text-text-muted">{$_("body")}</dt>
-            <dd class="text-text whitespace-pre-wrap break-words">{attributes?.payload?.body?.body ?? ""}</dd>
+            <dd class="text-text whitespace-pre-wrap break-words">{commentBody?.body ?? ""}</dd>
         </div>
     </dl>
 {:else if resource_type === ResourceType.json || resource_type === ResourceType.reaction}
@@ -46,7 +51,7 @@
             <Prism language="json" code={jsonPreview.value as object | string} />
         </div>
         {#if resource_type === ResourceType.reaction}
-            <p class="text-sm text-text"><span class="font-medium text-text-muted">{$_("type")}:</span> {attributes?.type ?? $_("not_applicable")}</p>
+            <p class="text-sm text-text"><span class="font-medium text-text-muted">{$_("type")}:</span> {attributes.type ?? $_("not_applicable")}</p>
         {/if}
     </div>
 {:else if contentType.includes("image")}

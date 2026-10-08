@@ -5,10 +5,20 @@
  */
 export interface JsonSchema {
     type?: string;
+    title?: string;
+    description?: string;
     properties?: Record<string, JsonSchema>;
+    required?: string[];
     items?: JsonSchema;
     default?: unknown;
     enum?: unknown[];
+    format?: string;
+    pattern?: string;
+    minLength?: number;
+    maxLength?: number;
+    minimum?: number;
+    maximum?: number;
+    multipleOf?: number;
     [keyword: string]: unknown;
 }
 

@@ -1,6 +1,8 @@
+import type { ApiResponseRecord } from "@edraj/tsdmart";
+
 export type Datatable = {
-  arrayRawData: any[];
-  arraySearched: any[];
+  arrayRawData: ApiResponseRecord[];
+  arraySearched: ApiResponseRecord[];
   arraySearchableColumns: string[];
   numberRowsPerPage: number;
   numberActivePage: number;
@@ -9,7 +11,7 @@ export type Datatable = {
 };
 
 export function functionCreateDatatable(opts: {
-  parData?: any[];
+  parData?: ApiResponseRecord[];
   parRowsPerPage?: `${number}` | string | number;
   parSearchString?: string;
   parSortBy?: string;

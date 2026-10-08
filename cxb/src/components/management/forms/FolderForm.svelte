@@ -3,12 +3,15 @@
     import { CloseOutline, PlusOutline, TrashBinOutline } from "flowbite-svelte-icons";
     import { Dmart, QueryType, ResourceType } from "@edraj/tsdmart";
     import IconButton from "@/components/ui/IconButton.svelte";
+    import { isRecord } from "@/utils/compare";
+    import type { FolderFlag, FolderRendering } from "@/utils/entryShapes";
     import { _ } from "@/i18n";
 
     let {
         content = $bindable({}),
     }: {
-        content: any;
+        /** The folder's `folder_rendering` payload body, normalised below. */
+        content: FolderRendering;
     } = $props();
 
     const uid = $props.id();
@@ -55,48 +58,53 @@
 
     if (!content.query) content.query = {};
 
+    // `path` is dotted ("query.filter_types"); the walk creates missing objects.
     function addItem(path: string, template: unknown = {}) {
-        let target = content;
+        let target: Record<string, unknown> = content;
         const parts = path.split(".");
 
         for (let i = 0; i < parts.length - 1; i++) {
-            if (!target[parts[i]]) target[parts[i]] = {};
-            target = target[parts[i]];
+            const existing = target[parts[i]];
+            const next: Record<string, unknown> = isRecord(existing) ? existing : {};
+            if (next !== existing) target[parts[i]] = next;
+            target = next;
         }
 
         const lastPart = parts[parts.length - 1];
-        if (!target[lastPart]) target[lastPart] = [];
-
-        target[lastPart] = [...target[lastPart], structuredClone(template)];
+        const existing = target[lastPart];
+        target[lastPart] = [...(Array.isArray(existing) ? existing : []), structuredClone(template)];
         content = { ...content };
     }
 
     function removeItem(path: string, index: number) {
-        let target = content;
+        let target: Record<string, unknown> = content;
         const parts = path.split(".");
 
         for (let i = 0; i < parts.length - 1; i++) {
-            if (!target[parts[i]]) return;
-            target = target[parts[i]];
+            const next = target[parts[i]];
+            if (!isRecord(next)) return;
+            target = next;
         }
 
         const lastPart = parts[parts.length - 1];
-        if (!target[lastPart]) return;
+        const existing = target[lastPart];
+        if (!Array.isArray(existing)) return;
 
-        target[lastPart] = target[lastPart].filter((_: unknown, i: number) => i !== index);
+        target[lastPart] = existing.filter((_, i) => i !== index);
         content = { ...content };
     }
 
     function addShortname(listName: "content_schema_shortnames" | "workflow_shortnames", event: Event) {
         const target = event.target as HTMLSelectElement;
-        if (target.value && !content[listName].includes(target.value)) {
-            content[listName] = [...content[listName], target.value];
+        const current = content[listName] ?? [];
+        if (target.value && !current.includes(target.value)) {
+            content[listName] = [...current, target.value];
         }
         target.value = "";
     }
 
     function removeShortname(listName: "content_schema_shortnames" | "workflow_shortnames" | "content_resource_types", value: string) {
-        content[listName] = content[listName].filter((v: string) => v !== value);
+        content[listName] = (content[listName] ?? []).filter((v) => v !== value);
     }
 
     // Dropdowns only need shortnames, so neither query asks for a payload.
@@ -117,7 +125,7 @@
         limit: 99,
     }).then((result) => (result?.records ?? []).map((e) => e.shortname));
 
-    const options = [
+    const options: { key: FolderFlag; label: string }[] = [
         { key: "allow_view", label: "allow_resource_view" },
         { key: "allow_create", label: "allow_resource_creation" },
         { key: "allow_update", label: "allow_resource_update" },
@@ -165,6 +173,8 @@
             </div>
         </div>
 
+        <!-- `query` is always seeded above; the guard is what lets the binds below type-check. -->
+        {#if content.query}
         <section class={section}>
             <h3 class="font-semibold text-text">{$_("query_settings")}</h3>
 
@@ -185,7 +195,7 @@
 
             <div>
                 <p class="text-sm font-medium text-text mb-1.5">{$_("filter_types")}</p>
-                {#if content.query.filter_types?.length > 0}
+                {#if content.query.filter_types?.length}
                     {#each content.query.filter_types as _filterType, index (index)}
                         <div class="flex items-center gap-2 mt-1.5">
                             <Input bind:value={content.query.filter_types[index]} placeholder={$_("filter_type")} aria-label="{$_('filter_type')} {index + 1}" />
@@ -201,12 +211,13 @@
                 </Button>
             </div>
         </section>
+        {/if}
 
         <section class={section}>
             <h3 class="font-semibold text-text">{$_("index_attributes")}</h3>
             <p class="text-xs text-text-muted">{$_("index_attributes_help")}</p>
 
-            {#if content.index_attributes?.length > 0}
+            {#if content.index_attributes?.length}
                 {#each content.index_attributes as attribute, index (index)}
                     <div class="flex items-center gap-2 p-2 rounded-card bg-surface border border-border">
                         <Input class="grow" bind:value={attribute.key} placeholder={$_("key")} aria-label="{$_('key')} {index + 1}" />
@@ -227,7 +238,7 @@
             <section class={section}>
                 <h3 class="font-semibold text-text">{$_("search_columns")}</h3>
 
-                {#if content.search_columns?.length > 0}
+                {#if content.search_columns?.length}
                     {#each content.search_columns as column, index (index)}
                         <div class="flex items-center gap-2">
                             <Input class="grow" bind:value={column.key} placeholder={$_("key")} size="sm" aria-label="{$_('key')} {index + 1}" />
@@ -247,7 +258,7 @@
             <section class={section}>
                 <h3 class="font-semibold text-text">{$_("csv_columns")}</h3>
 
-                {#if content.csv_columns?.length > 0}
+                {#if content.csv_columns?.length}
                     {#each content.csv_columns as column, index (index)}
                         <div class="flex items-center gap-2">
                             <Input class="grow" bind:value={column.key} placeholder={$_("key")} size="sm" aria-label="{$_('key')} {index + 1}" />
@@ -284,7 +295,7 @@
             <section class={section}>
                 <h3 class="font-semibold text-text">{$_("content_resource_types")}</h3>
 
-                {#if content.content_resource_types.length > 0}
+                {#if content.content_resource_types?.length}
                     <ul class="flex flex-wrap gap-1.5" aria-label={$_("content_resource_types")}>
                         {#each content.content_resource_types as type (type)}
                             <li class={chip}>
@@ -302,12 +313,13 @@
                         <div class="flex items-center gap-2 mb-2">
                             <Checkbox
                                 id="{uid}-resource-type-{type}"
-                                checked={content.content_resource_types.includes(type)}
+                                checked={content.content_resource_types?.includes(type) ?? false}
                                 onchange={() => {
-                                    if (content.content_resource_types.includes(type)) {
-                                        content.content_resource_types = content.content_resource_types.filter((t: string) => t !== type);
+                                    const current = content.content_resource_types ?? [];
+                                    if (current.includes(type)) {
+                                        content.content_resource_types = current.filter((t) => t !== type);
                                     } else {
-                                        content.content_resource_types = [...content.content_resource_types, type];
+                                        content.content_resource_types = [...current, type];
                                     }
                                 }}
                             />
@@ -320,7 +332,7 @@
             <section class={section}>
                 <h3 class="font-semibold text-text">{$_("schema_shortnames")}</h3>
 
-                {#if content.content_schema_shortnames.length > 0}
+                {#if content.content_schema_shortnames?.length}
                     <ul class="flex flex-wrap gap-1.5" aria-label={$_("schema_shortnames")}>
                         {#each content.content_schema_shortnames as schema (schema)}
                             <li class={chip}>
@@ -345,7 +357,7 @@
 
                 <h3 class="font-semibold text-text pt-2 border-t border-border">{$_("workflow_shortnames")}</h3>
 
-                {#if content.workflow_shortnames.length > 0}
+                {#if content.workflow_shortnames?.length}
                     <ul class="flex flex-wrap gap-1.5" aria-label={$_("workflow_shortnames")}>
                         {#each content.workflow_shortnames as workflow (workflow)}
                             <li class={chip}>
@@ -373,7 +385,7 @@
         <section class={section}>
             <h3 class="font-semibold text-text">{$_("pdf_schema_shortnames")}</h3>
 
-            {#if content.enable_pdf_schema_shortnames?.length > 0}
+            {#if content.enable_pdf_schema_shortnames?.length}
                 {#each content.enable_pdf_schema_shortnames as _shortname, index (index)}
                     <div class="flex items-center gap-2">
                         <Input class="grow" bind:value={content.enable_pdf_schema_shortnames[index]} placeholder={$_("schema_shortname")} aria-label="{$_('schema_shortname')} {index + 1}" />

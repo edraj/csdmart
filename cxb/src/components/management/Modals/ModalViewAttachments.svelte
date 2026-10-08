@@ -4,6 +4,7 @@
     import { Dmart, ResourceType } from "@edraj/tsdmart";
     import { getFileExtension } from "@/utils/getFileExtension";
     import { localizedText } from "@/utils/localized";
+    import type { AttachmentRecord } from "@/utils/entryShapes";
     import { _ } from "@/i18n";
 
     let {
@@ -19,7 +20,7 @@
         parent_resource_type: string;
         parent_shortname: string;
         openViewContentModal: boolean;
-        selectedAttachment: any;
+        selectedAttachment: AttachmentRecord | null;
     } = $props();
 
     function getModalSize(contentType: string | undefined): "md" | "lg" | "xl" {
@@ -38,7 +39,8 @@
     const mediaUrl = $derived(
         selectedAttachment
             ? Dmart.getAttachmentUrl({
-                  resource_type: selectedAttachment.resource_type,
+                  // A record names its type as a plain string; the request wants the enum.
+                  resource_type: selectedAttachment.resource_type as ResourceType,
                   space_name,
                   subpath,
                   parent_shortname: parent_resource_type === ResourceType.folder ? "" : parent_shortname,

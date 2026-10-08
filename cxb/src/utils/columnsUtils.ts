@@ -1,4 +1,5 @@
-interface FolderColumn {
+/** One column as a folder's rendering payload names it (`index_attributes`, `search_columns`, `csv_columns`). */
+export interface FolderColumn {
     key: string;
     name: string;
 }
@@ -23,15 +24,19 @@ export function isTimestampKey(key: string | null | undefined): boolean {
     return TIMESTAMP_KEYS.has(last.toLowerCase());
 }
 
-export function folderRenderingColsToListCols(originalArray: Record<string, FolderColumn>): Record<string, ListColumn> {
+/**
+ * The folder's columns as the list wants them, keyed by column key. A folder
+ * payload carries them as an array; the bundled column files as an object.
+ */
+export function folderRenderingColsToListCols(originalArray: Record<string, FolderColumn> | FolderColumn[]): Record<string, ListColumn> {
     const transformedObject: Record<string, ListColumn> = {};
-    const keys = Object.keys(originalArray);
-    const columnWidth = `${(100 / (keys.length || 1)).toString()}%`;
+    const columns: FolderColumn[] = Array.isArray(originalArray) ? originalArray : Object.values(originalArray);
+    const columnWidth = `${(100 / (columns.length || 1)).toString()}%`;
 
-    keys.forEach(item => {
-        transformedObject[originalArray[item].key] = {
-            path: originalArray[item].key,
-            title: originalArray[item].name,
+    columns.forEach(column => {
+        transformedObject[column.key] = {
+            path: column.key,
+            title: column.name,
             type: "string",
             width: columnWidth,
         };

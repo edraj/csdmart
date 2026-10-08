@@ -15,8 +15,9 @@
     import { getPayloadSchema } from "@/utils/entryManagement";
     import { params } from "@roxi/routify";
     import { untrack } from "svelte";
-    import { generateObjectFromSchema } from "@/utils/renderer/rendererUtils";
+    import { generateObjectFromSchema, type JsonSchema } from "@/utils/renderer/rendererUtils";
     import { jsonEditorContentParser } from "@/utils/jsonEditor";
+    import type { MenuItem } from "svelte-jsoneditor";
     import { _ } from "@/i18n";
 
     let {
@@ -42,17 +43,19 @@
         { name: $_("text"), value: "text" },
     ];
 
-    function handleRenderMenu(items: any[]) {
-        items = items.filter((item) => !["tree", "text", "table"].includes(item.text));
+    // Drops the editor's mode buttons (the mode is fixed here) and its trailing
+    // separator and spacer, then puts a fresh pair back.
+    function handleRenderMenu(items: MenuItem[]): MenuItem[] {
+        items = items.filter((item) => !(item.type === "button" && ["tree", "text", "table"].includes(item.text ?? "")));
         const itemsWithoutSpace = items.slice(0, items.length - 2);
-        return itemsWithoutSpace.concat([{ separator: true }, { space: true }]);
+        return itemsWithoutSpace.concat([{ type: "separator" }, { type: "space" }]);
     }
 
     const folderPreference = $currentEntry?.entry?.payload?.body;
 
     // ── The selected schema's body: one request for the one schema in use.
     //    The dropdown itself only ever needed shortnames. ─────────────────
-    let selectedSchemaContent: any = $state(null);
+    let selectedSchemaContent = $state<JsonSchema | null>(null);
     let schemaSeq = 0;
 
     async function applySchema(shortname: string | null | undefined) {
@@ -269,10 +272,11 @@
 
         {#if selectedResourceType === ResourceType.content && selectedSchema === "translation"}
             {#if selectedSchemaContent}
+                {@const columns = Object.keys(selectedSchemaContent.properties?.items?.items?.properties ?? {})}
                 {#if isCreate}
-                    <TranslationForm bind:entries={content.json} columns={Object.keys(selectedSchemaContent.properties.items.items.properties)} />
+                    <TranslationForm bind:entries={content.json} {columns} />
                 {:else}
-                    <TranslationForm bind:entries={content} columns={Object.keys(selectedSchemaContent.properties.items.items.properties)} />
+                    <TranslationForm bind:entries={content} {columns} />
                 {/if}
             {/if}
         {:else if selectedResourceType === ResourceType.content && contentType === "html"}

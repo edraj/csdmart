@@ -7,6 +7,7 @@
     import EmptyState from "@/components/ui/EmptyState.svelte";
     import ErrorState from "@/components/ui/ErrorState.svelte";
     import LoadingState from "@/components/ui/LoadingState.svelte";
+    import type { PermissionEntry } from "@/utils/entryShapes";
     import { _ } from "@/i18n";
 
     const { permissions = [], showTabs = true }: { permissions: string[]; showTabs?: boolean } = $props();
@@ -49,17 +50,17 @@
     let mapLoading = $state(false);
     let mapBuilt = $state(false);
 
-    function mergePermission(permission: any) {
-        const subpaths: Record<string, string[]> = permission.subpaths ?? {};
-        const resourceTypes: string[] = permission.resource_types ?? [];
-        const actions: string[] = permission.actions ?? [];
-        const conditions: string[] = permission.conditions ?? [];
-        const allowedFieldsValues: Record<string, unknown> = permission.allowed_fields_values ?? {};
-        const filterFieldsValues: string = permission.filter_fields_values ?? "";
+    function mergePermission(permission: PermissionEntry) {
+        const subpaths = permission.subpaths ?? {};
+        const resourceTypes = permission.resource_types ?? [];
+        const actions = permission.actions ?? [];
+        const conditions = permission.conditions ?? [];
+        const allowedFieldsValues = permission.allowed_fields_values ?? {};
+        const filterFieldsValues = permission.filter_fields_values ?? "";
 
         for (const [space, paths] of Object.entries(subpaths)) {
             if (!spaceMap[space]) spaceMap[space] = {};
-            for (const subpath of paths as string[]) {
+            for (const subpath of paths) {
                 if (!spaceMap[space][subpath]) {
                     spaceMap[space][subpath] = {
                         resource_types: [],
@@ -99,9 +100,9 @@
 
         const results = await Promise.allSettled(permissions.map((permName) => loadPermission(permName)));
         results.forEach((result, i) => {
-            if (result.status === "fulfilled") {
+            if (result.status === "fulfilled" && result.value) {
                 mergePermission(result.value);
-            } else {
+            } else if (result.status === "rejected") {
                 console.warn(`Could not load permission ${permissions[i]}:`, result.reason);
             }
         });
@@ -152,7 +153,9 @@
                         {#await loadPermission(permission)}
                             <LoadingState variant="skeleton" rows={3} class="mt-2" />
                         {:then permissionEntry}
-                            <MetaPermissionForm formData={permissionEntry} readOnly={true} validateFn={noop} />
+                            {#if permissionEntry}
+                                <MetaPermissionForm formData={permissionEntry} readOnly={true} validateFn={noop} />
+                            {/if}
                         {:catch error}
                             <ErrorState compact {error} class="mt-2" />
                         {/await}

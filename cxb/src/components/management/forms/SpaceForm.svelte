@@ -4,13 +4,15 @@
     import { CloseOutline } from "flowbite-svelte-icons";
     import { Dmart, QueryType, ResourceType } from "@edraj/tsdmart";
     import IconButton from "@/components/ui/IconButton.svelte";
+    import type { SpaceSettings } from "@/utils/entryShapes";
     import { _ } from "@/i18n";
 
     let {
         formData = $bindable(),
         spaceName,
     }: {
-        formData: any;
+        /** The space entry: its settings, with the rest of the record riding along. */
+        formData: SpaceSettings & Record<string, unknown>;
         spaceName: string;
     } = $props();
 
@@ -55,14 +57,16 @@
         }
     });
 
-    function addItem(listName: string, value: string) {
-        if (value && !formData[listName].includes(value)) {
-            formData[listName] = [...formData[listName], value];
+    // Both lists are seeded above; the `?? []` only satisfies the optional types.
+    function addItem(listName: "hide_folders" | "active_plugins", value: string) {
+        const current = formData[listName] ?? [];
+        if (value && !current.includes(value)) {
+            formData[listName] = [...current, value];
         }
     }
 
-    function removeItem(listName: string, value: string) {
-        formData[listName] = formData[listName].filter((v: string) => v !== value);
+    function removeItem(listName: "hide_folders" | "active_plugins", value: string) {
+        formData[listName] = (formData[listName] ?? []).filter((v) => v !== value);
     }
 
     const help = "mt-1 text-xs text-text-muted";
@@ -92,7 +96,7 @@
         <div class="rounded-card border border-border bg-surface p-4">
             <Label for="{uid}-hide_folders" class="mb-2 font-semibold">{$_("hide_folders")}</Label>
             <ul class="flex flex-wrap gap-2 mb-3" aria-label={$_("hide_folders")}>
-                {#each formData.hide_folders as folder (folder)}
+                {#each formData.hide_folders ?? [] as folder (folder)}
                     <li class="{chip} bg-primary-soft text-primary">
                         {folder}
                         <IconButton size="sm" label={$_("remove_item", { values: { name: folder } })} class="text-primary hover:bg-primary/10" onclick={() => removeItem("hide_folders", folder)}>
@@ -100,13 +104,13 @@
                         </IconButton>
                     </li>
                 {/each}
-                {#if formData.hide_folders.length === 0}
+                {#if !formData.hide_folders?.length}
                     <li class="text-sm text-text-faint italic">{$_("no_folders_hidden")}</li>
                 {/if}
             </ul>
             <Select
                 id="{uid}-hide_folders"
-                items={availableFolders.filter((f) => !formData.hide_folders.includes(f)).map((f) => ({ name: f, value: f }))}
+                items={availableFolders.filter((f) => !formData.hide_folders?.includes(f)).map((f) => ({ name: f, value: f }))}
                 placeholder={$_("select_folder_to_hide")}
                 onchange={(e) => {
                     const target = e.target as HTMLSelectElement;
@@ -120,7 +124,7 @@
         <div class="rounded-card border border-border bg-surface p-4">
             <Label for="{uid}-active_plugins" class="mb-2 font-semibold">{$_("active_plugins")}</Label>
             <ul class="flex flex-wrap gap-2 mb-3" aria-label={$_("active_plugins")}>
-                {#each formData.active_plugins as plugin (plugin)}
+                {#each formData.active_plugins ?? [] as plugin (plugin)}
                     <li class="{chip} bg-success-soft text-success">
                         {plugin}
                         <IconButton size="sm" label={$_("remove_item", { values: { name: plugin } })} class="text-success hover:bg-success/10" onclick={() => removeItem("active_plugins", plugin)}>
@@ -128,13 +132,13 @@
                         </IconButton>
                     </li>
                 {/each}
-                {#if formData.active_plugins.length === 0}
+                {#if !formData.active_plugins?.length}
                     <li class="text-sm text-text-faint italic">{$_("no_active_plugins")}</li>
                 {/if}
             </ul>
             <Select
                 id="{uid}-active_plugins"
-                items={plugins.filter((p) => !formData.active_plugins.includes(p)).map((p) => ({ name: p, value: p }))}
+                items={plugins.filter((p) => !formData.active_plugins?.includes(p)).map((p) => ({ name: p, value: p }))}
                 placeholder={$_("select_plugin_to_activate")}
                 onchange={(e) => {
                     const target = e.target as HTMLSelectElement;

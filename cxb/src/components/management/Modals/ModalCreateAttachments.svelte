@@ -9,9 +9,9 @@
         ResourceType,
         type ActionRequest,
         type ActionRequestRecord,
-        type ApiResponseRecord,
     } from "@edraj/tsdmart";
     import type { Content } from "svelte-jsoneditor";
+    import type { AttachmentRecord, MetaFormData } from "@/utils/entryShapes";
     import LazyJsonEditor from "@/components/ui/LazyJsonEditor.svelte";
     import ErrorState from "@/components/ui/ErrorState.svelte";
     import HtmlEditor from "@/components/management/editors/HtmlEditor.svelte";
@@ -26,25 +26,13 @@
     import { limitJsonForDisplay } from "@/utils/displayJson";
     import { _ } from "@/i18n";
 
-    /** One translatable field as the meta form edits it: a cleared box is null. */
-    type MetaTranslation = { en?: string | null; ar?: string | null; ku?: string | null };
-
-    /** The attachment's own metadata, edited through MetaForm. */
-    interface AttachmentMeta {
-        shortname?: string | null;
-        is_active?: boolean;
-        slug?: string | null;
-        displayname?: MetaTranslation;
-        description?: MetaTranslation;
-    }
-
     /**
      * What the content control holds, by attachment type: the text itself for
      * a text/markdown/html media or a new comment, JSON-editor content for a
      * JSON attachment (and the record itself when only metadata is edited),
      * `{ body }` for an existing comment, `{}` for a file upload.
      */
-    type AttachmentContent = string | Content | { body?: string };
+    export type AttachmentContent = string | Content | { body?: string };
 
     function isEditorContent(value: AttachmentContent): value is Content {
         return typeof value === "object" && (("json" in value && !!value.json) || ("text" in value && !!value.text));
@@ -62,11 +50,12 @@
         parent_shortname = $bindable(""),
         refreshEntry,
     }: {
-        meta?: AttachmentMeta;
+        /** The attachment's own metadata, edited through MetaForm. */
+        meta?: MetaFormData;
         payload?: AttachmentContent;
         isOpen?: boolean;
         isUpdateMode?: boolean;
-        selectedAttachment?: ApiResponseRecord | null;
+        selectedAttachment?: AttachmentRecord | null;
         space_name?: string;
         parentResourceType: ResourceType;
         subpath?: string;
@@ -95,7 +84,7 @@
         }
     });
 
-    function initializeFormWithAttachment(attachment: ApiResponseRecord) {
+    function initializeFormWithAttachment(attachment: AttachmentRecord) {
         if (!attachment) return;
 
         const _attachment = structuredClone($state.snapshot(attachment));
