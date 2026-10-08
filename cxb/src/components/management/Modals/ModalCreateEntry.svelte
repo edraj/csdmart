@@ -1,7 +1,9 @@
 <script lang="ts">
     import { Button, Label, Modal, Select, Spinner } from "flowbite-svelte";
     import { CodeOutline, FileCodeOutline } from "flowbite-svelte-icons";
-    import { Dmart, RequestType, ResourceType, type ActionResponse } from "@edraj/tsdmart";
+    import { Dmart, RequestType, ResourceType, type ActionRequestRecord, type ActionResponse } from "@edraj/tsdmart";
+    import type { Content } from "svelte-jsoneditor";
+    import type { EntryFields, MetaFormData } from "@/utils/entryShapes";
     import { tick, untrack } from "svelte";
     import { scrollToElById } from "@/utils/renderer/rendererUtils";
     import Prism from "@/components/Prism.svelte";
@@ -30,7 +32,7 @@
     } = $props();
 
     const uid = $props.id();
-    const folderPreference = ($currentEntry as any)?.entry?.payload?.body;
+    const folderPreference = $currentEntry?.entry?.payload?.body;
 
     let selectedResourceType = $state(ResourceType.content);
     let allowedResourceTypes = $state<{ name: string; value: ResourceType }[]>([]);
@@ -91,10 +93,14 @@
 
     let selectedSchema = $state<string | null>(null);
 
-    let content: any = $state({
+    /** Everything the meta forms write; `shortname` is lifted out into the record. */
+    type MetaContent = MetaFormData & EntryFields;
+
+    // JSON-editor content for a JSON payload, the text itself for html/markdown/text.
+    let content = $state<string | Content>({
         json: {},
     });
-    let metaContent: any = $state({});
+    let metaContent = $state<MetaContent>({});
     let contentType = $state("json");
 
     let errorContent: unknown = $state(null);
@@ -125,9 +131,9 @@
             const shortname = _metaContent.shortname;
             delete _metaContent.shortname;
 
-            const requestCreate: any = {
+            const requestCreate: ActionRequestRecord = {
                 resource_type: selectedResourceType,
-                shortname: shortname,
+                shortname: shortname ?? "",
                 subpath: subpath,
                 attributes: {
                     ..._metaContent,
@@ -206,16 +212,19 @@
                     {
                         resource_type: selectedResourceType,
                         subpath: subpath,
-                        shortname: metaContent.shortname,
+                        // The meta form's `required` check above guarantees a name here.
+                        shortname: metaContent.shortname ?? "",
                         attributes: removeEmpty(requestCreate.attributes),
                     },
                 ],
             };
             response = await Dmart.request(request);
 
-            if ((response as any)?.attributes && (response as any).attributes.error) {
+            // A 200 that still reports a failure carries it under `attributes.error`.
+            const responseAttributes = (response as ActionResponse & { attributes?: { error?: unknown } })?.attributes;
+            if (responseAttributes && responseAttributes.error) {
                 isHandleCreateEntryLoading = false;
-                errorContent = (response as any).attributes.error;
+                errorContent = responseAttributes.error;
                 return;
             }
             await $currentListView?.fetchPageRecords();

@@ -1,10 +1,13 @@
-// Flat config (ESLint 10) — cxb had no linter at all. Scope: src/ only;
-// generated routes (.routify/) and build output are ignored.
+// Flat config (ESLint 10). Scope: src/ only; generated routes (.routify/)
+// and build output are ignored.
 //
-// Baseline policy: the recommended TypeScript + Svelte sets, with the rules
-// the codebase does not yet satisfy (explicit any) reported as warnings so
-// lint is red only for real defects — leftover console.log, undefined/unused
-// symbols, Svelte compile-level mistakes.
+// Policy: the recommended TypeScript + Svelte sets, and lint is red only for
+// real defects — leftover console.log, undefined/unused symbols, Svelte
+// compile-level mistakes, and an explicit `any`. The code is fully typed
+// (SDK types, the app's own shapes, `unknown` plus a guard for dynamic JSON),
+// so a new `any` is an error, not a debt to carry. `svelte/no-at-html-tags`
+// stays a warning: each `{@html}` site renders sanitised markup and says so
+// inline.
 import js from "@eslint/js";
 import svelte from "eslint-plugin-svelte";
 import globals from "globals";
@@ -22,7 +25,7 @@ export default ts.config(
     rules: {
       "no-console": ["error", { allow: ["warn", "error"] }],
       "no-empty": ["error", { allowEmptyCatch: true }],
-      "@typescript-eslint/no-explicit-any": "warn",
+      "@typescript-eslint/no-explicit-any": "error",
       "@typescript-eslint/no-unused-vars": [
         "error",
         { argsIgnorePattern: "^_", varsIgnorePattern: "^_", caughtErrorsIgnorePattern: "^_" },

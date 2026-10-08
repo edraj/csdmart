@@ -7,6 +7,7 @@
     import { spaces as spacesStore } from "@/stores/management/spaces";
     import IconButton from "@/components/ui/IconButton.svelte";
     import LoadingState from "@/components/ui/LoadingState.svelte";
+    import type { PermissionRules } from "@/utils/entryShapes";
     import { _ } from "@/i18n";
 
     let {
@@ -15,7 +16,8 @@
         validateFn = $bindable(),
         readOnly = false,
     }: {
-        formData: any;
+        /** The permission entry: its rules, with the rest of the record riding along. */
+        formData: PermissionRules & Record<string, unknown>;
         validateFn: () => boolean;
         readOnly: boolean;
     } = $props();
@@ -75,48 +77,54 @@
         }
     });
 
+    // The lists are seeded above, so the `?? []` fallbacks only satisfy the
+    // optional types; the server strips an empty list from what it sends.
     function addResourceType() {
-        if (selectedResourceType && !formData.resource_types.includes(selectedResourceType)) {
-            formData.resource_types = [...formData.resource_types, selectedResourceType];
+        const current = formData.resource_types ?? [];
+        if (selectedResourceType && !current.includes(selectedResourceType)) {
+            formData.resource_types = [...current, selectedResourceType];
             selectedResourceType = "";
         }
     }
 
     function removeResourceType(item: string) {
-        formData.resource_types = formData.resource_types.filter((i: string) => i !== item);
+        formData.resource_types = (formData.resource_types ?? []).filter((i) => i !== item);
     }
 
     function addAction() {
-        if (selectedAction && !formData.actions.includes(selectedAction)) {
-            formData.actions = [...formData.actions, selectedAction];
+        const current = formData.actions ?? [];
+        if (selectedAction && !current.includes(selectedAction)) {
+            formData.actions = [...current, selectedAction];
             selectedAction = "";
         }
     }
 
     function removeAction(item: string) {
-        formData.actions = formData.actions.filter((i: string) => i !== item);
+        formData.actions = (formData.actions ?? []).filter((i) => i !== item);
     }
 
     function addCondition() {
-        if (newCondition && !formData.conditions.includes(newCondition)) {
-            formData.conditions = [...formData.conditions, newCondition];
+        const current = formData.conditions ?? [];
+        if (newCondition && !current.includes(newCondition)) {
+            formData.conditions = [...current, newCondition];
             newCondition = "";
         }
     }
 
     function removeCondition(item: string) {
-        formData.conditions = formData.conditions.filter((i: string) => i !== item);
+        formData.conditions = (formData.conditions ?? []).filter((i) => i !== item);
     }
 
     function addRestrictedField() {
-        if (newRestrictedField && !formData.restricted_fields.includes(newRestrictedField)) {
-            formData.restricted_fields = [...formData.restricted_fields, newRestrictedField];
+        const current = formData.restricted_fields ?? [];
+        if (newRestrictedField && !current.includes(newRestrictedField)) {
+            formData.restricted_fields = [...current, newRestrictedField];
             newRestrictedField = "";
         }
     }
 
     function removeRestrictedField(item: string) {
-        formData.restricted_fields = formData.restricted_fields.filter((i: string) => i !== item);
+        formData.restricted_fields = (formData.restricted_fields ?? []).filter((i) => i !== item);
     }
 
     async function loadSubpaths(spaceName: string) {
@@ -141,23 +149,25 @@
     function addSubpathToSpace() {
         if (!selectedSpace || !selectedSubpath) return;
 
-        if (!formData.subpaths[selectedSpace]) {
-            formData.subpaths[selectedSpace] = [];
+        if (!formData.subpaths) {
+            formData.subpaths = {};
         }
-
-        if (!formData.subpaths[selectedSpace].includes(selectedSubpath)) {
-            formData.subpaths[selectedSpace] = [...formData.subpaths[selectedSpace], selectedSubpath];
+        const current = formData.subpaths[selectedSpace] ?? [];
+        if (!current.includes(selectedSubpath)) {
+            formData.subpaths[selectedSpace] = [...current, selectedSubpath];
         }
 
         selectedSubpath = "";
     }
 
     function removeSubpath(space: string, subpath: string) {
-        formData.subpaths[space] = formData.subpaths[space].filter((p: string) => p !== subpath);
+        const subpaths = formData.subpaths;
+        if (!subpaths) return;
+        subpaths[space] = (subpaths[space] ?? []).filter((p) => p !== subpath);
 
         // Remove the space key if no subpaths remain
-        if (formData.subpaths[space].length === 0) {
-            const { [space]: _removed, ...rest } = formData.subpaths;
+        if (subpaths[space].length === 0) {
+            const { [space]: _removed, ...rest } = subpaths;
             formData.subpaths = rest;
         }
     }
@@ -213,7 +223,7 @@
         }
     });
 
-    const subpathEntries: [string, string[]][] = $derived(Object.entries(formData.subpaths));
+    const subpathEntries: [string, string[]][] = $derived(Object.entries(formData.subpaths ?? {}));
 
     const chip = "inline-flex items-center gap-1 rounded-full ps-3 pe-1 py-0.5 text-sm";
     const emptyBox = "mt-2 p-3 rounded-card border border-dashed border-border text-center text-sm text-text-muted";
@@ -234,7 +244,7 @@
                 </div>
             {/if}
 
-            {#if formData.resource_types.length > 0}
+            {#if formData.resource_types?.length}
                 <ul class="mt-2 flex flex-wrap gap-2" aria-label={$_("resource_types")}>
                     {#each formData.resource_types as item (item)}
                         <li class="{chip} bg-primary-soft text-primary {readOnly ? 'pe-3' : ''}">
@@ -263,7 +273,7 @@
                 </div>
             {/if}
 
-            {#if formData.actions.length > 0}
+            {#if formData.actions?.length}
                 <ul class="mt-2 flex flex-wrap gap-2" aria-label={$_("actions")}>
                     {#each formData.actions as item (item)}
                         <li class="{chip} bg-success-soft text-success {readOnly ? 'pe-3' : ''}">
@@ -359,7 +369,7 @@
                         </div>
                     {/if}
 
-                    {#if formData.conditions.length > 0}
+                    {#if formData.conditions?.length}
                         <ul class="mt-2 flex flex-wrap gap-2" aria-label={$_("conditions")}>
                             {#each formData.conditions as item (item)}
                                 <li class="{chip} bg-warning-soft text-warning {readOnly ? 'pe-3' : ''}">
@@ -390,7 +400,7 @@
                         </div>
                     {/if}
 
-                    {#if formData.restricted_fields.length > 0}
+                    {#if formData.restricted_fields?.length}
                         <ul class="mt-2 flex flex-wrap gap-2" aria-label={$_("restricted_fields")}>
                             {#each formData.restricted_fields as item (item)}
                                 <li class="{chip} bg-danger-soft text-danger {readOnly ? 'pe-3' : ''}">

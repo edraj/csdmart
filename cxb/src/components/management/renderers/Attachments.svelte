@@ -18,6 +18,9 @@
         UploadOutline,
     } from "flowbite-svelte-icons";
     import ModalViewAttachments from "@/components/management/Modals/ModalViewAttachments.svelte";
+    import type { AttachmentContent } from "@/components/management/Modals/ModalCreateAttachments.svelte";
+    import type { MenuItem } from "svelte-jsoneditor";
+    import type { AttachmentRecord, MetaFormData } from "@/utils/entryShapes";
     import { getFileExtension } from "@/utils/getFileExtension";
     import ConfirmDialog from "@/components/ui/ConfirmDialog.svelte";
     import EmptyState from "@/components/ui/EmptyState.svelte";
@@ -48,9 +51,10 @@
     const uid = $props.id();
 
     // ── Grouping by content type ────────────────────────────────────────────
-    const allAttachments = $derived((Object.values(attachments ?? {}) as any[][]).flat(1));
+    // `attachments` maps each attachment type to its records.
+    const allAttachments = $derived((Object.values(attachments ?? {}) as AttachmentRecord[][]).flat(1));
     const contentTypeGroups = $derived.by(() => {
-        const groups: Record<string, any[]> = {};
+        const groups: Record<string, AttachmentRecord[]> = {};
         for (const attachment of allAttachments) {
             let contentType = "other";
             if (attachment.resource_type === ResourceType.media && attachment.attributes?.payload?.content_type) {
@@ -71,14 +75,14 @@
         selectedFilter === "all" ? allAttachments : (contentTypeGroups[selectedFilter] ?? allAttachments),
     );
 
-    function attachmentKey(attachment: any): string {
+    function attachmentKey(attachment: AttachmentRecord): string {
         return attachment.uuid ?? `${attachment.resource_type}:${attachment.shortname}`;
     }
 
     // ── View meta ───────────────────────────────────────────────────────────
     let openViewAttachmentModal = $state(false);
     let metaContent = $state<{ json: unknown; text?: undefined }>({ json: {} });
-    function viewMeta(attachment: any) {
+    function viewMeta(attachment: AttachmentRecord) {
         selectedAttachment = attachment;
         metaContent = { json: attachment, text: undefined };
         openViewAttachmentModal = true;
@@ -86,7 +90,7 @@
 
     // ── View content ────────────────────────────────────────────────────────
     let openViewContentModal = $state(false);
-    function viewContent(attachment: any) {
+    function viewContent(attachment: AttachmentRecord) {
         selectedAttachment = attachment;
         openViewContentModal = true;
     }
@@ -94,11 +98,11 @@
     // ── Create / edit ───────────────────────────────────────────────────────
     let isModalInUpdateMode = $state(false);
     let openCreateAttachmentModal = $state(false);
-    let selectedAttachment: any = $state(null);
-    let createMetaContent = $state({});
-    let createPayloadContent = $state({});
+    let selectedAttachment = $state<AttachmentRecord | null>(null);
+    let createMetaContent = $state<MetaFormData>({});
+    let createPayloadContent = $state<AttachmentContent>({});
 
-    function editAttachment(attachment: any) {
+    function editAttachment(attachment: AttachmentRecord) {
         selectedAttachment = attachment;
         isModalInUpdateMode = true;
         openCreateAttachmentModal = true;
@@ -117,7 +121,7 @@
     let isDeleteLoading = $state(false);
     let deleteError: unknown = $state(null);
 
-    function confirmDelete(attachment: any) {
+    function confirmDelete(attachment: AttachmentRecord) {
         selectedAttachment = attachment;
         deleteError = null;
         openDeleteModal = true;
@@ -158,10 +162,12 @@
         }
     }
 
-    function handleRenderMenu(items: any[]) {
-        items = items.filter((item) => !["tree", "text", "table"].includes(item.text));
+    // Drops the editor's mode buttons (the mode is fixed here) and its trailing
+    // separator and spacer, then puts a fresh pair back.
+    function handleRenderMenu(items: MenuItem[]): MenuItem[] {
+        items = items.filter((item) => !(item.type === "button" && ["tree", "text", "table"].includes(item.text ?? "")));
         const itemsWithoutSpace = items.slice(0, items.length - 2);
-        return itemsWithoutSpace.concat([{ separator: true }, { space: true }]);
+        return itemsWithoutSpace.concat([{ type: "separator" }, { type: "space" }]);
     }
 
     const chipBase =
@@ -253,7 +259,7 @@
                                 {/if}
                             {:else if attachment.resource_type === ResourceType.csv}
                                 <FileCsvOutline size="lg" />
-                            {:else if [ResourceType.comment, ResourceType.json].includes(attachment.resource_type)}
+                            {:else if attachment.resource_type === ResourceType.comment || attachment.resource_type === ResourceType.json}
                                 <FileLinesOutline size="lg" />
                             {:else}
                                 <FileOutline size="lg" />
@@ -306,7 +312,7 @@
                             <a
                                 class="font-semibold text-base text-primary hover:underline break-words"
                                 href={Dmart.getAttachmentUrl({
-                                    resource_type: attachment.resource_type,
+                                    resource_type: ResourceType.media,
                                     space_name,
                                     subpath,
                                     parent_shortname: resource_type === ResourceType.folder ? "" : parent_shortname,

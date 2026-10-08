@@ -1,8 +1,24 @@
 import {writable} from "svelte/store";
-import {ResourceType, type ResponseEntry} from "@edraj/tsdmart";
+import {type ApiResponseRecord, type QueryRequest, ResourceType, type ResponseEntry} from "@edraj/tsdmart";
 
-export const currentEntry = writable<{entry: ResponseEntry | null; [key: string]: any} | null>(null);
-export const currentListView = writable<{fetchPageRecords: (isSetPage?: boolean, requestExtra?: Record<string, unknown>) => Promise<void>; query?: any; [key: string]: any} | null>(null);
+/** The entry the renderer is showing, and how to reload it after an action elsewhere. */
+export interface CurrentEntry {
+    entry: ResponseEntry | null;
+    refreshEntry?: () => Promise<void>;
+}
+
+/**
+ * The mounted list's hooks for the action bar and the modals: reload the
+ * page, and the live query plus total the CSV download starts from.
+ */
+export interface CurrentListView {
+    fetchPageRecords: (isSetPage?: boolean, requestExtra?: Record<string, unknown>) => Promise<void>;
+    query?: QueryRequest;
+    total?: number;
+}
+
+export const currentEntry = writable<CurrentEntry | null>(null);
+export const currentListView = writable<CurrentListView | null>(null);
 /**
  * The sidebar's folder-children cache. Keys come from `sidebarCacheKey()` in
  * `@/utils/subpath` — every writer and reader must build them there, or a
@@ -11,9 +27,9 @@ export const currentListView = writable<{fetchPageRecords: (isSetPage?: boolean,
  * that was fetched, so the tree can offer "load more".
  */
 export const spaceChildren = writable<{
-    data: Map<string, any[]>;
+    data: Map<string, ApiResponseRecord[]>;
     hasMore: Map<string, boolean>;
-    refresh: ((spaceName: string, subpath?: string, invalidate?: boolean) => Promise<any>) | null;
+    refresh: ((spaceName: string, subpath?: string, invalidate?: boolean) => Promise<ApiResponseRecord[]>) | null;
 }>({
     data: new Map(),
     hasMore: new Map(),

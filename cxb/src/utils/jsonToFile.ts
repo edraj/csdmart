@@ -1,4 +1,4 @@
-export function jsonToFile(jsonObject: any): File {
+export function jsonToFile(jsonObject: unknown): File {
   const jsonBlob = new Blob([JSON.stringify(jsonObject)], {
     type: "application/json",
   });

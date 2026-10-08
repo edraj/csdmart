@@ -9,7 +9,8 @@
     import Prism from "@/components/Prism.svelte";
     import { goto, params, url } from "@roxi/routify";
     import { isDeepEqual } from "@/utils/compare";
-    import { folderRenderingColsToListCols, type ListColumn } from "@/utils/columnsUtils";
+    import { folderRenderingColsToListCols, type FolderColumn, type ListColumn } from "@/utils/columnsUtils";
+    import type { FolderQuery } from "@/utils/entryShapes";
     import { Button, Modal } from "flowbite-svelte";
     import { bulkBucket } from "@/stores/management/bulk_bucket";
     import { spaces } from "@/stores/management/spaces";
@@ -30,6 +31,9 @@
 
     $bulkBucket = [];
 
+    /** A notification frame's `message`: the server names the action, the rest depends on it. */
+    type StreamMessage = { action_type: string; [key: string]: unknown };
+
     let {
         space_name = $bindable(),
         subpath = $bindable(),
@@ -47,14 +51,16 @@
         stream = $bindable(false),
         onStreamUpdate = undefined,
     }: {
-        space_name?: string;
-        subpath?: string;
+        space_name: string;
+        subpath: string;
         shortname?: string | null;
         type?: QueryType;
-        folderColumns?: any;
+        /** The folder's own columns (`index_attributes`); null means the default set. */
+        folderColumns?: Record<string, FolderColumn> | FolderColumn[] | null;
         sort_by?: string | null;
         sort_order?: string | null;
-        query?: any;
+        /** The folder's `query` preference; its search is appended to the list's. */
+        query?: FolderQuery | null;
         is_clickable?: boolean;
         canDelete?: boolean;
         exact_subpath?: boolean;
@@ -62,7 +68,7 @@
         emptyHint?: string;
         scope?: DmartScope;
         stream?: boolean;
-        onStreamUpdate?: ((message: any) => void) | undefined;
+        onStreamUpdate?: ((message: StreamMessage) => void) | undefined;
     } = $props();
 
     $currentListView = { fetchPageRecords };
@@ -82,7 +88,7 @@
     if (usesDefaultColumns) {
         _initColumns = cols;
     } else {
-        _initColumns = folderRenderingColsToListCols(folderColumns);
+        _initColumns = folderRenderingColsToListCols(folderColumns ?? {});
     }
     if (Object.keys(_initColumns).includes("undefined")) {
         _initColumns = {
@@ -158,7 +164,8 @@
         }
     }
 
-    let queryObject: any = {};
+    // The last list query sent; the action bar's CSV download starts from it.
+    let queryObject: QueryRequest | null = null;
 
     // Monotonic request id: a slow response for an earlier page, sort or
     // search must never overwrite a newer one, and only the newest request
@@ -300,7 +307,7 @@
      * Load the current page. Never throws: failures land in `fetchError` with
      * a Retry button, and the rows already on screen are kept.
      */
-    async function fetchPageRecords(isSetPage = true, requestExtra = {}): Promise<void> {
+    async function fetchPageRecords(isSetPage = true, requestExtra: Partial<QueryRequest> = {}): Promise<void> {
         const seq = ++fetchSeq;
         const delayTotalCount = website.delay_total_count === true;
 
@@ -373,7 +380,7 @@
                 }
             }
 
-            objectDatatable.arrayRawData = records as any;
+            objectDatatable.arrayRawData = records;
         } catch (e: unknown) {
             if (seq !== fetchSeq) return;
             fetchError = errorMessage(e, $_("list_fetch_failed"));
@@ -383,24 +390,26 @@
     }
 
     // ── Events modal ────────────────────────────────────────────────────────
-    let modalData: any = $state({});
+    // The event row being shown; null until one is opened.
+    let modalData = $state<ApiResponseRecord | null>(null);
     let open = $state(false);
     const eventPreview = $derived(limitJsonForDisplay(modalData));
 
-    function openEvent(record: any) {
+    function openEvent(record: ApiResponseRecord) {
         open = true;
-        modalData = $state.snapshot(record);
-        if (modalData?.attributes?.attributes?.request_headers) {
-            modalData.attributes.attributes.request_headers = filterRequestHeaders(
-                modalData.attributes.attributes.request_headers,
+        const event = $state.snapshot(record);
+        if (event?.attributes?.attributes?.request_headers) {
+            event.attributes.attributes.request_headers = filterRequestHeaders(
+                event.attributes.attributes.request_headers,
             );
         }
+        modalData = event;
     }
 
     const isEvents = $derived(type === QueryType.events);
 
     /** Where a row leads; null when rows are not links (events, read-only lists). */
-    function rowHref(record: any): string | null {
+    function rowHref(record: ApiResponseRecord): string | null {
         if (!is_clickable || isEvents) return null;
 
         if (record.resource_type === "folder") {
@@ -431,14 +440,14 @@
     /**
      * Sets query parameters for navigation
      */
-    export function setQueryParam(params: any) {
+    export function setQueryParam(params: Record<string, string>) {
         $goto("$leaf", { ...params });
     }
 
     /**
      * Redirects to entry detail page
      */
-    export function redirectToEntry(record: any) {
+    export function redirectToEntry(record: ApiResponseRecord) {
         const shortname = record.shortname;
         const tmp_subpath = record.subpath.replaceAll("/", "-");
 
@@ -474,7 +483,7 @@
                 untrack(() => {
                     void fetchPageRecords(true, {
                         sort_by: (objectDatatable.stringSortBy ?? "shortname").toString(),
-                        sort_type: objectDatatable.stringSortOrder,
+                        sort_type: SortyType[objectDatatable.stringSortOrder],
                     });
                 });
                 sort = structuredClone(x);
@@ -537,19 +546,19 @@
     // Read the translator and locale once per render, not once per cell.
     const valueContext = $derived({ t: $_, locale: $locale });
 
-    function cellText(row: any, col: string): string {
+    function cellText(row: ApiResponseRecord, col: string): string {
         const path = columns?.[col]?.path;
         const type = columns?.[col]?.type ?? "string";
         const key = path ?? col;
         if (type === "json") {
             const segments = key.split(".");
-            let current: any = row;
+            let current: unknown = row;
             for (const seg of segments) {
                 if (current == null || typeof current !== "object") {
                     current = undefined;
                     break;
                 }
-                current = current[seg];
+                current = (current as Record<string, unknown>)[seg];
             }
             if (current === undefined || current === null) return "";
             return JSON.stringify(current, undefined, 1);
@@ -583,7 +592,7 @@
             color="primary"
             onclick={() => {
                 open = false;
-                redirectToEntry(modalData);
+                if (modalData) redirectToEntry(modalData);
             }}
         >
             {$_("open_entry")}
@@ -650,9 +659,8 @@
                         </thead>
                         <tbody>
                             {#each rows as row (rowKey(row))}
-                                {@const typedRow = row as any}
                                 {@const selected = selectedKeys.has(row.shortname)}
-                                {@const href = rowHref(typedRow)}
+                                {@const href = rowHref(row)}
                                 <tr class={rowClass(selected)} aria-selected={canDelete ? selected : undefined}>
                                     {#if canDelete}
                                         <!-- Positioned above the row-wide link so the box stays clickable. -->
@@ -667,7 +675,7 @@
                                         </td>
                                     {/if}
                                     {#each columnKeys as col, ci (col)}
-                                        {@const value = cellText(typedRow, col)}
+                                        {@const value = cellText(row, col)}
                                         <td class="p-2 max-w-xs text-text">
                                             {#if ci === 0 && href}
                                                 <!-- The one real link per row; its ::after stretches over
@@ -684,7 +692,7 @@
                                                     type="button"
                                                     class="block w-full truncate text-start font-medium text-text hover:text-primary cursor-pointer rounded-control after:absolute after:inset-0 after:content-['']"
                                                     title={value}
-                                                    onclick={() => openEvent(typedRow)}
+                                                    onclick={() => openEvent(row)}
                                                 >
                                                     {value}
                                                 </button>

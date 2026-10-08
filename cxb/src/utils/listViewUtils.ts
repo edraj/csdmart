@@ -26,56 +26,72 @@ function defaultContext(): ValueContext {
     };
 }
 
-function findValue(obj: any, k: string): any {
+/** `obj[k]` when `obj` is something that can be indexed (object or array), else undefined. */
+function prop(obj: unknown, k: string): unknown {
     if (!obj || typeof obj !== "object") return undefined;
-    if (obj[k] !== undefined) return obj[k];
-    const tk = k.toLowerCase();
-    const foundKey = Object.keys(obj).find((ok) => ok.toLowerCase() === tk);
-    return foundKey ? obj[foundKey] : undefined;
+    return (obj as Record<string, unknown>)[k];
 }
 
-function localizedDisplayName(item: any, loc: string | null | undefined): string {
-    const dn = item?.attributes?.displayname ?? item?.displayname;
+function findValue(obj: unknown, k: string): unknown {
+    if (!obj || typeof obj !== "object") return undefined;
+    const record = obj as Record<string, unknown>;
+    if (record[k] !== undefined) return record[k];
+    const tk = k.toLowerCase();
+    const foundKey = Object.keys(record).find((ok) => ok.toLowerCase() === tk);
+    return foundKey ? record[foundKey] : undefined;
+}
+
+function localizedDisplayName(item: Record<string, unknown>, loc: string | null | undefined): string {
+    const attributes = prop(item, "attributes");
+    const dn = prop(attributes, "displayname") ?? item.displayname;
     if (dn && typeof dn === "object") {
-        return (
-            (loc ? dn[loc] : undefined) ||
-            dn.en ||
-            dn.ar ||
-            dn.ku ||
-            item?.shortname ||
+        const translation = dn as Record<string, unknown>;
+        return String(
+            (loc ? translation[loc] : undefined) ||
+            translation.en ||
+            translation.ar ||
+            translation.ku ||
+            item.shortname ||
             ""
         );
     }
-    return item?.attributes?.payload?.body?.title || item?.shortname || "";
+    return String(prop(prop(prop(attributes, "payload"), "body"), "title") || item.shortname || "");
 }
 
-export function getAttributeValue(item: any, key: string, ctx: ValueContext = defaultContext()): string {
+/**
+ * The text for one list cell. `item` is a query record (`ApiResponseRecord`)
+ * or, for folder-defined columns, whatever JSON the column path points into.
+ */
+export function getAttributeValue(item: unknown, key: string, ctx: ValueContext = defaultContext()): string {
     if (!item || !key) return "";
-    if (key === "displayname") return localizedDisplayName(item, ctx.locale);
+    const row: Record<string, unknown> = typeof item === "object" ? (item as Record<string, unknown>) : {};
+    const attributes = prop(row, "attributes");
+    if (key === "displayname") return localizedDisplayName(row, ctx.locale);
     if (key === "status") {
-        return item.attributes?.is_active === false
+        return prop(attributes, "is_active") === false
             ? ctx.t("inactive")
             : ctx.t("active");
     }
     if (key === "author") {
-        return item.attributes?.owner_shortname || ctx.t("unknown");
+        return String(prop(attributes, "owner_shortname") || ctx.t("unknown"));
     }
 
-    let value: any;
+    let value: unknown;
     if (key.includes(".")) {
         const parts = key.split(".");
-        let current: any = item;
+        let current: unknown = row;
         for (const part of parts) {
             current = findValue(current, part);
             if (current === undefined || current === null) break;
         }
         value = current;
     } else {
+        const payload = prop(attributes, "payload");
         value =
-            findValue(item.attributes?.payload?.body, key) ??
-            findValue(item.attributes?.payload, key) ??
-            findValue(item.attributes, key) ??
-            findValue(item, key);
+            findValue(prop(payload, "body"), key) ??
+            findValue(payload, key) ??
+            findValue(attributes, key) ??
+            findValue(row, key);
     }
 
     if (value === null || value === undefined) return ctx.t("not_applicable");
@@ -88,9 +104,10 @@ export function getAttributeValue(item: any, key: string, ctx: ValueContext = de
     }
 
     if (typeof value === "object" && !Array.isArray(value)) {
+        const translation = value as Record<string, unknown>;
         const loc = ctx.locale;
         const localized =
-            (loc ? value[loc] : undefined) || value.en || value.ar || value.ku;
+            (loc ? translation[loc] : undefined) || translation.en || translation.ar || translation.ku;
         if (localized !== undefined) return String(localized);
         return JSON.stringify(value);
     }
@@ -114,10 +131,10 @@ export function getRowsPerPageSetting(): number {
 /**
  * Filters request headers by removing blacklisted items
  */
-export function filterRequestHeaders(headers: any): any {
+export function filterRequestHeaders(headers: Record<string, unknown>): Record<string, unknown> {
     const blacklist = ["sec", "content-type", "accept", "host", "connection"];
 
-    return Object.keys(headers).reduce(
+    return Object.keys(headers).reduce<Record<string, unknown>>(
         (acc, key) =>
             blacklist.some((item) => key.includes(item))
                 ? acc

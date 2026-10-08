@@ -1,6 +1,6 @@
 <script lang="ts">
     import { encode } from "plantuml-encoder";
-    import { jsonToPlantUML } from "@/utils/renderer/workflowRendererUtils";
+    import { jsonToPlantUML, type WorkflowData } from "@/utils/renderer/workflowRendererUtils";
     import { plantUmlSvgUrl } from "@/utils/plantUML";
     import { website } from "@/config";
     import { _ } from "@/i18n";
@@ -10,7 +10,7 @@
         workflowContent,
     }: {
         shortname: string;
-        workflowContent: any;
+        workflowContent: WorkflowData;
     } = $props();
 
     // The workflow body is sent to the PlantUML server named in config.json

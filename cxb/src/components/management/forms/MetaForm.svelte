@@ -17,13 +17,13 @@
 
     const uid = $props.id();
 
-    function toStringOrNull(value: any): string | null {
+    function toStringOrNull(value: unknown): string | null {
         if (value === null || value === undefined) return null;
         if (typeof value === "string") {
             // Detect and unwrap stringified i18n objects from previous corrupted saves
             if (value.startsWith('{"en":')) {
                 try {
-                    const parsed = JSON.parse(value);
+                    const parsed: unknown = JSON.parse(value);
                     if (typeof parsed === "object" && parsed !== null && "en" in parsed) {
                         return toStringOrNull(parsed.en);
                     }

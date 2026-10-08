@@ -2,15 +2,16 @@
     import { onMount } from "svelte";
     import FormField from "./FormField.svelte";
     import EmptyState from "@/components/ui/EmptyState.svelte";
-    import { unionKeys } from "@/utils/renderer/rendererUtils";
+    import { unionKeys, type JsonSchema } from "@/utils/renderer/rendererUtils";
     import { _ } from "@/i18n";
 
     let {
         content = $bindable({}),
         schema = undefined,
     }: {
-        content: any;
-        schema?: any;
+        /** The payload body: an object of fields, or a list when the schema is one. */
+        content: Record<string, unknown> | unknown[];
+        schema?: JsonSchema | null;
     } = $props();
 
     onMount(() => {
@@ -21,7 +22,10 @@
 
     // Seed create-time defaults from the schema. Only ever *adds* missing keys,
     // so any prop already present in the data (declared or not) is preserved.
-    function initializeContent(properties: Record<string, any>) {
+    function initializeContent(properties: Record<string, JsonSchema>) {
+        // A list payload has no named props to seed (and a schema with
+        // `properties` does not describe one).
+        if (Array.isArray(content)) return;
         for (const key in properties) {
             const prop = properties[key];
 
@@ -70,7 +74,7 @@
         <div class="space-y-4">
             {#if isArrayContent}
                 <FormField name={schema?.title || $_("items")} bind:value={content} {schema} idPath="root" />
-            {:else}
+            {:else if !Array.isArray(content)}
                 {#each topLevelKeys as key (key)}
                     <FormField
                         name={key}

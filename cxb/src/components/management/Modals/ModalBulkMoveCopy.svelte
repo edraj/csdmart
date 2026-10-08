@@ -1,6 +1,6 @@
 <script lang="ts">
     import { Button, Label, Modal, Select, Spinner } from "flowbite-svelte";
-    import { Dmart, RequestType } from "@edraj/tsdmart";
+    import { Dmart, RequestType, type ActionRequestRecord, type ResourceType } from "@edraj/tsdmart";
     import { Level, showToast } from "@/utils/toast";
     import { currentListView } from "@/stores/global";
     import { bulkBucket } from "@/stores/management/bulk_bucket";
@@ -79,7 +79,8 @@
 
         isActionLoading = true;
         try {
-            const records: any[] = [];
+            // A list record names its type as a plain string; the request wants the enum.
+            const records: ActionRequestRecord[] = [];
 
             $bulkBucket.forEach((b) => {
                 if (isMove) {
@@ -98,7 +99,7 @@
                     };
 
                     records.push({
-                        resource_type: b.resource_type,
+                        resource_type: b.resource_type as ResourceType,
                         shortname: b.shortname,
                         subpath: srcSubpath,
                         attributes: moveAttrb,
@@ -108,7 +109,7 @@
                     if ("uuid" in attrs) delete attrs.uuid;
 
                     records.push({
-                        resource_type: b.resource_type,
+                        resource_type: b.resource_type as ResourceType,
                         shortname: b.shortname,
                         subpath: selectedSubpath,
                         attributes: attrs,

@@ -1,24 +1,33 @@
-interface WorkflowTransition {
+/** A ticket workflow's payload body, as the workflow form edits it and the diagram and ticket form read it. */
+export interface WorkflowTransition {
     state: string;
     action: string;
     roles?: string[];
 }
 
-interface WorkflowState {
-    state: string;
-    next?: WorkflowTransition[];
-    resolutions?: { key: string }[];
+/** A resolution: its key plus the translations the form keeps beside it. */
+export interface WorkflowResolution {
+    key: string;
+    [translation: string]: string | undefined;
 }
 
-interface WorkflowInitialState {
+export interface WorkflowState {
+    state: string;
+    name?: string;
+    next?: WorkflowTransition[];
+    resolutions?: WorkflowResolution[];
+}
+
+export interface WorkflowInitialState {
     name: string;
     roles: string[];
 }
 
-interface WorkflowData {
+export interface WorkflowData {
     name: string;
     states?: WorkflowState[];
     initial_state?: WorkflowInitialState[];
+    illustration?: string;
 }
 
 export function jsonToPlantUML(data: WorkflowData): string {

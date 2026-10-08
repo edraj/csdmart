@@ -1,7 +1,9 @@
 <script lang="ts">
     import { _ } from "@/i18n";
     import { Button, Input, Label, Modal, Select } from "flowbite-svelte";
-    import { Dmart, RequestType, ResourceType } from "@edraj/tsdmart";
+    import { Dmart, RequestType, ResourceType, type ApiResponseRecord } from "@edraj/tsdmart";
+    import type { Content, MenuItem } from "svelte-jsoneditor";
+    import type { Relationship, RelationshipLocator } from "@/utils/entryShapes";
     import { Level, showToast } from "@/utils/toast";
     import Prism from "@/components/Prism.svelte";
     import LazyJsonEditor from "@/components/ui/LazyJsonEditor.svelte";
@@ -21,7 +23,7 @@
         resource_type,
         parent_shortname,
     }: {
-        relationships: any[];
+        relationships: Relationship[];
         space_name: string;
         subpath: string;
         resource_type: ResourceType;
@@ -40,10 +42,11 @@
     let relType = $state(ResourceType.content);
     let relSchemaShortname = $state("");
 
-    let relAttributes: any = $state({ json: {} });
+    // The relationship's attributes as the JSON editor holds them.
+    let relAttributes = $state<Content>({ json: {} });
 
     let subpaths: string[] = $state([]);
-    let shortnames: any[] = $state([]);
+    let shortnames = $state<ApiResponseRecord[]>([]);
     let isLoadingSubpaths = $state(false);
     let isLoadingShortnames = $state(false);
 
@@ -84,7 +87,7 @@
         isLoadingShortnames = true;
         try {
             const result = await getChildren(spaceName, subpathVal, 100);
-            shortnames = (result.records || []).filter((r: any) => r.resource_type !== "folder");
+            shortnames = (result.records || []).filter((r) => r.resource_type !== "folder");
         } catch {
             shortnames = [];
         } finally {
@@ -126,13 +129,14 @@
         showForm = false;
     }
 
-    function handleRenderMenu(items: any[]) {
-        return items.filter((item: any) => !["tree", "table"].includes(item.text));
+    // The editor's mode is fixed here; drop its mode buttons.
+    function handleRenderMenu(items: MenuItem[]): MenuItem[] {
+        return items.filter((item) => !(item.type === "button" && ["tree", "table"].includes(item.text ?? "")));
     }
 
     function populateFormForEdit(index: number) {
         const rel = relationships[index];
-        const locator = rel.related_to || {};
+        const locator: Partial<RelationshipLocator> = rel.related_to || {};
         relSpaceName = locator.space_name || "";
         relSubpath = locator.subpath || "/";
         relShortname = locator.shortname || "";
@@ -144,8 +148,8 @@
         showForm = true;
     }
 
-    function buildRelationship() {
-        const locator: any = {
+    function buildRelationship(): Relationship {
+        const locator: RelationshipLocator = {
             type: relType,
             space_name: relSpaceName,
             subpath: relSubpath,
@@ -155,11 +159,11 @@
             locator.schema_shortname = relSchemaShortname;
         }
 
-        let attrs = {};
+        let attrs: unknown = {};
         try {
-            if (relAttributes?.json) {
+            if ("json" in relAttributes && relAttributes.json) {
                 attrs = relAttributes.json;
-            } else if (relAttributes?.text) {
+            } else if ("text" in relAttributes && relAttributes.text) {
                 attrs = JSON.parse(relAttributes.text);
             }
         } catch {
@@ -172,7 +176,7 @@
         };
     }
 
-    async function saveRelationships(updatedRelationships: any[]): Promise<boolean> {
+    async function saveRelationships(updatedRelationships: Relationship[]): Promise<boolean> {
         isSaving = true;
         try {
             await Dmart.request({
@@ -203,7 +207,7 @@
         const rel = buildRelationship();
         if (!rel.related_to.space_name || !rel.related_to.shortname) return;
 
-        let updated: any[];
+        let updated: Relationship[];
         if (isEditing && editIndex >= 0) {
             updated = [...relationships];
             updated[editIndex] = rel;
@@ -228,7 +232,7 @@
     }
 
     async function removeRelationship() {
-        const updated = relationships.filter((_: any, i: number) => i !== removeIndex);
+        const updated = relationships.filter((_, i) => i !== removeIndex);
         if (await saveRelationships(updated)) {
             relationships = updated;
             removeOpen = false;
@@ -236,15 +240,15 @@
     }
 
     let isDetailsOpen = $state(false);
-    let detailsRel: any = $state(null);
+    let detailsRel = $state<Relationship | null>(null);
     const detailsAttributes = $derived(limitJsonForDisplay(detailsRel?.attributes ?? {}));
 
-    function openDetails(rel: any) {
+    function openDetails(rel: Relationship) {
         detailsRel = rel;
         isDetailsOpen = true;
     }
 
-    function locatorLabel(rel: any): string {
+    function locatorLabel(rel: Relationship): string {
         return `${rel?.related_to?.space_name ?? ""}${rel?.related_to?.subpath ?? "/"}/${rel?.related_to?.shortname ?? ""}`.replace(/\/+/g, "/");
     }
 </script>

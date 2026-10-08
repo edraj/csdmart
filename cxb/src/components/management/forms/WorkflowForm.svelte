@@ -3,36 +3,37 @@
     import { PlusOutline, TrashBinOutline } from "flowbite-svelte-icons";
     import IconButton from "@/components/ui/IconButton.svelte";
     import ShortnamePicker from "./ShortnamePicker.svelte";
+    import type { WorkflowData } from "@/utils/renderer/workflowRendererUtils";
     import { _ } from "@/i18n";
 
     let {
-        content = $bindable({}),
+        content = $bindable({ name: "" }),
     }: {
-        content: any;
+        /** The workflow payload body, normalised below so every list is present. */
+        content: WorkflowData;
     } = $props();
 
     const uid = $props.id();
 
     content = {
         name: content.name || "",
-        states: (content.states || []).map((state: any) => ({
+        states: (content.states || []).map((state) => ({
             ...state,
-            next: (state.next || []).map((t: any) => ({ ...t, roles: t.roles || [] })),
+            next: (state.next || []).map((t) => ({ ...t, roles: t.roles || [] })),
             resolutions: state.resolutions || [],
         })),
         illustration: content.illustration || "",
-        initial_state: (content.initial_state || []).map((is: any) => ({
+        initial_state: (content.initial_state || []).map((is) => ({
             ...is,
             roles: is.roles || [],
         })),
     };
 
+    // The lists are seeded above; the `?? []` fallbacks only satisfy the
+    // optional types, which are optional because the server strips empty lists.
     function addState() {
-        if (content.states === undefined) {
-            content.states = [];
-        }
         content.states = [
-            ...content.states,
+            ...(content.states ?? []),
             {
                 name: "",
                 state: "",
@@ -43,36 +44,39 @@
     }
 
     function removeState(index: number) {
-        content.states = content.states.filter((_: unknown, i: number) => i !== index);
+        content.states = (content.states ?? []).filter((_, i) => i !== index);
     }
 
     function addNextTransition(stateIndex: number) {
-        content.states[stateIndex].next = [...content.states[stateIndex].next, { roles: [], state: "", action: "" }];
+        const state = content.states?.[stateIndex];
+        if (!state) return;
+        state.next = [...(state.next ?? []), { roles: [], state: "", action: "" }];
     }
 
     function removeNextTransition(stateIndex: number, transitionIndex: number) {
-        content.states[stateIndex].next = content.states[stateIndex].next.filter((_: unknown, i: number) => i !== transitionIndex);
+        const state = content.states?.[stateIndex];
+        if (!state) return;
+        state.next = (state.next ?? []).filter((_, i) => i !== transitionIndex);
     }
 
     function addResolution(stateIndex: number) {
-        content.states[stateIndex].resolutions = [...content.states[stateIndex].resolutions, { ar: "", en: "", ku: "", key: "" }];
+        const state = content.states?.[stateIndex];
+        if (!state) return;
+        state.resolutions = [...(state.resolutions ?? []), { ar: "", en: "", ku: "", key: "" }];
     }
 
     function removeResolution(stateIndex: number, resolutionIndex: number) {
-        content.states[stateIndex].resolutions = content.states[stateIndex].resolutions.filter(
-            (_: unknown, i: number) => i !== resolutionIndex,
-        );
+        const state = content.states?.[stateIndex];
+        if (!state) return;
+        state.resolutions = (state.resolutions ?? []).filter((_, i) => i !== resolutionIndex);
     }
 
     function addInitialState() {
-        if (content.initial_state === undefined) {
-            content.initial_state = [];
-        }
-        content.initial_state = [...content.initial_state, { name: "", roles: [] }];
+        content.initial_state = [...(content.initial_state ?? []), { name: "", roles: [] }];
     }
 
     function removeInitialState(index: number) {
-        content.initial_state = content.initial_state.filter((_: unknown, i: number) => i !== index);
+        content.initial_state = (content.initial_state ?? []).filter((_, i) => i !== index);
     }
 
     const card = "rounded-card border border-border bg-surface-2 shadow-card p-4";
@@ -96,7 +100,7 @@
 
     <section class="rounded-card border border-border p-4 space-y-4">
         <h3 class="text-base font-semibold text-text">{$_("initial_states")}</h3>
-        {#each content.initial_state as initialState, index (index)}
+        {#each content.initial_state ?? [] as initialState, index (index)}
             <div class={inner}>
                 <div class="flex justify-between items-center gap-2">
                     <h4 class="font-medium text-text">{$_("initial_state_n", { values: { n: index + 1 } })}</h4>
@@ -122,7 +126,7 @@
 
     <section class="rounded-card border border-border p-4 space-y-4">
         <h3 class="text-base font-semibold text-text">{$_("states")}</h3>
-        {#each content.states as state, stateIndex (stateIndex)}
+        {#each content.states ?? [] as state, stateIndex (stateIndex)}
             <Accordion flush>
                 <AccordionItem>
                     {#snippet header()}
@@ -151,7 +155,7 @@
 
                         <div class="space-y-3">
                             <h4 class="font-medium text-text">{$_("next_transitions")}</h4>
-                            {#each state.next as transition, transitionIndex (transitionIndex)}
+                            {#each state.next ?? [] as transition, transitionIndex (transitionIndex)}
                                 <div class={inner}>
                                     <div class="flex justify-between items-center gap-2">
                                         <h5 class="font-medium text-text">{$_("transition_n", { values: { n: transitionIndex + 1 } })}</h5>
@@ -182,7 +186,7 @@
 
                         <div class="space-y-3">
                             <h4 class="font-medium text-text">{$_("resolutions")}</h4>
-                            {#each state.resolutions as resolution, resolutionIndex (resolutionIndex)}
+                            {#each state.resolutions ?? [] as resolution, resolutionIndex (resolutionIndex)}
                                 <div class={inner}>
                                     <div class="flex justify-between items-center gap-2">
                                         <h5 class="font-medium text-text">{$_("resolution_n", { values: { n: resolutionIndex + 1 } })}</h5>

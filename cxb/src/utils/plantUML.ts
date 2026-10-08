@@ -1,4 +1,5 @@
 import {encode} from "plantuml-encoder";
+import {isRecord} from "@/utils/compare";
 
 const startjsonForPlantUML = '@startjson\n<style>\njsonDiagram {  node {BackGroundColor business}  \nhighlight {BackGroundColor greenyellow}}\n</style>\n#highlight "*" / "*_shortname"\n';
 
@@ -18,28 +19,42 @@ export function plantUmlSvgUrl(server: string | null | undefined, encoded: strin
     return `${base}/svg/${encoded}`;
 }
 
-function schemaVisualizationParser(properties) {
-    const output: any = {};
+/** The JSON-schema keywords the diagram reads off one property. */
+interface SchemaProperty {
+    type?: string;
+    properties?: Record<string, unknown>;
+    items?: { type?: string; enum?: unknown[] };
+    pattern?: string;
+}
+
+/**
+ * The schema's `properties` folded into the tree PlantUML draws: a type label
+ * per leaf, a nested object per sub-schema. Rendering-only, so the shape is a
+ * plain bag that gets stringified.
+ */
+function schemaVisualizationParser(properties: Record<string, unknown> | undefined): Record<string, unknown> {
+    const output: Record<string, unknown> = {};
 
     for (const key in properties) {
-        const property = properties[key];
+        const raw = properties[key];
+        const property = (isRecord(raw) ? raw : {}) as SchemaProperty;
 
         if (property.type === "object" && property.properties) {
             output[key] = schemaVisualizationParser(property.properties);
-        } else if (property.properties && property.properties.code) {
+        } else if (property.properties && isRecord(property.properties.code)) {
             output[key] = property.properties.code.type;
         } else {
             output[key] = property.type;
 
             if (property.type === "array") {
-                output[key] += " of " + property?.items?.type || "unknown";
-                if (property?.items?.enum) {
+                output[key] = `${property.type} of ${property.items?.type}`;
+                if (property.items?.enum) {
                     output[key] = { type: output[key], enum: property.items.enum };
                 }
             }
 
             if (property.pattern) {
-                output[key] += `/pattern\\n${property.pattern}`;
+                output[key] = `${output[key]}/pattern\\n${property.pattern}`;
             }
         }
     }
@@ -47,7 +62,7 @@ function schemaVisualizationParser(properties) {
     return output;
 }
 
-export function schemaVisualizationEncoder(entry) {
+export function schemaVisualizationEncoder(entry: Record<string, unknown> | undefined): string {
     try {
         const content = `${startjsonForPlantUML}\n${JSON.stringify(
             schemaVisualizationParser(entry),

@@ -19,7 +19,7 @@
   },
   "timestamp": {
     "key": "attributes.timestamp",
-    "title": "Timestamp",
+    "name": "Timestamp",
     "type": "string",
     "width": "15%"
   }

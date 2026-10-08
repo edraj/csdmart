@@ -38,7 +38,8 @@
     import { user } from "@/stores/user";
     import { getParentSubpath as getParentPath } from "@/utils/entryManagement";
     import { getChildren } from "@/lib/dmart_services";
-    import { deleteEntry, moveEntryToTrash, saveEntry } from "@/utils/entryManagement";
+    import { deleteEntry, moveEntryToTrash, saveEntry, type EditableEntry } from "@/utils/entryManagement";
+    import type { EntryFields, Relationship } from "@/utils/entryShapes";
     import { bulkBucket } from "@/stores/management/bulk_bucket";
     import { showToast, Level } from "@/utils/toast";
     import { errorMessage as describeError } from "@/utils/errorMessage";
@@ -85,11 +86,16 @@
 
     let coinTriggerRefresh = $state(false);
 
-    let jeContent: any = $state({ json: structuredClone(entry) });
-    let entryRelationships: any[] = $state(entry.relationships || []);
-    let originalJeContent: any = $state({});
+    /** The entry as the editor holds it: the record plus the per-type fields the forms edit. */
+    type EditorEntry = EditableEntry & EntryFields;
+    /** What the JSON editor shows: the parsed entry on the Form tab, its text on the Entry tab. */
+    type EntryEditorContent = { json: EditorEntry; text?: undefined } | { text: string; json?: undefined };
+
+    let jeContent = $state<EntryEditorContent>({ json: structuredClone(entry) });
+    let entryRelationships = $state<Relationship[]>(entry.relationships || []);
+    let originalJeContent = $state<EditableEntry>({});
     let _initTimer = setTimeout(() => {
-        originalJeContent = jsonEditorContentParser($state.snapshot(jeContent));
+        originalJeContent = jsonEditorContentParser<EditableEntry>($state.snapshot(jeContent));
     }, EDITOR_INIT_DELAY);
     let isJEDirty = $state(false);
     // Set by a real input/change event inside the tabs (or the JSON editor).
@@ -457,7 +463,7 @@
         entryRelationships = entry.relationships || [];
         clearTimeout(_initTimer);
         _initTimer = setTimeout(() => {
-            originalJeContent = jsonEditorContentParser(
+            originalJeContent = jsonEditorContentParser<EditableEntry>(
                 $state.snapshot(jeContent),
             );
         }, EDITOR_INIT_DELAY);
@@ -481,7 +487,7 @@
         } else if (activeTab === "form") {
             untrack(() => {
                 try {
-                    const _jeContent = jsonEditorContentParser(
+                    const _jeContent = jsonEditorContentParser<EditorEntry>(
                         $state.snapshot(jeContent),
                     );
                     jeContent = { json: _jeContent };
@@ -764,8 +770,12 @@
                         </Lazy>
                     {:else if resource_type === ResourceType.space}
                         <Lazy load={() => import("@/components/management/forms/SpaceForm.svelte")}>
+                            <!-- The snippets are closures: the `{#if jeContent.json}` above does not
+                                 narrow inside them, so each re-checks what it binds to. -->
                             {#snippet children(SpaceForm)}
-                                <SpaceForm bind:formData={jeContent.json} spaceName={space_name} />
+                                {#if jeContent.json}
+                                    <SpaceForm bind:formData={jeContent.json} spaceName={space_name} />
+                                {/if}
                             {/snippet}
                         </Lazy>
                     {:else if resource_type === ResourceType.role}
@@ -777,13 +787,17 @@
                     {:else if resource_type === ResourceType.permission}
                         <Lazy load={() => import("@/components/management/forms/MetaPermissionForm.svelte")}>
                             {#snippet children(MetaPermissionForm)}
-                                <MetaPermissionForm bind:formData={jeContent.json} bind:validateFn={validateRTForm} readOnly={false} />
+                                {#if jeContent.json}
+                                    <MetaPermissionForm bind:formData={jeContent.json} bind:validateFn={validateRTForm} readOnly={false} />
+                                {/if}
                             {/snippet}
                         </Lazy>
                     {:else if resource_type === ResourceType.ticket}
                         <Lazy load={() => import("@/components/management/forms/MetaTicketForm.svelte")}>
                             {#snippet children(MetaTicketForm)}
-                                <MetaTicketForm {space_name} {subpath} shortname={entry.shortname} meta={jeContent.json} />
+                                {#if jeContent.json}
+                                    <MetaTicketForm {space_name} {subpath} shortname={entry.shortname} meta={jeContent.json} />
+                                {/if}
                             {/snippet}
                         </Lazy>
                     {/if}
@@ -792,15 +806,17 @@
                             <h2 class="text-lg font-semibold text-text mb-4">{$_("payload")}</h2>
                             <Lazy load={() => import("@/components/management/forms/PayloadForm.svelte")}>
                                 {#snippet children(PayloadForm)}
-                                    <PayloadForm
-                                        isCreate={false}
-                                        bind:selectedResourceType={resource_type}
-                                        selectedSchema={schemaShortname}
-                                        bind:selectedWorkflow={jeContent.json.workflow_shortname}
-                                        bind:selectedInputMode
-                                        bind:contentType={jeContent.json.payload.content_type}
-                                        bind:content={jeContent.json.payload.body}
-                                    />
+                                    {#if jeContent.json?.payload}
+                                        <PayloadForm
+                                            isCreate={false}
+                                            bind:selectedResourceType={resource_type}
+                                            selectedSchema={schemaShortname}
+                                            bind:selectedWorkflow={jeContent.json.workflow_shortname}
+                                            bind:selectedInputMode
+                                            bind:contentType={jeContent.json.payload.content_type}
+                                            bind:content={jeContent.json.payload.body}
+                                        />
+                                    {/if}
                                 {/snippet}
                             </Lazy>
                         </Card>

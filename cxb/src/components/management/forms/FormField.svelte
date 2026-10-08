@@ -3,7 +3,8 @@
     import { PlusOutline, TrashBinOutline } from "flowbite-svelte-icons";
     import FormField from "./FormField.svelte";
     import IconButton from "@/components/ui/IconButton.svelte";
-    import { buildDefaultForSchema, inferType, unionKeys } from "@/utils/renderer/rendererUtils";
+    import { buildDefaultForSchema, inferType, unionKeys, type JsonSchema } from "@/utils/renderer/rendererUtils";
+    import { isRecord } from "@/utils/compare";
     import { _ } from "@/i18n";
 
     let {
@@ -17,14 +18,24 @@
         idPath = name,
     }: {
         name: string;
-        value: any;
-        schema?: any;
+        /** Any JSON value: the field renders whatever the record carries. */
+        value: unknown;
+        schema?: JsonSchema | null;
         required?: boolean;
         declared?: boolean;
         hideLabel?: boolean;
         depth?: number;
         idPath?: string;
     } = $props();
+
+    // The scalar widgets bind through these: the value is any JSON, the inputs
+    // want text or a number, and what is there is passed through as is (a
+    // non-scalar in a scalar slot renders as the browser renders it).
+    const asText = () => value as string | undefined;
+    const asNumber = () => value as number | undefined;
+    const setValue = (next: unknown) => {
+        value = next;
+    };
 
     // The actual data structure wins over the schema so that no prop in the
     // record data is ever hidden; the schema only enriches scalar widgets.
@@ -59,11 +70,11 @@
 
     function addItem() {
         const itemSchema = schema?.items;
-        let newItem: any;
+        let newItem: unknown;
         if (itemSchema) {
             newItem = buildDefaultForSchema(itemSchema);
         } else if (Array.isArray(value) && value.length > 0) {
-            const sample = value[0];
+            const sample: unknown = value[0];
             if (Array.isArray(sample)) newItem = [];
             else if (sample !== null && typeof sample === "object") newItem = {};
             else if (typeof sample === "number") newItem = null;
@@ -72,14 +83,14 @@
         } else {
             newItem = "";
         }
-        value = [...(value ?? []), newItem];
+        value = [...(Array.isArray(value) ? value : []), newItem];
     }
 
     function removeItem(index: number) {
         // Drop the removed slot's id BEFORE the value shrinks, so the sync
         // effect doesn't truncate the tail id and misattribute identities.
         itemIds.splice(index, 1);
-        value = (value ?? []).filter((_: any, i: number) => i !== index);
+        value = (Array.isArray(value) ? value : []).filter((_, i) => i !== index);
     }
 </script>
 
@@ -100,7 +111,7 @@
     {/if}
 
     {#if effectiveType === "object"}
-        {#if value && typeof value === "object" && !Array.isArray(value)}
+        {#if isRecord(value)}
             {#if depth === 0}
                 <Accordion flush>
                     <AccordionItem>
@@ -189,26 +200,26 @@
         </div>
     {:else if effectiveType === "boolean"}
         <div class="flex items-center gap-2">
-            <Checkbox id={idPath} checked={value ?? false} onchange={(e) => (value = (e.currentTarget || e.target).checked)} />
+            <Checkbox id={idPath} checked={Boolean(value ?? false)} onchange={(e) => (value = (e.currentTarget || e.target).checked)} />
         </div>
     {:else if effectiveType === "number" || effectiveType === "integer"}
         <Input
             id={idPath}
             type="number"
-            bind:value
+            bind:value={asNumber, setValue}
             {required}
             min={schema?.minimum}
             max={schema?.maximum}
             step={effectiveType === "integer" ? 1 : schema?.multipleOf || "any"}
         />
     {:else if schema?.format === "date-time" || schema?.format === "date"}
-        <Input id={idPath} type="date" bind:value {required} />
+        <Input id={idPath} type="date" bind:value={asText, setValue} {required} />
     {:else if schema?.format === "time"}
-        <Input id={idPath} type="time" bind:value {required} />
+        <Input id={idPath} type="time" bind:value={asText, setValue} {required} />
     {:else if schema?.format === "email"}
-        <Input id={idPath} type="email" bind:value {required} />
+        <Input id={idPath} type="email" bind:value={asText, setValue} {required} />
     {:else if schema?.format === "uri"}
-        <Input id={idPath} type="url" bind:value {required} />
+        <Input id={idPath} type="url" bind:value={asText, setValue} {required} />
     {:else if schema?.enum}
         <Select id={idPath} bind:value {required}>
             <option value="">{$_("select_an_option")}</option>
@@ -217,8 +228,8 @@
             {/each}
         </Select>
     {:else if schema?.maxLength && schema.maxLength > 100}
-        <Textarea id={idPath} rows={3} bind:value {required} />
+        <Textarea id={idPath} rows={3} bind:value={asText, setValue} {required} />
     {:else}
-        <Input id={idPath} type="text" bind:value {required} minlength={schema?.minLength} maxlength={schema?.maxLength} pattern={schema?.pattern} />
+        <Input id={idPath} type="text" bind:value={asText, setValue} {required} minlength={schema?.minLength} maxlength={schema?.maxLength} pattern={schema?.pattern} />
     {/if}
 </div>

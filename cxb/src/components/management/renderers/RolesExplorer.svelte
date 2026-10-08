@@ -6,6 +6,7 @@
     import { ArrowRightOutline } from "flowbite-svelte-icons";
     import LoadingState from "@/components/ui/LoadingState.svelte";
     import EmptyState from "@/components/ui/EmptyState.svelte";
+    import type { EntryFields, PermissionEntry } from "@/utils/entryShapes";
     import { _ } from "@/i18n";
 
     const { roles = [] }: { roles: string[] } = $props();
@@ -69,17 +70,17 @@
     let mapBuilt = $state(false);
 
     /** Merge a single permission's subpaths/resource_types/actions into spaceMap */
-    function mergePermission(permission: any) {
-        const subpaths: Record<string, string[]> = permission.subpaths ?? {};
-        const resourceTypes: string[] = permission.resource_types ?? [];
-        const actions: string[] = permission.actions ?? [];
-        const conditions: string[] = permission.conditions ?? [];
-        const allowedFieldsValues: Record<string, unknown> = permission.allowed_fields_values ?? {};
-        const filterFieldsValues: string = permission.filter_fields_values ?? "";
+    function mergePermission(permission: PermissionEntry) {
+        const subpaths = permission.subpaths ?? {};
+        const resourceTypes = permission.resource_types ?? [];
+        const actions = permission.actions ?? [];
+        const conditions = permission.conditions ?? [];
+        const allowedFieldsValues = permission.allowed_fields_values ?? {};
+        const filterFieldsValues = permission.filter_fields_values ?? "";
 
         for (const [space, paths] of Object.entries(subpaths)) {
             if (!spaceMap[space]) spaceMap[space] = {};
-            for (const subpath of paths as string[]) {
+            for (const subpath of paths) {
                 if (!spaceMap[space][subpath]) {
                     spaceMap[space][subpath] = {
                         resource_types: [],
@@ -137,7 +138,8 @@
         const permissionNamesSet = new Set<string>();
         for (const result of roleEntries) {
             if (result.status === "fulfilled") {
-                const permissionNames: string[] = (result.value as any)?.permissions ?? [];
+                // A role entry carries its permission names at the top level.
+                const permissionNames = (result.value as EntryFields | null)?.permissions ?? [];
                 permissionNames.forEach((p) => permissionNamesSet.add(p));
             }
         }
@@ -158,7 +160,7 @@
         );
 
         for (const result of permResults) {
-            if (result.status === "fulfilled") {
+            if (result.status === "fulfilled" && result.value) {
                 mergePermission(result.value);
             }
         }

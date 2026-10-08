@@ -5,6 +5,7 @@
     import LoadingState from "@/components/ui/LoadingState.svelte";
     import { errorMessage as describeError } from "@/utils/errorMessage";
     import { localizedText } from "@/utils/localized";
+    import type { WorkflowData, WorkflowResolution, WorkflowTransition } from "@/utils/renderer/workflowRendererUtils";
     import { _ } from "@/i18n";
 
     // Self-contained: the form progresses the ticket itself through
@@ -34,9 +35,11 @@
     let resolution: string | null = $state(null);
     let comment = $state("");
 
-    let ticketPayload: any = $state(null);
-    let ticketStates: any[] = $state([]);
-    let ticketResolutions: any[] = $state([]);
+    // The workflow the ticket follows; the transitions out of its current state;
+    // the resolutions the chosen next state offers.
+    let ticketPayload = $state<WorkflowData | null>(null);
+    let ticketStates = $state<WorkflowTransition[]>([]);
+    let ticketResolutions = $state<WorkflowResolution[]>([]);
     let errorMessage = $state("");
     // The action belongs to whichever state is selected; nothing else sets it.
     const ticket_action: string | null = $derived(
@@ -53,10 +56,11 @@
             retrieve_attachments: false,
             validate_schema: true,
         });
-        const payload = response?.payload?.body ?? null;
+        const payload: WorkflowData | null = response?.payload?.body ?? null;
         ticketPayload = payload;
         if (payload) {
-            ticketStates = payload.states.filter((e: any) => e.state === meta.state)[0]?.next || [];
+            // A workflow with no states comes back without the field at all.
+            ticketStates = (payload.states ?? []).filter((e) => e.state === meta.state)[0]?.next || [];
         }
     }
 
@@ -66,7 +70,7 @@
     $effect(() => {
         if (ticketStates.length) {
             ticketResolutions =
-                ticketPayload?.states?.filter((e: any) => e.state === ticket_status)[0]?.resolutions || [];
+                ticketPayload?.states?.filter((e) => e.state === ticket_status)[0]?.resolutions || [];
         }
     });
 
@@ -140,7 +144,7 @@
                     {/if}
                 {/key}
 
-                {#if ticket_status && !!ticketPayload?.states?.filter((e: any) => e.state === ticket_status)[0]?.next === false}
+                {#if ticket_status && !!ticketPayload?.states?.filter((e) => e.state === ticket_status)[0]?.next === false}
                     <div>
                         <Label for="{uid}-comment" class="mb-1.5">{$_("comment")}</Label>
                         <Input id="{uid}-comment" type="text" placeholder={$_("comment")} bind:value={comment} />
