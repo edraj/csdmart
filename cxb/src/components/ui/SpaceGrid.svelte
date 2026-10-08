@@ -12,12 +12,15 @@
     // menu is a sibling of the link, never inside it.
     let {
         spaces,
-        href,
+        link,
         actions,
     }: {
         spaces: ApiResponseRecord[];
         /** Internal route path for a space's card. */
-        href: (space: ApiResponseRecord) => string;
+        // Routify resolves $url() against the route tree: a node path with
+        // [params], never a concrete "/management/content/foo" (that throws
+        // "could not travel to foo" and the page never renders).
+        link: (space: ApiResponseRecord) => { path: string; params?: Record<string, string> };
         /** Optional per-card menu, rendered in the card's top end corner. */
         actions?: Snippet<[ApiResponseRecord]>;
     } = $props();
@@ -27,7 +30,7 @@
     {#each spaces as space (space.shortname)}
         <li class="relative flex">
             <a
-                href={$url(href(space))}
+                href={$url(link(space).path, link(space).params ?? {})}
                 class="flex flex-col w-full h-full p-4 sm:p-5 rounded-card border border-border bg-surface-2 text-text shadow-card
                     transition-shadow hover:shadow-modal hover:border-border-strong
                     focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"

@@ -23,6 +23,6 @@
     {:else if list.length === 0}
         <EmptyState title={$_("no_spaces")} />
     {:else}
-        <SpaceGrid spaces={list} href={(space) => `/management/tools/events/${space.shortname}`} />
+        <SpaceGrid spaces={list} link={(space) => ({ path: "/management/tools/events/[space_name]", params: { space_name: space.shortname } })} />
     {/if}
 </div>

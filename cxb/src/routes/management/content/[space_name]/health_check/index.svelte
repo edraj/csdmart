@@ -18,6 +18,6 @@
     {:else if list.length === 0}
         <EmptyState title={$_("no_spaces")} />
     {:else}
-        <SpaceGrid spaces={list} href={(space) => `/management/content/management/health_check/${space.shortname}`} />
+        <SpaceGrid spaces={list} link={(space) => ({ path: "/management/content/[space_name]/health_check/[space_name_health]", params: { space_name: "management", space_name_health: space.shortname } })} />
     {/if}
 </div>

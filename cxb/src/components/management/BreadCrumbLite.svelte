@@ -37,7 +37,7 @@
 </script>
 
 <Breadcrumb aria-label={$_("breadcrumb")} class="px-4 sm:px-6 py-3 text-sm" olClass="inline-flex items-center flex-wrap gap-y-1">
-    <BreadcrumbItem href={$url(`/management/content/${space_name}`)} home linkClass="text-text-muted hover:text-primary" homeClass="inline-flex items-center gap-1.5 text-text-muted hover:text-primary">
+    <BreadcrumbItem href={$url("/management/content/[space_name]", { space_name })} home linkClass="text-text-muted hover:text-primary" homeClass="inline-flex items-center gap-1.5 text-text-muted hover:text-primary">
         {#snippet icon()}
             <CodeForkSolid size="sm" class="text-text-faint" aria-hidden="true" />
         {/snippet}

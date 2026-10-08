@@ -137,7 +137,7 @@
     <ul class="flex flex-col gap-0.5">
         <li>
             <a
-                href={$url("/management/content/" + spaceName)}
+                href={$url("/management/content/[space_name]", { space_name: spaceName })}
                 onclick={onNavigate}
                 aria-current={atRoot ? "page" : undefined}
                 class="flex items-center gap-2 h-9 px-2 rounded-control font-semibold text-text hover:bg-surface-3

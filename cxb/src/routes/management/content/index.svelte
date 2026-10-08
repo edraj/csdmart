@@ -229,7 +229,7 @@
             <Button color="primary" size="sm" onclick={showAddSpaceModal}>{$_("add_space")}</Button>
         </EmptyState>
     {:else}
-        <SpaceGrid spaces={visibleSpaces} href={(space) => `/management/content/${space.shortname}`}>
+        <SpaceGrid spaces={visibleSpaces} link={(space) => ({ path: "/management/content/[space_name]", params: { space_name: space.shortname } })}>
             {#snippet actions(space)}
                 <IconButton
                     id="space-menu-{space.shortname}"

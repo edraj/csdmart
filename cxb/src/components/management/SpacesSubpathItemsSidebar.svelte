@@ -80,7 +80,7 @@
             {/if}
         </button>
         <a
-            href={$url(`/management/content/${spaceName}/${toRouteSubpath(currentPath)}`)}
+            href={$url("/management/content/[space_name]/[subpath]", { space_name: spaceName, subpath: toRouteSubpath(currentPath) })}
             onclick={onNavigate}
             aria-current={isCurrent ? "page" : undefined}
             class="flex items-center gap-2 min-w-0 flex-1 h-full rounded-control"
