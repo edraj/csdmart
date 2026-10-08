@@ -4,15 +4,22 @@
     import EntryRenderer from "@/components/management/renderers/EntryRenderer.svelte";
     import {Alert, ListPlaceholder} from "flowbite-svelte";
 
-    let _parent_subpath = $derived($params.subpath.split("-"))
+    // Derive from the two params that matter, as strings: the list below
+    // rewrites `page`/`sort`/`search` query params in place, and a promise
+    // re-created on every `$params` change re-mounted the whole renderer (and
+    // re-fetched the folder) on each page click. String-valued deriveds only
+    // re-run their dependents when the value actually changes.
+    const spaceName = $derived($params.space_name as string | undefined);
+    const routeSubpath = $derived(($params.subpath ?? "") as string);
+    let _parent_subpath = $derived(routeSubpath.split("-"))
     let parent_subpath: string = $derived(
         _parent_subpath.slice(0, _parent_subpath.length - 1).join("/") || "__root__"
     );
     let shortname: string =  $derived(_parent_subpath[_parent_subpath.length - 1]);
 
     let entryPromise = $derived(
-        $params.space_name
-            ? Dmart.retrieveEntry({resource_type: ResourceType.folder, space_name: $params.space_name, subpath: parent_subpath, shortname, retrieve_json_payload: true, retrieve_attachments: true, validate_schema: true})
+        spaceName
+            ? Dmart.retrieveEntry({resource_type: ResourceType.folder, space_name: spaceName, subpath: parent_subpath, shortname, retrieve_json_payload: true, retrieve_attachments: true, validate_schema: true})
             : null
     );
 </script>
@@ -26,8 +33,8 @@
         <EntryRenderer
             entry={entry!}
             resource_type={ResourceType.folder}
-            space_name={$params.space_name}
-            subpath={$params.subpath.replaceAll("-", "/")}
+            space_name={spaceName ?? ""}
+            subpath={routeSubpath.replaceAll("-", "/")}
         />
     {:catch error}
             <div class="w-full">

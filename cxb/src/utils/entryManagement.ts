@@ -2,6 +2,7 @@ import { Dmart, RequestType, ResourceType, type ResponseEntry, type ActionReques
 import { removeEmpty } from "@/utils/renderer/schemaEntryRenderer";
 import { Level, showToast } from "@/utils/toast";
 import { jsonEditorContentParser } from "@/utils/jsonEditor";
+import { normalizeSubpath, parentOf, trashDestination } from "@/utils/subpath";
 
 /**
  * Gets the parent subpath from a given path
@@ -132,14 +133,11 @@ export async function deleteEntry(
     resource_type: ResourceType,
     force: boolean = false
 ): Promise<{ success: boolean; errorMessage?: string }> {
-    let targetSubpath: string;
-    if (resource_type === ResourceType.folder) {
-        const arr = subpath.split("/");
-        arr[arr.length - 1] = "";
-        targetSubpath = arr.join("/");
-    } else {
-        targetSubpath = subpath;
-    }
+    // The renderer's `subpath` is the folder's OWN path for a folder entry, and
+    // the containing path for anything else; a request always names the parent.
+    const targetSubpath = resource_type === ResourceType.folder
+        ? parentOf(subpath)
+        : normalizeSubpath(subpath);
 
     try {
         const body: ActionRequest & { force?: boolean } = {
@@ -149,7 +147,7 @@ export async function deleteEntry(
             records: [{
                 resource_type: resource_type,
                 shortname: entry.shortname,
-                subpath: targetSubpath || '/',
+                subpath: targetSubpath,
                 attributes: {}
             }]
         };
@@ -174,16 +172,17 @@ export async function moveEntryToTrash(
 ): Promise<{ success: boolean; errorMessage?: string }> {
     try {
         const moveResourceType = resource_type;
+        // Same convention as deleteEntry: a folder's `subpath` is its own path.
         const moveNewSubpath = moveResourceType === ResourceType.folder
-            ? (subpath.split("/").slice(0, -1).join("-") || '/')
-            : subpath;
+            ? parentOf(subpath)
+            : normalizeSubpath(subpath);
 
         const moveAttrb = {
             src_space_name: space_name,
             src_subpath: moveNewSubpath,
             src_shortname: entry.shortname,
             dest_space_name: 'personal',
-            dest_subpath: `/people/${userShortname}/trash/${space_name}/${moveNewSubpath}`.replaceAll('//', '/'),
+            dest_subpath: trashDestination(userShortname, space_name, moveNewSubpath),
             dest_shortname: entry.shortname,
         };
 
@@ -228,16 +227,17 @@ export async function bulkMoveEntryToTrash(
     try {
         const records = entries.map((entry) => {
             const moveResourceType = entry.resource_type;
-            const moveNewSubpath = moveResourceType === ResourceType.folder
-                ? (entry.subpath.split("/").slice(0, -1).join("-") || '/')
-                : entry.subpath;
+            // A list record's `subpath` is already the containing path — for a
+            // folder record as much as for a content one — so it is sent as is.
+            // Trimming it produced `-a` for `/a/b` and `/` for `/a`.
+            const moveNewSubpath = normalizeSubpath(entry.subpath);
 
             const moveAttrb = {
                 src_space_name: space_name,
                 src_subpath: moveNewSubpath,
                 src_shortname: entry.shortname,
                 dest_space_name: 'personal',
-                dest_subpath: `/people/${userShortname}/trash/${space_name}/${moveNewSubpath}`.replaceAll('//', '/'),
+                dest_subpath: trashDestination(userShortname, space_name, moveNewSubpath),
                 dest_shortname: entry.shortname,
             };
 

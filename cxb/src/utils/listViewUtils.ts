@@ -4,6 +4,7 @@ import {Dmart, QueryType, SortyType} from "@edraj/tsdmart";
 import {getSpaces} from "@/lib/dmart_services";
 import {get} from "svelte/store";
 import {formatDate} from "@/lib/helpers";
+import {isTimestampKey} from "@/utils/columnsUtils";
 
 
 /**
@@ -45,10 +46,6 @@ export function getAttributeValue(item: any, key: string): string {
     if (key === "author") {
         return item.attributes?.owner_shortname || get(_)("unknown");
     }
-    if (key === "updated_at" || key === "created_at") {
-        const ts = item.attributes?.[key];
-        return ts ? formatDate(ts) : get(_)("not_applicable");
-    }
 
     let value: any;
     if (key.includes(".")) {
@@ -68,6 +65,13 @@ export function getAttributeValue(item: any, key: string): string {
     }
 
     if (value === null || value === undefined) return get(_)("not_applicable");
+
+    // A timestamp column is a timestamp whatever path reaches it: the default
+    // columns use `attributes.created_at`, folder columns may use the bare
+    // key, and either must render as a formatted date rather than raw ISO.
+    if (isTimestampKey(key) && !Number.isNaN(new Date(String(value)).getTime())) {
+        return formatDate(String(value));
+    }
 
     if (typeof value === "object" && !Array.isArray(value)) {
         const loc = get(locale);

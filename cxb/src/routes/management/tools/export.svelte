@@ -9,7 +9,8 @@
         QueryType,
         ResourceType,
     } from "@edraj/tsdmart";
-    import { getChildren } from "@/lib/dmart_services";
+    import { getChildren, getChildrenAndSubChildren } from "@/lib/dmart_services";
+    import { untrack } from "svelte";
     import {
         Button,
         Card,
@@ -61,30 +62,33 @@
         duration: string;
     }> = $state([]);
 
-    let selectedSpacename: string | null = $state(null);
-    let tempSubpaths: string[] = $state([]);
     let subpaths: string[] = $state([]);
 
-    onMount(() => {
-        async function setup() {
+    onMount(async () => {
+        try {
             spaces = (await Dmart.getSpaces())?.records ?? [];
+        } catch (e: any) {
+            showToast(Level.warn, e?.response?.data?.error?.message ?? $_("spaces_load_failed"));
         }
-        setup();
     });
 
-    async function buildSubpaths(base: string, _subpaths: any) {
-        for (const _subpath of _subpaths.records) {
-            if (_subpath.resource_type === "folder") {
-                const childSubpaths = await getChildren(
-                    space_name,
-                    _subpath.shortname,
-                );
-                await buildSubpaths(
-                    `${base}/${_subpath.shortname}`,
-                    childSubpaths,
-                );
-                tempSubpaths.push(`${base}/${_subpath.shortname}`);
-            }
+    // Monotonic id so a slow walk of the previous space cannot land after a
+    // fast switch to the next one and populate the dropdown with its folders.
+    let subpathsSeq = 0;
+    async function loadSubpaths(target: string) {
+        const seq = ++subpathsSeq;
+        subpaths = [];
+        try {
+            const roots = await getChildren(target, "/", 100);
+            const collected: string[] = [];
+            // Walks with the FULL path of each folder — the old copy here passed
+            // only the shortname, so anything two levels deep resolved wrongly.
+            await getChildrenAndSubChildren(collected, target, "", roots);
+            if (seq !== subpathsSeq) return;
+            subpaths = collected.sort();
+        } catch (e: any) {
+            if (seq !== subpathsSeq) return;
+            showToast(Level.warn, e?.response?.data?.error?.message ?? $_("subpaths_load_failed"));
         }
     }
 
@@ -107,7 +111,12 @@
             }),
         };
 
-        response = await Dmart.query(query_request);
+        try {
+            response = await Dmart.query(query_request);
+        } catch (e: any) {
+            response = e?.response?.data ?? { error: e?.message ?? $_("query_failed") };
+            showToast(Level.warn, e?.response?.data?.error?.message ?? $_("query_failed"));
+        }
     }
 
     function formatFileSize(bytes: number): string {
@@ -192,18 +201,11 @@
     }
 
     $effect(() => {
-        if (space_name && selectedSpacename !== space_name) {
-            (async () => {
-                subpaths = [];
-                tempSubpaths = [];
-                const _subpaths = await getChildren(space_name, "/");
-
-                await buildSubpaths("", _subpaths);
-
-                subpaths = [...tempSubpaths.reverse()];
-                selectedSpacename = `${space_name}`;
-            })();
-        }
+        const target = space_name;
+        if (!target) return;
+        untrack(() => {
+            void loadSubpaths(target);
+        });
     });
 </script>
 

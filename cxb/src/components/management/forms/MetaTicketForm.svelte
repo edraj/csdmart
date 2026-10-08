@@ -10,14 +10,19 @@
     } from "flowbite-svelte";
     import { Dmart, ResourceType } from "@edraj/tsdmart";
     import { Level, showToast } from "@/utils/toast";
-    import { untrack } from "svelte";
 
+    // Self-contained: the form progresses the ticket itself through
+    // Dmart.progressTicket, so it has no state to hand back to its parent.
     let {
         space_name,
         subpath,
         shortname,
         meta,
-        formData = $bindable(),
+    }: {
+        space_name: string;
+        subpath: string;
+        shortname: string;
+        meta: { workflow_shortname?: string; state?: string; is_open?: boolean };
     } = $props();
 
     let userRoles: string[] = [];
@@ -42,7 +47,7 @@
             resource_type: ResourceType.content,
             space_name,
             subpath: "workflows",
-            shortname: meta.workflow_shortname,
+            shortname: meta.workflow_shortname ?? "",
             retrieve_json_payload: true,
             retrieve_attachments: false,
             validate_schema: true,
@@ -71,23 +76,6 @@
                 ticketPayload?.states?.filter((e: any) => e.state === ticket_status)[0]
                     ?.resolutions || [];
         }
-    });
-
-    $effect(() => {
-        const _resolution = resolution;
-        const _ticket_action = ticket_action;
-        const _comment = comment;
-        untrack(() => {
-            if (_resolution) {
-                formData.resolution = _resolution;
-            }
-            if (_ticket_action) {
-                formData.action = _ticket_action;
-            }
-            if (_comment) {
-                formData.comment = _comment;
-            }
-        });
     });
 
     /**

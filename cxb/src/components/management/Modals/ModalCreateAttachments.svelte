@@ -13,6 +13,7 @@
     import MetaForm from "@/components/management/forms/MetaForm.svelte";
     import {untrack} from "svelte";
     import type {ActionRequestRecord, ActionRequest} from "@edraj/tsdmart";
+    import {_} from "@/i18n";
 
     let {
         meta = $bindable({}),
@@ -33,8 +34,8 @@
     let selectedSchema = $state("");
     let trueResourceType = $state<ResourceAttachmentType | null>(null);
     let isLoading = $state(false);
-    let errorModalMessage = $state(null);
-    let errorContent = $state(null);
+    let errorModalMessage = $state<string | null>(null);
+    let errorContent = $state<unknown>(null);
 
 
     $effect(() => {
@@ -111,9 +112,16 @@
 
     async function upload(event) {
         event.preventDefault();
-        isLoading = true;
         errorModalMessage = null;
         errorContent = null;
+
+        // The meta form is bound but lives in its own <form>, so the outer
+        // submit does not run its constraint validation — ask it explicitly.
+        if (typeof validateMetaForm === "function" && !validateMetaForm()) {
+            errorModalMessage = $_("fill_required_meta");
+            return;
+        }
+        isLoading = true;
 
         try {
             if (isUpdateMode && resourceType === ResourceAttachmentType.json && trueResourceType !== null) {

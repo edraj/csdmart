@@ -1,19 +1,19 @@
 <script lang="ts">
     import {encode} from "plantuml-encoder";
     import {jsonToPlantUML} from "@/utils/renderer/workflowRendererUtils";
+    import {plantUmlSvgUrl} from "@/utils/plantUML";
+    import {website} from "@/config";
 
     let { shortname, workflowContent } : {
-    shortname: string,
-    workflowContent: any
-  } = $props();
+        shortname: string,
+        workflowContent: any
+    } = $props();
 
-  let currentDiagram = $derived({
-    name: shortname,
-    content: jsonToPlantUML(workflowContent),
-    encodedContent() {
-      return encode(this.content);
-    },
-  });
+    // The workflow body is sent to the PlantUML server named in config.json
+    // (`website.plantuml_server`); the public server is only the default.
+    const svgUrl = $derived(
+        plantUmlSvgUrl(website.plantuml_server, encode(jsonToPlantUML(workflowContent))),
+    );
 </script>
 
 
@@ -22,13 +22,8 @@
   style="text-align: left; direction: ltr; overflow: hidden auto;"
 >
   <div class="preview">
-    <a
-      href={"https://www.plantuml.com/plantuml/svg/" + currentDiagram.encodedContent()}
-      download="{shortname}.svg">
-      <img
-        src={"https://www.plantuml.com/plantuml/svg/" + currentDiagram.encodedContent()}
-        alt={shortname}
-      />
+    <a href={svgUrl} download="{shortname}.svg">
+      <img src={svgUrl} alt={shortname} />
     </a>
   </div>
 </div>

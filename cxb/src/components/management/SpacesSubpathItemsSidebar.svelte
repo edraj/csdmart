@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { ListPlaceholder, SidebarItem } from "flowbite-svelte";
+    import { SidebarItem } from "flowbite-svelte";
     import {
         ChevronDownOutline,
         ChevronRightOutline,
@@ -8,7 +8,8 @@
     import SpacesSubpathItemsSidebar from "./SpacesSubpathItemsSidebar.svelte";
     import { activeRoute } from "@roxi/routify";
     import { untrack } from "svelte";
-    import { spaceChildren } from "@/stores/global";
+    import { joinSubpath, normalizeSubpath, toRouteSubpath } from "@/utils/subpath";
+    import { _ } from "@/i18n";
 
     let {
         spaceName,
@@ -20,77 +21,67 @@
         toggleExpanded,
         isExpanded,
         getChildrenForSpace,
+        hasMoreChildren,
+        loadMore,
+    }: {
+        spaceName: string;
+        parentPath: string;
+        item: { shortname: string; attributes?: { displayname?: { en?: string } } };
+        depth?: number;
+        expandedSpaces: Set<string>;
+        loadChildren: (spaceName: string, subpath?: string, invalidate?: boolean) => Promise<unknown[]>;
+        toggleExpanded: (spaceName: string, subpath?: string, forceExpand?: boolean | null) => Promise<void>;
+        isExpanded: (spaceName: string, subpath?: string) => boolean;
+        getChildrenForSpace: (spaceName: string, subpath?: string) => any[];
+        hasMoreChildren: (spaceName: string, subpath?: string) => boolean;
+        loadMore: (spaceName: string, subpath?: string) => Promise<void>;
     } = $props();
 
+    // This folder's canonical subpath (`/a/b`); the route spelling is derived
+    // from it where a URL is needed.
+    const currentPath = $derived(joinSubpath(parentPath, item.shortname));
+    const activePath = $derived(normalizeSubpath($activeRoute?.params?.subpath));
+    const isCurrent = $derived(activePath === currentPath);
+
+    // Open the chain of folders that leads to the one being viewed, so a deep
+    // link shows where it sits in the tree.
     $effect(() => {
-        if (
-            `/-${$activeRoute.params.subpath}` ===
-            `${parentPath}-${item.shortname}`
-        ) {
+        const path = currentPath;
+        const active = activePath;
+        if (active === path || active.startsWith(`${path}/`)) {
             untrack(() => {
-                toggleExpanded(spaceName, getCurrentPath(), true);
+                void toggleExpanded(spaceName, path, true);
             });
         }
     });
 
-    function getCurrentPath() {
-        let urll = `${parentPath}-${item.shortname}`
-            .replace("/", "-")
-            .replace("--", "-");
-        if (urll.startsWith("-")) {
-            urll = urll.substring(1);
-        }
-        if (urll.endsWith("-")) {
-            urll = urll.substring(0, urll.length - 1);
-        }
-        return `/${urll}`;
+    function handleToggle(event: Event) {
+        event.preventDefault();
+        event.stopPropagation();
+        void toggleExpanded(spaceName, currentPath);
     }
-
-    async function handleToggleExpanded() {
-        await toggleExpanded(spaceName, getCurrentPath());
-    }
-
-    function getIsExpanded() {
-        return isExpanded(spaceName, getCurrentPath());
-    }
-
-    export function preventAndHandleToggleExpanded(node: HTMLElement) {
-        const handleEvent = (event: Event) => {
-            event.preventDefault();
-            event.stopPropagation();
-            handleToggleExpanded();
-        };
-
-        node.addEventListener("click", handleEvent);
-
-        return {
-            destroy() {
-                node.removeEventListener("click", handleEvent);
-            },
-        };
-    }
-
-    function isCurrentPath() {
-        return `/${$activeRoute.params.subpath}` === getCurrentPath();
-    }
-
 </script>
 
 <SidebarItem
     label={item.attributes?.displayname?.en || item.shortname}
-    href={`/management/content/${spaceName}${getCurrentPath()}`}
-    class="flex-1 whitespace-nowrap {isCurrentPath()
-        ? 'bg-gray-300 text-white'
-        : ''}"
-    style="margin-left: {depth * 20}px;"
+    href={`/management/content/${spaceName}/${toRouteSubpath(currentPath)}`}
+    class="flex-1 whitespace-nowrap {isCurrent ? 'bg-gray-300 text-white' : ''}"
+    style="margin-inline-start: {depth * 20}px;"
+    aria-current={isCurrent ? "page" : undefined}
 >
     {#snippet icon()}
         <div class="flex items-center gap-2">
-            <button class="p-1 rounded" use:preventAndHandleToggleExpanded>
-                {#if getIsExpanded()}
+            <button
+                type="button"
+                class="p-1 rounded"
+                aria-expanded={isExpanded(spaceName, currentPath)}
+                aria-label={item.shortname}
+                onclick={handleToggle}
+            >
+                {#if isExpanded(spaceName, currentPath)}
                     <ChevronDownOutline size="sm" />
                 {:else}
-                    <ChevronRightOutline size="sm" />
+                    <ChevronRightOutline size="sm" class="rtl:rotate-180" />
                 {/if}
             </button>
 
@@ -105,11 +96,11 @@
     {/snippet}
 </SidebarItem>
 
-{#if getIsExpanded()}
-    {#each $spaceChildren.data.get(`${spaceName}:${getCurrentPath()}`) || [] as child (child.shortname)}
+{#if isExpanded(spaceName, currentPath)}
+    {#each getChildrenForSpace(spaceName, currentPath) as child (child.shortname)}
         <SpacesSubpathItemsSidebar
             {spaceName}
-            parentPath={getCurrentPath()}
+            parentPath={currentPath}
             item={child}
             depth={depth + 1}
             {expandedSpaces}
@@ -117,6 +108,20 @@
             {toggleExpanded}
             {isExpanded}
             {getChildrenForSpace}
+            {hasMoreChildren}
+            {loadMore}
         />
     {/each}
+    {#if hasMoreChildren(spaceName, currentPath)}
+        <li>
+            <button
+                type="button"
+                class="w-full text-start text-sm text-primary px-3 py-1.5 hover:underline cursor-pointer"
+                style="margin-inline-start: {(depth + 1) * 20}px;"
+                onclick={() => loadMore(spaceName, currentPath)}
+            >
+                {$_("load_more")}
+            </button>
+        </li>
+    {/if}
 {/if}

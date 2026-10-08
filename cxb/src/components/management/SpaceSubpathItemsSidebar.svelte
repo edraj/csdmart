@@ -1,7 +1,6 @@
 <script lang="ts">
     import {
         Button,
-        ListPlaceholder,
         Modal,
         Sidebar,
         SidebarGroup,
@@ -21,41 +20,87 @@
     import { spaces } from "@/stores/management/spaces";
     import { spaceChildren } from "@/stores/global";
     import { removeEmpty } from "@/utils/compare";
+    import { sidebarCacheKey } from "@/utils/subpath";
+    import { hasMoreRecords } from "@/utils/paging";
+    import { _ } from "@/i18n";
 
-    let expandedSpaces = $state(new Set());
+    // One page of folder children per tree node; "Load more" appends the next.
+    const CHILDREN_PAGE_SIZE = 50;
+
+    let expandedSpaces = $state(new Set<string>());
     $spaceChildren.refresh = loadChildren;
+
+    function publishChildren() {
+        // New Map instances so every subscriber (this tree, the entry renderer
+        // that invalidates after creating a folder) sees the change.
+        $spaceChildren = {
+            ...$spaceChildren,
+            data: new Map($spaceChildren.data),
+            hasMore: new Map($spaceChildren.hasMore),
+        };
+    }
+
     export async function loadChildren(
-        spaceName,
+        spaceName: string,
         subpath = "/",
         invalidate = false,
     ) {
-        const cacheKey = `${spaceName}:${subpath}`;
+        const cacheKey = sidebarCacheKey(spaceName, subpath);
 
         if (invalidate || !$spaceChildren.data.has(cacheKey)) {
             try {
-                const children = await getChildren(spaceName, subpath, 50, 0, [
+                const children = await getChildren(spaceName, subpath, CHILDREN_PAGE_SIZE, 0, [
                     ResourceType.folder,
                 ]);
-
-                $spaceChildren.data.set(cacheKey, children.records || []);
-            } catch (error) {
-                console.error(
-                    `Failed to load children for ${spaceName}${subpath}:`,
-                    error,
+                const records = children.records ?? [];
+                $spaceChildren.data.set(cacheKey, records);
+                $spaceChildren.hasMore.set(
+                    cacheKey,
+                    hasMoreRecords(children.attributes?.total, records.length, records.length, CHILDREN_PAGE_SIZE),
+                );
+            } catch (error: any) {
+                showToast(
+                    Level.warn,
+                    error?.response?.data?.error?.message ?? error?.message ?? $_("subpaths_load_failed"),
                 );
                 $spaceChildren.data.set(cacheKey, []);
+                $spaceChildren.hasMore.set(cacheKey, false);
             }
-            $spaceChildren.data = new Map($spaceChildren.data);
+            publishChildren();
         }
         return $spaceChildren.data.get(cacheKey) || [];
     }
 
+    async function loadMoreChildren(spaceName: string, subpath = "/") {
+        const cacheKey = sidebarCacheKey(spaceName, subpath);
+        const loaded = $spaceChildren.data.get(cacheKey) ?? [];
+        try {
+            const children = await getChildren(spaceName, subpath, CHILDREN_PAGE_SIZE, loaded.length, [
+                ResourceType.folder,
+            ]);
+            const page = children.records ?? [];
+            const seen = new Set(loaded.map((r) => r.shortname));
+            const merged = [...loaded, ...page.filter((r) => !seen.has(r.shortname))];
+            $spaceChildren.data.set(cacheKey, merged);
+            $spaceChildren.hasMore.set(
+                cacheKey,
+                hasMoreRecords(children.attributes?.total, merged.length, page.length, CHILDREN_PAGE_SIZE),
+            );
+        } catch (error: any) {
+            showToast(
+                Level.warn,
+                error?.response?.data?.error?.message ?? error?.message ?? $_("subpaths_load_failed"),
+            );
+        }
+        publishChildren();
+    }
+
     async function toggleExpanded(
-        spaceName,
+        spaceName: string,
         subpath = "/",
-        forceExpand = null,
+        forceExpand: boolean | null = null,
     ) {
-        const key = `${spaceName}:${subpath}`;
+        const key = sidebarCacheKey(spaceName, subpath);
         if (expandedSpaces.has(key)) {
             if (forceExpand === true) {
                 return;
@@ -68,15 +113,19 @@
             expandedSpaces.add(key);
             await loadChildren(spaceName, subpath);
         }
-        expandedSpaces = $state.snapshot(expandedSpaces);
+        expandedSpaces = new Set(expandedSpaces);
     }
 
-    function isExpanded(spaceName, subpath = "/") {
-        return expandedSpaces.has(`${spaceName}:${subpath}`);
+    function isExpanded(spaceName: string, subpath = "/") {
+        return expandedSpaces.has(sidebarCacheKey(spaceName, subpath));
     }
 
-    function getChildrenForSpace(spaceName, subpath = "/") {
-        return $spaceChildren.data.get(`${spaceName}:${subpath}`) || [];
+    function getChildrenForSpace(spaceName: string, subpath = "/") {
+        return $spaceChildren.data.get(sidebarCacheKey(spaceName, subpath)) || [];
+    }
+
+    function hasMoreChildren(spaceName: string, subpath = "/") {
+        return $spaceChildren.hasMore.get(sidebarCacheKey(spaceName, subpath)) === true;
     }
 
     let viewMetaModal = $state(false);
@@ -141,7 +190,7 @@
                 await getSpaces();
                 addSpaceModal = false;
             } catch (error: any) {
-                modelError = error.response.data;
+                modelError = error?.response?.data ?? error?.message;
             } finally {
                 isActionLoading = false;
             }
@@ -180,7 +229,7 @@
                 );
                 await getSpaces();
             } catch (error: any) {
-                modelError = error;
+                modelError = error?.response?.data ?? error?.message;
             } finally {
                 isActionLoading = false;
             }
@@ -212,7 +261,7 @@
                 selectedSpace = null;
                 await getSpaces();
             } catch (error: any) {
-                modelError = error;
+                modelError = error?.response?.data ?? error?.message;
             } finally {
                 isActionLoading = false;
             }
@@ -259,7 +308,7 @@
                 </div>
             {/snippet}
         </SidebarItem>
-        {#each $spaceChildren.data.get(`${$params.space_name}:/`) || [] as child (child.shortname)}
+        {#each getChildrenForSpace($params.space_name, "/") as child (child.shortname)}
             <SpacesSubpathItemsSidebar
                 spaceName={$params.space_name}
                 parentPath="/"
@@ -270,8 +319,22 @@
                 {toggleExpanded}
                 {isExpanded}
                 {getChildrenForSpace}
+                {hasMoreChildren}
+                loadMore={loadMoreChildren}
             />
         {/each}
+        {#if hasMoreChildren($params.space_name, "/")}
+            <li>
+                <button
+                    type="button"
+                    class="w-full text-start text-sm text-primary px-3 py-1.5 hover:underline cursor-pointer"
+                    style="margin-inline-start: 20px;"
+                    onclick={() => loadMoreChildren($params.space_name, "/")}
+                >
+                    {$_("load_more")}
+                </button>
+            </li>
+        {/if}
     </SidebarGroup>
 </Sidebar>
 
@@ -285,7 +348,7 @@
 
         {#if modelError}
             <div class="mt-4">
-                <p class="text-red-600 font-medium mb-2">Error:</p>
+                <p class="text-red-600 font-medium mb-2">{$_("error")}:</p>
                 <div class="max-h-60 overflow-auto">
                     <Prism code={modelError} />
                 </div>
@@ -295,7 +358,7 @@
 
     <div class="flex justify-between w-full mt-4">
         <Button color="alternative" onclick={() => (addSpaceModal = false)}
-            >Cancel</Button
+            >{$_("cancel")}</Button
         >
         <Button class="bg-primary" onclick={createSpace}>
             {#if isActionLoading}
@@ -328,7 +391,7 @@
 
         {#if modelError}
             <div class="mt-4">
-                <p class="text-red-600 font-medium mb-2">Error:</p>
+                <p class="text-red-600 font-medium mb-2">{$_("error")}:</p>
                 <div class="max-h-60 overflow-auto">
                     <Prism code={modelError} />
                 </div>
@@ -337,7 +400,7 @@
     </div>
     <div class="flex justify-between w-full">
         <Button color="alternative" onclick={() => (editModal = false)}
-            >Cancel</Button
+            >{$_("cancel")}</Button
         >
         <Button class="bg-primary" onclick={saveChanges}>
             {#if isActionLoading}
@@ -362,7 +425,7 @@
 
     {#if modelError}
         <div class="mt-4">
-            <p class="text-red-600 font-medium mb-2">Error:</p>
+            <p class="text-red-600 font-medium mb-2">{$_("error")}:</p>
             <div class="max-h-60 overflow-auto">
                 <Prism code={modelError} />
             </div>
@@ -371,14 +434,14 @@
 
     <div class="flex justify-between w-full">
         <Button color="alternative" onclick={() => (deleteModal = false)}
-            >Cancel</Button
+            >{$_("cancel")}</Button
         >
         <Button color="red" onclick={deleteSpace}>
             {#if isActionLoading}
                 <Spinner class="me-3" size="4" color="blue" />
                 Deleting ...
             {:else}
-                Delete
+                {$_("delete")}
             {/if}
         </Button>
     </div>

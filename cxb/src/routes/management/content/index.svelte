@@ -111,7 +111,7 @@
                 await getSpaces();
                 addSpaceModal = false;
             } catch (/** @type {any} */ error) {
-                modelError = error.response.data;
+                modelError = error?.response?.data ?? error?.message;
             } finally {
                 isActionLoading = false;
             }

@@ -82,7 +82,7 @@
                     generateObjectFromSchema(_schemaContent?.payload?.body),
             };
         } catch (e: any) {
-            errorContent = e.response.data;
+            errorContent = e?.response?.data ?? e?.message;
             isFolderFormReady = false;
         } finally {
             isFolderFormReady = true;
@@ -164,7 +164,7 @@
                 isFolderFormReady = true;
             })
             .catch((e) => {
-                errorContent = e.response.data;
+                errorContent = e?.response?.data ?? e?.message;
                 isFolderFormReady = false;
             });
     }

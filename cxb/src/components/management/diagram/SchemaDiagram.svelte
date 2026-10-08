@@ -1,16 +1,19 @@
 <script lang="ts">
-    import {schemaVisualizationEncoder} from "@/utils/plantUML.js";
+    import {plantUmlSvgUrl, schemaVisualizationEncoder} from "@/utils/plantUML";
+    import {website} from "@/config";
 
-    export let shortname: string;
-export let properties: any;
+    let { shortname, properties }: {
+        shortname: string;
+        properties: Record<string, unknown> | undefined;
+    } = $props();
 
+    // The schema body is sent to the PlantUML server named in config.json
+    // (`website.plantuml_server`); the public server is only the default.
+    const svgUrl = $derived(
+        plantUmlSvgUrl(website.plantuml_server, schemaVisualizationEncoder(properties)),
+    );
 </script>
-<a href={"https://www.plantuml.com/plantuml/svg/" +
-   schemaVisualizationEncoder(properties)}
-   download="{shortname}.svg"
->
-  <img src={"https://www.plantuml.com/plantuml/svg/" +
-       schemaVisualizationEncoder(properties)}
-       alt={shortname}
-  />
+
+<a href={svgUrl} download="{shortname}.svg">
+    <img src={svgUrl} alt={shortname} />
 </a>

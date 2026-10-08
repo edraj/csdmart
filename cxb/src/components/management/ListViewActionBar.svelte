@@ -40,6 +40,12 @@
     import {
         bulkMoveEntryToTrash,
     } from "@/utils/entryManagement";
+    import {
+        normalizeSubpath,
+        recordSubpath,
+        trashRestoreTarget,
+        trashRoot,
+    } from "@/utils/subpath";
 
     $goto;
     let { space_name, subpath }: { space_name: string; subpath: string } =
@@ -53,7 +59,7 @@
 
     const isEntryTrash = $derived(
         space_name === "personal" &&
-        subpath.startsWith(`people/${$user.shortname}/trash`),
+        normalizeSubpath(subpath).startsWith(trashRoot($user.shortname ?? "")),
     );
 
     onMount(() => {
@@ -118,10 +124,13 @@
             try {
                 isActionLoading = true;
                 modelError = null;
+                // Each record names its own subpath: on a non-exact list (the
+                // Trash page, folders with expand_children) rows come from
+                // several subpaths, and the list's own would be wrong for them.
                 const records = $bulkBucket.map((b) => ({
                     resource_type: b.resource_type as ResourceType,
                     shortname: b.shortname,
-                    subpath: subpath || "/",
+                    subpath: recordSubpath(b, subpath),
                     attributes: {},
                 }));
 
@@ -200,32 +209,28 @@
 
         try {
             const records = $bulkBucket.map((b) => {
-                const scr_subpaths: string[] = b.subpath.split("/");
-                const remaining: string[] = scr_subpaths.slice(3);
-
-                const distSpacename = remaining[0];
-                const distSubpath = remaining.slice(1).join("/");
-
-                const moveResourceType =
-                    b.resource_type ||
-                    (b.subpath && ResourceType.folder) ||
-                    ResourceType.space;
-
-                const moveAttrb = {
-                    src_space_name: "personal",
-                    src_subpath: b.subpath.replaceAll("-", "/"),
-                    src_shortname: b.shortname,
-
-                    dest_space_name: distSpacename,
-                    dest_subpath: distSubpath.replaceAll("-", "/"),
-                    dest_shortname: b.shortname,
-                };
+                // `/people/<user>/trash/<space>/<subpath>` → where it came from.
+                // The helper handles the leading slash that used to shift the
+                // split indices and make the destination space "trash".
+                const target = trashRestoreTarget(b.subpath);
+                if (!target) {
+                    throw new Error($_("not_in_trash"));
+                }
+                const srcSubpath = recordSubpath(b, subpath);
 
                 return {
-                    resource_type: moveResourceType as ResourceType,
+                    resource_type: b.resource_type as ResourceType,
                     shortname: b.shortname,
-                    subpath: b.subpath.replaceAll("-", "/"),
-                    attributes: moveAttrb,
+                    subpath: srcSubpath,
+                    attributes: {
+                        src_space_name: "personal",
+                        src_subpath: srcSubpath,
+                        src_shortname: b.shortname,
+
+                        dest_space_name: target.space_name,
+                        dest_subpath: target.subpath,
+                        dest_shortname: b.shortname,
+                    },
                 };
             });
 
@@ -234,10 +239,14 @@
                 request_type: RequestType.move,
                 records: records,
             });
+            bulkBucket.set([]);
             await $currentListView?.fetchPageRecords();
-            showToast(Level.info, `Entries restored successfully`);
-        } catch (error) {
-            showToast(Level.warn, `Failed to restore the entries!`);
+            showToast(Level.info, $_("entries_restored"));
+        } catch (error: any) {
+            showToast(
+                Level.warn,
+                error?.response?.data?.error?.message ?? error?.message ?? $_("entries_restore_failed"),
+            );
         } finally {
             isActionLoading = false;
         }

@@ -8,9 +8,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
  *
  *   - only codes 47/48/49, because account lockout (110) also arrives as a
  *     401 and reacting to it would sign the user out spuriously;
- *   - only with a stored authToken, because an expected 401 on a
- *     password-reset page (no session at all) would otherwise reload the page
- *     out from under the form.
+ *   - only with a local session (the persisted `user` record says signedin),
+ *     because an expected 401 on a password-reset page (no session at all)
+ *     would otherwise reload the page out from under the form. The token
+ *     itself is no longer stored anywhere — the HttpOnly cookie carries it.
  *
  * Both failure modes are the kind that only show up in someone's face, never
  * in a stack trace, so they are pinned here.
@@ -62,6 +63,11 @@ function unauthorized(code: number) {
   return { response: { status: 401, data: { error: { code } } } };
 }
 
+/** What stores/user.ts persists for a signed-in user (no secret inside). */
+function signedInLocally() {
+  localStorage.setItem("user", JSON.stringify({ signedin: true, shortname: "u" }));
+}
+
 beforeEach(() => {
   localStorage.clear();
   reload.mockClear();
@@ -99,8 +105,9 @@ describe("ensureDmartAxios", () => {
 describe("401 handling", () => {
   it.each([47, 48, 49])("signs out and reloads on code %i", async (code) => {
     const onRejected = await freshInterceptor();
-    localStorage.setItem("authToken", "tok");
-    localStorage.setItem("user", "u");
+    signedInLocally();
+    // A token left behind by a pre-cookie-only build must go too.
+    localStorage.setItem("authToken", "stale");
     localStorage.setItem("permissions", "{}");
     localStorage.setItem("roles", "[]");
 
@@ -117,28 +124,28 @@ describe("401 handling", () => {
   // "your account is locked" with a silent bounce to the login screen.
   it("ignores USER_ACCOUNT_LOCKED (110) despite the 401", async () => {
     const onRejected = await freshInterceptor();
-    localStorage.setItem("authToken", "tok");
+    signedInLocally();
 
     await expect(onRejected(unauthorized(110))).rejects.toBeDefined();
 
-    expect(localStorage.getItem("authToken")).toBe("tok");
+    expect(localStorage.getItem("user")).not.toBeNull();
     expect(reload).not.toHaveBeenCalled();
   });
 
   it("ignores other 401 error codes", async () => {
     const onRejected = await freshInterceptor();
-    localStorage.setItem("authToken", "tok");
+    signedInLocally();
 
     await expect(onRejected(unauthorized(46))).rejects.toBeDefined();
     await expect(onRejected(unauthorized(50))).rejects.toBeDefined();
 
-    expect(localStorage.getItem("authToken")).toBe("tok");
+    expect(localStorage.getItem("user")).not.toBeNull();
     expect(reload).not.toHaveBeenCalled();
   });
 
   it("ignores a non-401 status carrying one of those codes", async () => {
     const onRejected = await freshInterceptor();
-    localStorage.setItem("authToken", "tok");
+    signedInLocally();
 
     await expect(
       onRejected({ response: { status: 403, data: { error: { code: 47 } } } }),
@@ -149,8 +156,28 @@ describe("401 handling", () => {
 
   // The anonymous case: password-reset pages live outside /management and have
   // no session, so a 401 there is expected and must not reload the form away.
-  it("does nothing without a stored authToken", async () => {
+  it("does nothing without a local session", async () => {
     const onRejected = await freshInterceptor();
+
+    await expect(onRejected(unauthorized(47))).rejects.toBeDefined();
+
+    expect(reload).not.toHaveBeenCalled();
+  });
+
+  // A pre-cookie-only token alone is not a session: the user record is the
+  // only thing the guard reads.
+  it("does nothing with only a stale authToken and no user record", async () => {
+    const onRejected = await freshInterceptor();
+    localStorage.setItem("authToken", "stale");
+
+    await expect(onRejected(unauthorized(47))).rejects.toBeDefined();
+
+    expect(reload).not.toHaveBeenCalled();
+  });
+
+  it("treats a corrupt user record as no session", async () => {
+    const onRejected = await freshInterceptor();
+    localStorage.setItem("user", "{not json");
 
     await expect(onRejected(unauthorized(47))).rejects.toBeDefined();
 
@@ -159,10 +186,10 @@ describe("401 handling", () => {
 
   it("reloads only once even if more 401s arrive", async () => {
     const onRejected = await freshInterceptor();
-    localStorage.setItem("authToken", "tok");
+    signedInLocally();
 
     await expect(onRejected(unauthorized(47))).rejects.toBeDefined();
-    localStorage.setItem("authToken", "tok-again");
+    signedInLocally();
     await expect(onRejected(unauthorized(47))).rejects.toBeDefined();
 
     expect(reload).toHaveBeenCalledTimes(1);
@@ -171,7 +198,7 @@ describe("401 handling", () => {
   it("rejects with the original error, so callers still see it", async () => {
     const onRejected = await freshInterceptor();
     const err = unauthorized(47);
-    localStorage.setItem("authToken", "tok");
+    signedInLocally();
     await expect(onRejected(err)).rejects.toBe(err);
   });
 });

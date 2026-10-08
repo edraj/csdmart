@@ -52,7 +52,7 @@
     {/if}
 
     <form onsubmit={handleSubmit} class="mt-12">
-        <Label for="username">{$_("username")}</Label>
+        <Label for="username">{$_("shortname")}</Label>
         <Input
           id="username"
           placeholder={$_("shortname")}
@@ -71,7 +71,6 @@
               bind:value={password}
               color={errorMessage ? "red" : "default"}
               minlength={8}
-              maxlength={24}
               required
             />
             <Button class="flex items-center border-s-0" color="light"

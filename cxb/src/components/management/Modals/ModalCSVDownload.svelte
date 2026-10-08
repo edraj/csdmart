@@ -1,11 +1,18 @@
 <script lang="ts">
     import {Button, Checkbox, Input, Label, Modal} from "flowbite-svelte";
-    import {Dmart, QueryType} from "@edraj/tsdmart";
+    import {QueryType} from "@edraj/tsdmart";
     import downloadFile from "@/utils/downloadFile";
     import {Level, showToast} from "@/utils/toast";
     import {currentListView} from "@/stores/global";
+    import {fetchCsv} from "@/lib/dmart_services";
+    import {buildCsvQuery, csvFileName} from "@/utils/csvExport";
+    import {_} from "@/i18n";
 
-    let { isOpen = $bindable(), space_name, subpath } = $props();
+    let { isOpen = $bindable(false), space_name, subpath }: {
+        isOpen: boolean;
+        space_name: string;
+        subpath: string;
+    } = $props();
 
     let downloadAll = $state(false);
     let limit = $state("");
@@ -17,40 +24,26 @@
         try {
             isCSVDownloadInProgress = true;
 
-            const query = { ...$currentListView!.query };
+            // Start from the list's live query (search, sort, filters) but
+            // never its paging: offset is dropped and limit set explicitly.
+            const query = buildCsvQuery(
+                $currentListView?.query ?? {},
+                {
+                    downloadAll,
+                    limit,
+                    startDate,
+                    endDate,
+                    total: $currentListView?.total ?? null,
+                },
+                { space_name, subpath: subpath || "/", type: QueryType.search },
+            );
 
-            if (!downloadAll) {
-                if (limit) {
-                    query.limit = parseInt(limit);
-                }
-
-                if (startDate) {
-                    query.from_date = startDate;
-                }
-
-                if (endDate) {
-                    query.to_date = endDate;
-                }
-            } else {
-                query.limit = 1_000_000;
-                delete query.from_date;
-                delete query.to_date;
-            }
-            if(!query.space_name) {
-                query.space_name = space_name;
-            }
-            if(!query.subpath) {
-                query.subpath = subpath;
-            }
-            if(!query.type) {
-                query.type = QueryType.search;
-            }
-
-            const data = await Dmart.csv(query);
-            downloadFile(JSON.stringify(data), `${space_name}/${subpath}.csv`, "text/csv");
+            // text/csv straight through — no JSON round trip.
+            const csv = await fetchCsv(query);
+            downloadFile(csv, csvFileName(space_name, subpath), "text/csv");
             isOpen = false;
-        } catch (e) {
-            showToast(Level.warn);
+        } catch (e: any) {
+            showToast(Level.warn, e?.response?.data?.error?.message ?? $_("csv_download_failed"));
         } finally {
             isCSVDownloadInProgress = false;
         }
@@ -64,7 +57,7 @@
         </h3>
 
         <div class="mb-4">
-            <Label for="limit" class="mb-2">Limit</Label>
+            <Label for="limit" class="mb-2">{$_("limit")}</Label>
             <Input id="limit" type="number" placeholder="Enter limit" bind:value={limit} min="1" disabled={downloadAll} />
         </div>
 
@@ -83,8 +76,8 @@
         </div>
 
         <div class="flex justify-center gap-4">
-            <Button color="alternative" onclick={() => isOpen = false}>Cancel</Button>
-            <Button class="bg-primary" disabled={isCSVDownloadInProgress} onclick={handleDownloadCSV}>Download</Button>
+            <Button color="alternative" onclick={() => isOpen = false}>{$_("cancel")}</Button>
+            <Button class="bg-primary" disabled={isCSVDownloadInProgress} onclick={handleDownloadCSV}>{$_("download_csv")}</Button>
         </div>
     </div>
 </Modal>

@@ -28,6 +28,7 @@
     import { checkAccess } from "@/utils/checkAccess";
     import PayloadForm from "@/components/management/forms/PayloadForm.svelte";
     import { removeEmpty } from "@/utils/compare";
+    import { _ } from "@/i18n";
 
     let {
         space_name,
@@ -206,8 +207,7 @@
     async function handleCreateEntry() {
         errorModalMessage = null;
         if (!validateMetaForm()) {
-            errorModalMessage =
-                "Please fill all required fields in the meta form.";
+            errorModalMessage = $_("fill_required_meta");
             return;
         }
 
@@ -219,8 +219,7 @@
             ].includes(selectedResourceType)
         ) {
             if (!validateRTForm()) {
-                errorModalMessage =
-                    "Please fill all required fields in the respective resource type form.";
+                errorModalMessage = $_("fill_required_rt");
                 return;
             }
         }
@@ -344,7 +343,7 @@
             isOpen = false;
             showToast(Level.info, "Entry created successfully.");
         } catch (e: any) {
-            errorContent = e.response.data;
+            errorContent = e?.response?.data ?? e?.message;
             tick().then(() => {
                 scrollToElById("error-content");
             });

@@ -1,6 +1,28 @@
-import {type ApiQueryResponse, Dmart, type QueryRequest, QueryType, ResourceType, SortyType,} from "@edraj/tsdmart";
+import {type ApiQueryResponse, Dmart, headers, type QueryRequest, QueryType, ResourceType, SortyType,} from "@edraj/tsdmart";
 import {spaces} from "@/stores/management/spaces";
 import {Level, showToast} from "@/utils/toast";
+import type {CsvQuery} from "@/utils/csvExport";
+
+/**
+ * `POST managed/csv` returns `text/csv`, not a JSON envelope. `Dmart.csv()`
+ * goes through the default JSON response type, so the body only survives as a
+ * string because axios silently falls back when parsing fails — and a caller
+ * that then `JSON.stringify`s it ships a quoted, escaped blob. Ask for text
+ * explicitly and hand the body back unchanged.
+ */
+export async function fetchCsv(query: CsvQuery): Promise<string> {
+    const body = {
+        ...query,
+        subpath: query.subpath.replace(/\/+/g, "/"),
+        sort_by: query.sort_by ?? "created_at",
+        sort_type: query.sort_type ?? SortyType.ascending,
+    };
+    const response = await Dmart.axiosDmartInstance.post("managed/csv", body, {
+        headers,
+        responseType: "text",
+    });
+    return typeof response.data === "string" ? response.data : String(response.data ?? "");
+}
 
 
 export async function getAvatar(shortname: string) {

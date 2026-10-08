@@ -17,6 +17,8 @@
     } from "flowbite-svelte-icons";
     import { onMount } from "svelte";
     import { goto } from "@roxi/routify";
+    import { _ } from "@/i18n";
+    import { Level, showToast } from "@/utils/toast";
     $goto;
 
     const TabMode = {
@@ -42,13 +44,23 @@
     let pluginsError = $state<string | null>(null);
 
     onMount(async () => {
-        const _settings = await Dmart.getSettings();
-        if (_settings.status === "success") {
-            settings = _settings.attributes;
+        // Each tab loads on its own: a failing settings call must not blank
+        // the manifest and plugins tabs too.
+        try {
+            const _settings = await Dmart.getSettings();
+            if (_settings?.status === "success") {
+                settings = _settings.attributes;
+            }
+        } catch {
+            showToast(Level.warn, $_("settings_load_failed"));
         }
-        const _manifest = await Dmart.getManifest();
-        if (_manifest.status === "success") {
-            manifest = _manifest.attributes;
+        try {
+            const _manifest = await Dmart.getManifest();
+            if (_manifest?.status === "success") {
+                manifest = _manifest.attributes;
+            }
+        } catch {
+            showToast(Level.warn, $_("manifest_load_failed"));
         }
         try {
             const _plugins = await Dmart.getPlugins();
@@ -65,7 +77,7 @@
             // Older dmart servers (pre-/info/plugins) return 404 here. Surface
             // the failure in the tab body rather than swallowing — operators
             // can then upgrade the server.
-            pluginsError = err?.message ?? "Failed to load plugins.";
+            pluginsError = err?.response?.data?.error?.message ?? err?.message ?? $_("plugins_load_failed");
         }
     });
 </script>

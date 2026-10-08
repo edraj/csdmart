@@ -6,6 +6,7 @@
     import {bulkBucket} from "@/stores/management/bulk_bucket";
     import {spaces} from "@/stores/management/spaces";
     import {getChildren, getChildrenAndSubChildren} from "@/lib/dmart_services";
+    import {recordSubpath} from "@/utils/subpath";
 
     let {
         space_name,
@@ -55,8 +56,8 @@
             });
 
             subpathOptions = options;
-        } catch (e) {
-            console.error("Failed to fetch subpaths", e);
+        } catch (e: any) {
+            showToast(Level.warn, e?.response?.data?.error?.message ?? e?.message ?? "Failed to fetch subpaths");
             subpathOptions = [{name: "/", value: "/"}];
         }
     }
@@ -71,7 +72,9 @@
 
             $bulkBucket.forEach(b => {
                 if (isMove) {
-                    const srcSubpath = subpath || "/";
+                    // The record's own subpath, not the list's: on a non-exact
+                    // list the selected rows may live in several subpaths.
+                    const srcSubpath = recordSubpath(b, subpath);
 
                     const moveAttrb = {
                         src_space_name: space_name,
@@ -119,9 +122,11 @@
             } else {
                 showToast(Level.warn, `Failed to ${actionType} entries`);
             }
-        } catch (e) {
-            showToast(Level.warn, `Error during bulk ${actionType}`);
-            console.error(e);
+        } catch (e: any) {
+            showToast(
+                Level.warn,
+                e?.response?.data?.error?.message ?? e?.message ?? `Error during bulk ${actionType}`,
+            );
         } finally {
             isActionLoading = false;
         }

@@ -43,7 +43,8 @@
     import MetaPermissionForm from "@/components/management/forms/MetaPermissionForm.svelte";
     import SpaceForm from "@/components/management/forms/SpaceForm.svelte";
     import { untrack, onDestroy, tick } from "svelte";
-    import { goto } from "@roxi/routify";
+    import { activeRoute, beforeUrlChange, goto } from "@roxi/routify";
+    import { sidebarCacheKey, trashRestoreTarget, normalizeSubpath } from "@/utils/subpath";
     import HistoryListView from "@/components/management/HistoryListView.svelte";
     import MetaTicketForm from "@/components/management/forms/MetaTicketForm.svelte";
     import WorkflowDiagram from "@/components/management/diagram/WorkflowDiagram.svelte";
@@ -118,11 +119,6 @@
         clearTimeout(_initTimer);
     });
 
-    let ticketData: any = $state({
-        action: null,
-        resolution: null,
-        comment: null,
-    });
     let errorMessage: string | null | undefined = $state(null);
 
     // svelte-ignore state_referenced_locally
@@ -147,8 +143,23 @@
 
     let activeTab = $state(TabMode.list);
     let isActionLoading = $state(false);
-    let validateMetaForm: any = $state(undefined);
-    let validateRTForm: any = $state(undefined);
+    // Replaced by the Form tab's components through bind:validateFn; until
+    // then (and for resource types without a second form) nothing to check.
+    let validateMetaForm: () => boolean = $state(() => true);
+    let validateRTForm: () => boolean = $state(() => true);
+
+    /**
+     * Run the constraint validators the Form tab's components bound. They are
+     * only meaningful while that tab is showing: on the Entry (JSON) tab the
+     * forms are unmounted and the JSON text is the source of truth.
+     */
+    function formsAreValid(): boolean {
+        if (activeTab !== TabMode.form) return true;
+        for (const validate of [validateMetaForm, validateRTForm]) {
+            if (typeof validate === "function" && !validate()) return false;
+        }
+        return true;
+    }
 
     function navigateAfterEntryAction() {
         if (resource_type === ResourceType.space) {
@@ -198,6 +209,13 @@
     let roleAffectedUsersCount = $state(0);
 
     async function handleSave() {
+        errorMessage = null;
+        // The same validation create enforces; the browser highlights the
+        // offending field through reportValidity().
+        if (!formsAreValid()) {
+            errorMessage = $_("fill_required_meta");
+            return;
+        }
         if (resource_type === ResourceType.schema) {
             try {
                 isActionLoading = true;
@@ -351,29 +369,14 @@
     async function restoreTrashEntry() {
         isActionLoading = true;
         try {
-            const scr_subpaths: string[] = subpath.split("/");
-            const remaining: string[] = scr_subpaths.slice(3);
-
-            let distSpacename = "";
-            let distSubpath = "";
-
-            if (remaining.length > 0) {
-                distSpacename = remaining[0];
-                distSubpath = remaining.slice(1).join("/");
-            } else {
-                distSpacename = space_name; // Fallback
+            // `/people/<user>/trash/<space>/<subpath>` → where it came from;
+            // the helper copes with either slash spelling.
+            const target = trashRestoreTarget(subpath);
+            if (!target) {
+                showToast(Level.warn, $_("not_in_trash"));
+                return;
             }
-
-            const moveAttrb = {
-                src_space_name: "personal",
-                src_subpath: subpath.replaceAll("-", "/"),
-                src_shortname: entry.shortname,
-
-                dest_space_name: distSpacename,
-                dest_subpath: distSubpath.replaceAll("-", "/"),
-                dest_shortname: entry.shortname,
-            };
-
+            const srcSubpath = normalizeSubpath(subpath);
 
             const result = await Dmart.request({
                 space_name: "personal",
@@ -382,20 +385,28 @@
                     {
                         resource_type: resource_type,
                         shortname: entry.shortname,
-                        subpath: subpath.replaceAll("-", "/"),
-                        attributes: moveAttrb,
+                        subpath: srcSubpath,
+                        attributes: {
+                            src_space_name: "personal",
+                            src_subpath: srcSubpath,
+                            src_shortname: entry.shortname,
+
+                            dest_space_name: target.space_name,
+                            dest_subpath: target.subpath,
+                            dest_shortname: entry.shortname,
+                        },
                     },
                 ],
             });
 
             if (result.status === "success") {
-                showToast(Level.info, "Entry restored successfully.");
+                showToast(Level.info, $_("entry_restored"));
                 $goto("/management/tools/trash");
             } else {
-                showToast(Level.warn, "Failed to restore entry.");
+                showToast(Level.warn, $_("entry_restore_failed"));
             }
-        } catch (e) {
-            showToast(Level.warn, "Failed to restore entry.");
+        } catch (e: any) {
+            showToast(Level.warn, e?.response?.data?.error?.message ?? $_("entry_restore_failed"));
         } finally {
             isActionLoading = false;
         }
@@ -413,21 +424,28 @@
                     retrieve_attachments: true,
                     validate_schema: true,
                 }))!;
-                const children = await getChildren(
-                    space_name,
-                    getParentPath(subpath),
-                    DEFAULT_RECORDS_LIMIT,
-                    0,
-                    [ResourceType.folder],
-                );
-                $spaceChildren.data.set(
-                    `${space_name}:/${getParentPath(subpath)}`.replaceAll(
-                        "//",
-                        "/",
-                    ),
-                    children.records || [],
-                );
-                $spaceChildren.data = structuredClone($spaceChildren.data);
+                // The sidebar owns its cache (keys, paging); ask it to reload
+                // this folder's parent. Fall back to a direct write with the
+                // same key helper when no sidebar is mounted.
+                if ($spaceChildren.refresh) {
+                    await $spaceChildren.refresh(space_name, getParentPath(subpath), true);
+                } else {
+                    const children = await getChildren(
+                        space_name,
+                        getParentPath(subpath),
+                        DEFAULT_RECORDS_LIMIT,
+                        0,
+                        [ResourceType.folder],
+                    );
+                    $spaceChildren.data.set(
+                        sidebarCacheKey(space_name, getParentPath(subpath)),
+                        children.records || [],
+                    );
+                    $spaceChildren = {
+                        ...$spaceChildren,
+                        data: new Map($spaceChildren.data),
+                    };
+                }
             }
             await $currentListView?.fetchPageRecords();
         } else {
@@ -490,6 +508,7 @@
                 await refreshEntry();
                 hasStreamChanges = false;
             };
+            unsavedPrompt = "refresh";
             showUnsavedChangesModal = true;
             return;
         }
@@ -512,7 +531,10 @@
     });
 
     let showUnsavedChangesModal = $state(false);
+    // What the modal is protecting: a Refresh click or an in-app navigation.
+    let unsavedPrompt: "refresh" | "leave" = $state("refresh");
     let pendingRefreshAction: (() => void) | null = $state(null);
+    let pendingNavigation: ((proceed: boolean) => void) | null = null;
 
     function confirmDiscardChanges() {
         showUnsavedChangesModal = false;
@@ -520,22 +542,62 @@
             pendingRefreshAction();
             pendingRefreshAction = null;
         }
+        if (pendingNavigation) {
+            // Mark clean so the guard does not fire again for the same leave.
+            isJEDirty = false;
+            pendingNavigation(true);
+            pendingNavigation = null;
+        }
     }
 
     function cancelDiscardChanges() {
         showUnsavedChangesModal = false;
         pendingRefreshAction = null;
+        if (pendingNavigation) {
+            pendingNavigation(false);
+            pendingNavigation = null;
+        }
     }
 
+    // The modal can also close through Escape or the overlay, bypassing both
+    // buttons; a navigation left waiting on it would block every later one.
+    // Any close with a decision still pending means "stay".
+    $effect(() => {
+        if (!showUnsavedChangesModal && pendingNavigation) {
+            const resolve = pendingNavigation;
+            pendingNavigation = null;
+            resolve(false);
+        }
+    });
+
+    // Closing or reloading the tab: the browser's own prompt.
     function beforeUnload(event: BeforeUnloadEvent) {
         if (isJEDirty) {
             event.preventDefault();
             event.returnValue = true;
         }
     }
+
+    // In-app navigation: Routify runs these guards before the URL changes and
+    // waits for a promise, so the modal can decide. Query-only changes on the
+    // same page (the list below rewrites page/sort/search params) are not a
+    // leave and pass straight through.
+    const pathOf = (route: { url?: string } | null | undefined) =>
+        (route?.url ?? "").split("?")[0];
+    $beforeUrlChange(({ route }) => {
+        if (!isJEDirty) return true;
+        if (pathOf(route) === pathOf($activeRoute)) return true;
+        if (pendingNavigation) return false;
+        return new Promise<boolean>((resolve) => {
+            pendingNavigation = resolve;
+            pendingRefreshAction = null;
+            unsavedPrompt = "leave";
+            showUnsavedChangesModal = true;
+        });
+    });
 </script>
 
-<svelte:window on:beforeunload={beforeUnload} />
+<svelte:window onbeforeunload={beforeUnload} />
 
 <div class="flex flex-col w-full">
     <BreadCrumbLite
@@ -728,8 +790,10 @@
                     </div>
                 </button>
             </li>
-            {#if canUpdate}
-                <li class="ml-auto" role="presentation">
+            <!-- Save only where something is editable: the Entry (JSON) and
+                 Form tabs. A folder's List view has nothing to save. -->
+            {#if canUpdate && (activeTab === TabMode.entry || activeTab === TabMode.form)}
+                <li class="ms-auto" role="presentation">
                     <button
                             class="inline-flex items-center p-4 border-b-2 rounded-t-lg border-transparent hover:text-primary hover:border-primary"
                             type="button"
@@ -738,11 +802,11 @@
                             style={isActionLoading || !isJEDirty
                             ? "cursor: not-allowed"
                             : "cursor: pointer"}
-                            title="Save changes"
+                            title={$_("save")}
                     >
                         <div class="flex items-center gap-2">
                             <FloppyDiskOutline size="md" class="text-primary" />
-                            <p class="text-primary">Save</p>
+                            <p class="text-primary">{$_("save")}</p>
                         </div>
                     </button>
                 </li>
@@ -916,7 +980,6 @@
                                 {subpath}
                                 shortname={entry.shortname}
                                 meta={jeContent.json}
-                                bind:formData={ticketData}
                         />
                     {/if}
                     {#if jeContent?.json?.payload?.body}
@@ -1077,17 +1140,23 @@
     </div>
 </Modal>
 
-<Modal bind:open={showUnsavedChangesModal} size="md" title="Unsaved Changes">
+<Modal
+    bind:open={showUnsavedChangesModal}
+    size="md"
+    title={$_("unsaved_changes")}
+>
     <p class="text-center mb-6">
-        You have unsaved changes. Do you want to discard them and refresh?
+        {unsavedPrompt === "leave"
+            ? $_("unsaved_changes_leave_prompt")
+            : $_("unsaved_changes_refresh_prompt")}
     </p>
 
     <div class="flex justify-between w-full">
         <Button color="alternative" onclick={cancelDiscardChanges}
-        >Cancel</Button
+        >{unsavedPrompt === "leave" ? $_("stay_on_page") : $_("cancel")}</Button
         >
         <Button color="red" onclick={confirmDiscardChanges}
-        >Discard Changes</Button
+        >{unsavedPrompt === "leave" ? $_("leave_page") : $_("discard_changes")}</Button
         >
     </div>
 </Modal>

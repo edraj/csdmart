@@ -1,13 +1,12 @@
 <!-- routify:meta reset -->
-<script>
+<script lang="ts">
     import {goto} from '@roxi/routify';
-    import {Dmart} from "@edraj/tsdmart";
-    import {ensureDmartAxios} from "@/lib/dmart_axios";
+    import {Dmart, DmartScope} from "@edraj/tsdmart";
+    import {clearLocalSession, ensureDmartAxios} from "@/lib/dmart_axios";
     import Login from "@/components/Login.svelte";
     import ManagementHeader from "@/components/management/ManagementHeader.svelte";
     import {Spinner} from "flowbite-svelte";
     import {getSpaces} from "@/lib/dmart_services.js";
-    import {onMount} from "svelte";
     import {user} from "@/stores/user.js";
 
     $goto
@@ -18,10 +17,16 @@
     // layout has normally created it already.
     ensureDmartAxios();
 
-    const storedToken = typeof localStorage !== 'undefined' && localStorage.getItem("authToken");
-    if (storedToken) {
-        Dmart.setToken(storedToken);
-    }
+    // Cookie-only auth: the HttpOnly auth_token cookie the server set at login
+    // authenticates every request, so no bearer token is kept in web storage
+    // and none is handed to the SDK here. The SDK picks `public/*` for reads
+    // whenever it holds no token, which would be wrong for this admin UI —
+    // every route under /management is a signed-in route — so pin its default
+    // scope to managed. Callers that pass a scope explicitly are unaffected.
+    // (The SDK types the method private; it is a plain static the SDK itself
+    // calls through `Dmart.defaultScope()`, so replacing it is effective.)
+    (Dmart as unknown as { defaultScope: () => DmartScope }).defaultScope =
+        () => DmartScope.managed;
 
     // Boot session probe: GET /user/profile is the authoritative session
     // check — it returns the caller's user record (and the SDK caches roles /
@@ -29,16 +34,16 @@
     // Mid-session expiration is still detected by the response interceptor
     // in src/lib/dmart_axios.ts when a regular API call returns 401.
     //
-    // No token means signed out, and the browser already knows that — so
-    // answer locally rather than asking the server. /info/me used to be
+    // No local session means signed out, and the browser already knows that —
+    // so answer locally rather than asking the server. /info/me used to be
     // AllowAnonymous precisely so a cold load wouldn't paint a 401 in the
     // console; /user/profile has no such branch, and without this check every
     // anonymous visit would fire a request whose only possible answer is 401.
     // It also keeps anonymous callers off the 401 interceptor, which reloads
     // the page.
-    const probe = storedToken
+    const probe = $user?.signedin
         ? Dmart.getProfile()
-        : Promise.reject(new Error("no stored token"));
+        : Promise.reject(new Error("no local session"));
 
     const profilePromise = probe.then((r) => {
         // Both checks are load-bearing: getProfile REJECTS on a transport or
@@ -56,12 +61,7 @@
         // the Login form shows. permissions/roles are written by the SDK as a
         // side effect of getProfile and must go with the rest: stale privilege
         // data outliving the session is what drives the next user's UI gating.
-        if (typeof localStorage !== "undefined") {
-            localStorage.removeItem("authToken");
-            localStorage.removeItem("user");
-            localStorage.removeItem("permissions");
-            localStorage.removeItem("roles");
-        }
+        clearLocalSession();
         user.set({signedin: false, locale: $user?.locale});
         throw error;
     });
@@ -79,7 +79,7 @@
          silently and gets revealed once the user signs in. Boot 401s
          from this early mount are silenced by per-callsite log gating;
          the session probe itself no longer contributes one, because it
-         skips the request entirely when there is no stored token. -->
+         skips the request entirely when there is no local session. -->
     <div style="display:none"><slot /></div>
 {:then _}
     {#if !$user || !$user.signedin}

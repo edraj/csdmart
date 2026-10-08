@@ -4,10 +4,15 @@
     import {ListPlaceholder} from 'flowbite-svelte';
     import EntryRenderer from "@/components/management/renderers/EntryRenderer.svelte";
 
+    // Derive from the one param that matters, not from `$params` as a whole:
+    // the list below rewrites `page`/`sort`/`search` query params in place, and
+    // a promise re-created on every `$params` change re-mounted the whole
+    // renderer (and re-fetched the entry) on each page click.
+    const spaceName = $derived($params.space_name as string | undefined);
     let entryPromise = $derived(
-        $params.space_name
+        spaceName
             ? Dmart.retrieveEntry({
-                resource_type: ResourceType.space, space_name: $params.space_name, subpath: "__root__", shortname: $params.space_name, retrieve_json_payload: true, retrieve_attachments: true, validate_schema: true
+                resource_type: ResourceType.space, space_name: spaceName, subpath: "__root__", shortname: spaceName, retrieve_json_payload: true, retrieve_attachments: true, validate_schema: true
             })
             : null
     );
@@ -22,7 +27,7 @@
         <EntryRenderer
             entry={entry!}
             resource_type={ResourceType.space}
-            space_name={$params.space_name}
+            space_name={spaceName ?? ""}
             subpath={'/'}
         />
     {:catch error}

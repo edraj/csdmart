@@ -11,7 +11,7 @@
     "type": "string",
     "width": "20%"
   },
-  "owner_shortname": {
+  "schema_shortname": {
     "path": "attributes.payload.schema_shortname",
     "title": "Schema shortname",
     "type": "string",

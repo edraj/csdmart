@@ -15,6 +15,8 @@
     import { goto } from "@roxi/routify";
     import { Dmart } from "@edraj/tsdmart";
     import { onMount } from "svelte";
+    import { _ } from "@/i18n";
+    import { Level, showToast } from "@/utils/toast";
 
     $goto;
     let gitHash = import.meta.env.VITE_GIT_HASH ?? "N/A";
@@ -22,9 +24,14 @@
     let plugins: string[] = $state([]);
 
     onMount(async () => {
-        const manifest = await Dmart.getManifest();
-        if (manifest?.status === "success") {
-            plugins = manifest.attributes?.plugins ?? [];
+        try {
+            const manifest = await Dmart.getManifest();
+            if (manifest?.status === "success") {
+                plugins = manifest.attributes?.plugins ?? [];
+            }
+        } catch {
+            // The plugin-gated cards simply stay hidden; say why.
+            showToast(Level.warn, $_("manifest_load_failed"));
         }
     });
 </script>

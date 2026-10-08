@@ -159,7 +159,11 @@
             }
             $goto(`${url}`, gotoPayload);
         } catch (error: any) {
-            shortnameUpdateError = error.response.data.error?.info[0]?.failed[0].error || error.response.data.error?.message || "An error occurred while updating the shortname.";
+            shortnameUpdateError =
+                error?.response?.data?.error?.info?.[0]?.failed?.[0]?.error
+                ?? error?.response?.data?.error?.message
+                ?? error?.message
+                ?? "An error occurred while updating the shortname.";
         } finally {
             isUpdatingShortname = false;
         }
