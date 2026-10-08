@@ -1,33 +1,37 @@
 <script lang="ts">
-    import {Button, Card, Checkbox, Input, Label, Select,} from "flowbite-svelte";
-    import {Dmart, QueryType, ResourceType} from "@edraj/tsdmart";
-
+    import { Button, Checkbox, Input, Label, Select } from "flowbite-svelte";
+    import { CloseOutline, PlusOutline, TrashBinOutline } from "flowbite-svelte-icons";
+    import { Dmart, QueryType, ResourceType } from "@edraj/tsdmart";
+    import IconButton from "@/components/ui/IconButton.svelte";
+    import { _ } from "@/i18n";
 
     let {
-        content = $bindable({})
-    } : {
-        content: any
+        content = $bindable({}),
+    }: {
+        content: any;
     } = $props();
 
+    const uid = $props.id();
+
     content = {
-        icon: content.icon || '',
-        icon_closed: content.icon_closed || '',
-        icon_opened: content.icon_opened || '',
-        shortname_title: content.shortname_title || '',
+        icon: content.icon || "",
+        icon_closed: content.icon_closed || "",
+        icon_opened: content.icon_opened || "",
+        shortname_title: content.shortname_title || "",
 
         index_attributes: content.index_attributes || [],
 
         query: content.query || {
-            type: '',
-            search: '',
-            filter_types: []
+            type: "",
+            search: "",
+            filter_types: [],
         },
 
         search_columns: content.search_columns || [],
         csv_columns: content.csv_columns || [],
 
-        sort_by: content.sort_by || '',
-        sort_type: content.sort_type || '',
+        sort_by: content.sort_by || "",
+        sort_type: content.sort_type || "",
 
         content_resource_types: content.content_resource_types || [],
         content_schema_shortnames: content.content_schema_shortnames || [],
@@ -46,14 +50,14 @@
         expand_children: content.expand_children || false,
         disable_filter: content.disable_filter || false,
 
-        ...content
+        ...content,
     };
 
     if (!content.query) content.query = {};
 
-    function addItem(path, template = {}) {
+    function addItem(path: string, template: unknown = {}) {
         let target = content;
-        const parts = path.split('.');
+        const parts = path.split(".");
 
         for (let i = 0; i < parts.length - 1; i++) {
             if (!target[parts[i]]) target[parts[i]] = {};
@@ -64,12 +68,12 @@
         if (!target[lastPart]) target[lastPart] = [];
 
         target[lastPart] = [...target[lastPart], structuredClone(template)];
-        content = {...content};
+        content = { ...content };
     }
 
-    function removeItem(path, index) {
+    function removeItem(path: string, index: number) {
         let target = content;
-        const parts = path.split('.');
+        const parts = path.split(".");
 
         for (let i = 0; i < parts.length - 1; i++) {
             if (!target[parts[i]]) return;
@@ -79,322 +83,323 @@
         const lastPart = parts[parts.length - 1];
         if (!target[lastPart]) return;
 
-        target[lastPart] = target[lastPart].filter((_, i) => i !== index);
-        content = {...content};
+        target[lastPart] = target[lastPart].filter((_: unknown, i: number) => i !== index);
+        content = { ...content };
     }
+
+    function addShortname(listName: "content_schema_shortnames" | "workflow_shortnames", event: Event) {
+        const target = event.target as HTMLSelectElement;
+        if (target.value && !content[listName].includes(target.value)) {
+            content[listName] = [...content[listName], target.value];
+        }
+        target.value = "";
+    }
+
+    function removeShortname(listName: "content_schema_shortnames" | "workflow_shortnames" | "content_resource_types", value: string) {
+        content[listName] = content[listName].filter((v: string) => v !== value);
+    }
+
+    // Dropdowns only need shortnames, so neither query asks for a payload.
+    const schemaOptions = Dmart.query({
+        space_name: "management",
+        type: QueryType.search,
+        subpath: "/schema",
+        search: "",
+        retrieve_json_payload: false,
+        limit: 99,
+    }).then((result) => (result?.records ?? []).map((e) => e.shortname));
+    const workflowOptions = Dmart.query({
+        space_name: "management",
+        type: QueryType.search,
+        subpath: "/workflow",
+        search: "",
+        retrieve_json_payload: false,
+        limit: 99,
+    }).then((result) => (result?.records ?? []).map((e) => e.shortname));
+
+    const options = [
+        { key: "allow_view", label: "allow_resource_view" },
+        { key: "allow_create", label: "allow_resource_creation" },
+        { key: "allow_update", label: "allow_resource_update" },
+        { key: "allow_delete", label: "allow_resource_delete" },
+        { key: "allow_create_category", label: "allow_folder_creation" },
+        { key: "allow_csv", label: "allow_csv_download" },
+        { key: "allow_upload_csv", label: "allow_csv_upload" },
+        { key: "use_media", label: "content_has_media" },
+        { key: "stream", label: "enable_websocket_stream" },
+        { key: "expand_children", label: "expand_children" },
+        { key: "disable_filter", label: "disable_filter" },
+    ];
+
+    const help = "mt-1 text-xs text-text-muted";
+    const section = "rounded-card border border-border p-4 space-y-3";
+    const chip = "inline-flex items-center gap-1 rounded-full bg-primary-soft text-primary ps-3 pe-1 py-0.5 text-sm";
 </script>
 
-<Card class="p-4 max-w-4xl mx-auto my-2">
-    <h2 class="text-xl font-bold mb-4">Folder Schema Editor</h2>
+<div class="w-full max-w-4xl mx-auto rounded-card border border-border bg-surface-2 shadow-card p-4 sm:p-5 my-2">
+    <h2 class="text-lg font-semibold text-text mb-4">{$_("folder_settings")}</h2>
 
     <div class="space-y-6">
         <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
-                <Label for="icon">Folder Main Icon</Label>
-                <Input id="icon" placeholder="Enter icon name" bind:value={content.icon} />
-                <p class="text-sm text-gray-500">The icon displayed next to the folder</p>
+                <Label for="{uid}-icon" class="mb-1.5">{$_("folder_icon")}</Label>
+                <Input id="{uid}-icon" placeholder={$_("icon_name")} bind:value={content.icon} />
+                <p class={help}>{$_("folder_icon_help")}</p>
             </div>
 
             <div>
-                <Label for="icon_closed">Folder Closed Icon</Label>
-                <Input id="icon_closed" placeholder="Enter closed icon name" bind:value={content.icon_closed} />
-                <p class="text-sm text-gray-500">Icon when folder is closed</p>
+                <Label for="{uid}-icon_closed" class="mb-1.5">{$_("folder_closed_icon")}</Label>
+                <Input id="{uid}-icon_closed" placeholder={$_("icon_name")} bind:value={content.icon_closed} />
+                <p class={help}>{$_("folder_closed_icon_help")}</p>
             </div>
 
             <div>
-                <Label for="icon_opened">Folder Opened Icon</Label>
-                <Input id="icon_opened" placeholder="Enter opened icon name" bind:value={content.icon_opened} />
-                <p class="text-sm text-gray-500">Icon when folder is opened</p>
+                <Label for="{uid}-icon_opened" class="mb-1.5">{$_("folder_opened_icon")}</Label>
+                <Input id="{uid}-icon_opened" placeholder={$_("icon_name")} bind:value={content.icon_opened} />
+                <p class={help}>{$_("folder_opened_icon_help")}</p>
             </div>
 
             <div>
-                <Label for="shortname_title">Shortname Field Title</Label>
-                <Input id="shortname_title" placeholder="Shortname field title" bind:value={content.shortname_title} />
+                <Label for="{uid}-shortname_title" class="mb-1.5">{$_("shortname_field_title")}</Label>
+                <Input id="{uid}-shortname_title" placeholder={$_("shortname_field_title")} bind:value={content.shortname_title} />
             </div>
         </div>
 
-        <div class="border p-4 rounded-lg">
-            <h3 class="font-semibold mb-2">Query Settings</h3>
+        <section class={section}>
+            <h3 class="font-semibold text-text">{$_("query_settings")}</h3>
 
             <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
-                    <Label for="query_type">Query Type</Label>
-                    <Select id="query_type" bind:value={content.query.type}>
-                        <option value="subpath">Subpath</option>
-                        <option value="search">Search</option>
+                    <Label for="{uid}-query_type" class="mb-1.5">{$_("query_type")}</Label>
+                    <Select id="{uid}-query_type" bind:value={content.query.type}>
+                        <option value="subpath">{$_("subpath")}</option>
+                        <option value="search">{$_("search")}</option>
                     </Select>
                 </div>
 
                 <div>
-                    <Label for="query_search">Search Query</Label>
-                    <Input id="query_search" placeholder="Enter search query" bind:value={content.query.search} />
+                    <Label for="{uid}-query_search" class="mb-1.5">{$_("search_query")}</Label>
+                    <Input id="{uid}-query_search" placeholder={$_("search_query")} bind:value={content.query.search} />
                 </div>
             </div>
 
-            <div class="mt-3">
-                <Label>Filter Types</Label>
+            <div>
+                <p class="text-sm font-medium text-text mb-1.5">{$_("filter_types")}</p>
                 {#if content.query.filter_types?.length > 0}
                     {#each content.query.filter_types as _filterType, index (index)}
-                        <div class="flex items-center gap-2 mt-1">
-                            <Input bind:value={content.query.filter_types[index]} placeholder="Filter type" />
-                            <Button size="xs" color="red" onclick={() => removeItem('query.filter_types', index)}>Remove</Button>
+                        <div class="flex items-center gap-2 mt-1.5">
+                            <Input bind:value={content.query.filter_types[index]} placeholder={$_("filter_type")} aria-label="{$_('filter_type')} {index + 1}" />
+                            <IconButton size="sm" variant="danger" label={$_("remove_item", { values: { name: String(index + 1) } })} onclick={() => removeItem("query.filter_types", index)}>
+                                <TrashBinOutline size="sm" />
+                            </IconButton>
                         </div>
                     {/each}
                 {/if}
-                <Button size="xs" class="mt-2 text-gray hover:text-gray cursor-pointer" outline onclick={() => addItem('query.filter_types', '')}>Add Filter Type</Button>
+                <Button size="xs" color="alternative" class="mt-2" onclick={() => addItem("query.filter_types", "")}>
+                    <PlusOutline size="xs" class="me-1" aria-hidden="true" />
+                    {$_("add_filter_type")}
+                </Button>
             </div>
-        </div>
+        </section>
 
-        <div class="border p-4 rounded-lg">
-            <h3 class="font-semibold mb-2">Index Attributes</h3>
-            <p class="text-sm text-gray-500 mb-2">The attributes from the schema that should be displayed in index page</p>
-
+        <section class={section}>
+            <h3 class="font-semibold text-text">{$_("index_attributes")}</h3>
+            <p class="text-xs text-text-muted">{$_("index_attributes_help")}</p>
 
             {#if content.index_attributes?.length > 0}
                 {#each content.index_attributes as attribute, index (index)}
-                    <div class="flex items-center gap-2 mt-2 p-2 bg-gray-50 rounded">
-                        <div class="flex-1">
-                            <Input bind:value={attribute.key} placeholder="Key" />
-                        </div>
-                        <div class="flex-1">
-                            <Input bind:value={attribute.name} placeholder="Name" />
-                        </div>
-                        <Button size="xs" color="red" onclick={() => removeItem('index_attributes', index)}>Remove</Button>
+                    <div class="flex items-center gap-2 p-2 rounded-card bg-surface border border-border">
+                        <Input class="grow" bind:value={attribute.key} placeholder={$_("key")} aria-label="{$_('key')} {index + 1}" />
+                        <Input class="grow" bind:value={attribute.name} placeholder={$_("name")} aria-label="{$_('name')} {index + 1}" />
+                        <IconButton size="sm" variant="danger" label={$_("remove_item", { values: { name: String(index + 1) } })} onclick={() => removeItem("index_attributes", index)}>
+                            <TrashBinOutline size="sm" />
+                        </IconButton>
                     </div>
                 {/each}
             {/if}
-            <Button size="sm" class="mt-2 text-gray hover:text-gray cursor-pointer" outline onclick={() => addItem('index_attributes', {key: '', name: ''})}>Add Index Attribute</Button>
-        </div>
+            <Button size="xs" color="alternative" onclick={() => addItem("index_attributes", { key: "", name: "" })}>
+                <PlusOutline size="xs" class="me-1" aria-hidden="true" />
+                {$_("add_index_attribute")}
+            </Button>
+        </section>
 
         <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div class="border p-4 rounded-lg">
-                <h3 class="font-semibold mb-2">Search Columns</h3>
+            <section class={section}>
+                <h3 class="font-semibold text-text">{$_("search_columns")}</h3>
 
                 {#if content.search_columns?.length > 0}
                     {#each content.search_columns as column, index (index)}
-                        <div class="flex items-center gap-2 mt-2">
-                            <div class="flex-1">
-                                <Input bind:value={column.key} placeholder="Key" size="sm" />
-                            </div>
-                            <div class="flex-1">
-                                <Input bind:value={column.name} placeholder="Name" size="sm" />
-                            </div>
-                            <Button size="xs" color="red" onclick={() => removeItem('search_columns', index)}>×</Button>
+                        <div class="flex items-center gap-2">
+                            <Input class="grow" bind:value={column.key} placeholder={$_("key")} size="sm" aria-label="{$_('key')} {index + 1}" />
+                            <Input class="grow" bind:value={column.name} placeholder={$_("name")} size="sm" aria-label="{$_('name')} {index + 1}" />
+                            <IconButton size="sm" variant="danger" label={$_("remove_item", { values: { name: String(index + 1) } })} onclick={() => removeItem("search_columns", index)}>
+                                <TrashBinOutline size="sm" />
+                            </IconButton>
                         </div>
                     {/each}
                 {/if}
-                <Button size="xs" class="mt-2 text-gray hover:text-gray cursor-pointer" outline onclick={() => addItem('search_columns', {key: '', name: ''})}>Add Column</Button>
-            </div>
+                <Button size="xs" color="alternative" onclick={() => addItem("search_columns", { key: "", name: "" })}>
+                    <PlusOutline size="xs" class="me-1" aria-hidden="true" />
+                    {$_("add_column")}
+                </Button>
+            </section>
 
-            <div class="border p-4 rounded-lg">
-                <h3 class="font-semibold mb-2">CSV Columns</h3>
+            <section class={section}>
+                <h3 class="font-semibold text-text">{$_("csv_columns")}</h3>
 
                 {#if content.csv_columns?.length > 0}
                     {#each content.csv_columns as column, index (index)}
-                        <div class="flex items-center gap-2 mt-2">
-                            <div class="flex-1">
-                                <Input bind:value={column.key} placeholder="Key" size="sm" />
-                            </div>
-                            <div class="flex-1">
-                                <Input bind:value={column.name} placeholder="Name" size="sm" />
-                            </div>
-                            <Button size="xs" color="red" onclick={() => removeItem('csv_columns', index)}>×</Button>
+                        <div class="flex items-center gap-2">
+                            <Input class="grow" bind:value={column.key} placeholder={$_("key")} size="sm" aria-label="{$_('key')} {index + 1}" />
+                            <Input class="grow" bind:value={column.name} placeholder={$_("name")} size="sm" aria-label="{$_('name')} {index + 1}" />
+                            <IconButton size="sm" variant="danger" label={$_("remove_item", { values: { name: String(index + 1) } })} onclick={() => removeItem("csv_columns", index)}>
+                                <TrashBinOutline size="sm" />
+                            </IconButton>
                         </div>
                     {/each}
                 {/if}
-                <Button size="xs" class="mt-2 text-gray hover:text-gray cursor-pointer" outline onclick={() => addItem('csv_columns', {key: '', name: ''})}>Add Column</Button>
-            </div>
+                <Button size="xs" color="alternative" onclick={() => addItem("csv_columns", { key: "", name: "" })}>
+                    <PlusOutline size="xs" class="me-1" aria-hidden="true" />
+                    {$_("add_column")}
+                </Button>
+            </section>
         </div>
 
         <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
-                <Label for="sort_by">Sort By</Label>
-                <Input id="sort_by" placeholder="Field name for sorting" bind:value={content.sort_by} />
+                <Label for="{uid}-sort_by" class="mb-1.5">{$_("sort_by")}</Label>
+                <Input id="{uid}-sort_by" placeholder={$_("sort_by_help")} bind:value={content.sort_by} />
             </div>
 
             <div>
-                <Label for="sort_type">Sort Order</Label>
-                <Select id="sort_type" bind:value={content.sort_type}>
-                    <option value="ascending">Ascending</option>
-                    <option value="descending">Descending</option>
+                <Label for="{uid}-sort_type" class="mb-1.5">{$_("sort_order")}</Label>
+                <Select id="{uid}-sort_type" bind:value={content.sort_type}>
+                    <option value="ascending">{$_("ascending")}</option>
+                    <option value="descending">{$_("descending")}</option>
                 </Select>
             </div>
         </div>
 
         <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div class="border p-3 rounded-md">
-                <h3 class="font-semibold mb-2">Content Resource Types</h3>
+            <section class={section}>
+                <h3 class="font-semibold text-text">{$_("content_resource_types")}</h3>
 
-                <div class="mb-3">
-                    <div class="flex flex-wrap gap-1 mt-1">
+                {#if content.content_resource_types.length > 0}
+                    <ul class="flex flex-wrap gap-1.5" aria-label={$_("content_resource_types")}>
                         {#each content.content_resource_types as type (type)}
-                <span class="bg-blue-100 text-blue-800 px-2 py-1 text-xs rounded-md flex items-center gap-1">
-                    {type}
-                    <button type="button" class="text-xs" onclick={() => {
-                        content.content_resource_types = content.content_resource_types.filter(t => t !== type);
-                    }}>×</button>
-                </span>
+                            <li class={chip}>
+                                {type}
+                                <IconButton size="sm" class="text-primary hover:bg-primary/10" label={$_("remove_item", { values: { name: type } })} onclick={() => removeShortname("content_resource_types", type)}>
+                                    <CloseOutline size="xs" />
+                                </IconButton>
+                            </li>
                         {/each}
-                    </div>
-                </div>
+                    </ul>
+                {/if}
 
-                <div class="border rounded-md p-2 max-h-48 overflow-y-auto bg-white">
+                <div class="rounded-card border border-border bg-surface p-2 max-h-48 overflow-y-auto">
                     {#each Object.values(ResourceType) as type (type)}
-                        <div class="flex items-center mb-2">
+                        <div class="flex items-center gap-2 mb-2">
                             <Checkbox
-                                    id={`resource-type-${type}`}
-                                    checked={content.content_resource_types.includes(type)}
-                                    onclick={() => {
-                        if (content.content_resource_types.includes(type)) {
-                            content.content_resource_types = content.content_resource_types.filter(t => t !== type);
-                        } else {
-                            content.content_resource_types = [...content.content_resource_types, type];
-                        }
-                    }}
+                                id="{uid}-resource-type-{type}"
+                                checked={content.content_resource_types.includes(type)}
+                                onchange={() => {
+                                    if (content.content_resource_types.includes(type)) {
+                                        content.content_resource_types = content.content_resource_types.filter((t: string) => t !== type);
+                                    } else {
+                                        content.content_resource_types = [...content.content_resource_types, type];
+                                    }
+                                }}
                             />
-                            <Label for={`resource-type-${type}`} class="ml-2">{type}</Label>
+                            <Label for="{uid}-resource-type-{type}" class="mb-0 font-normal">{type}</Label>
                         </div>
                     {/each}
                 </div>
-            </div>
+            </section>
 
-            <div class="border p-3 rounded-md">
-                <h3 class="font-semibold mb-2">Schema Shortnames</h3>
+            <section class={section}>
+                <h3 class="font-semibold text-text">{$_("schema_shortnames")}</h3>
 
-                <div class="mb-3">
-                    <div class="flex flex-wrap gap-1 mt-1">
+                {#if content.content_schema_shortnames.length > 0}
+                    <ul class="flex flex-wrap gap-1.5" aria-label={$_("schema_shortnames")}>
                         {#each content.content_schema_shortnames as schema (schema)}
-                <span class="bg-blue-100 text-blue-800 px-2 py-1 text-xs rounded-md flex items-center gap-1">
-                    {schema}
-                    <button type="button" class="text-xs" onclick={() => {
-                        content.content_schema_shortnames = content.content_schema_shortnames.filter(s => s !== schema);
-                    }}>×</button>
-                </span>
+                            <li class={chip}>
+                                {schema}
+                                <IconButton size="sm" class="text-primary hover:bg-primary/10" label={$_("remove_item", { values: { name: schema } })} onclick={() => removeShortname("content_schema_shortnames", schema)}>
+                                    <CloseOutline size="xs" />
+                                </IconButton>
+                            </li>
                         {/each}
-                    </div>
-                </div>
+                    </ul>
+                {/if}
 
-                <Select class="mb-2" onclick={(e) => {
-                    const target = e.target as HTMLSelectElement;
-                    if (target.value && !content.content_schema_shortnames.includes(target.value)) {
-                        content.content_schema_shortnames = [...content.content_schema_shortnames, target.value];
-                        target.value = "";
-                    }
-                }}>
-                    {#await Dmart.query({ space_name: "management", type: QueryType.search, subpath: "/schema", search: "", retrieve_json_payload: true, limit: 99 }) then schemas}
-                        {#each (schemas?.records ?? []).map(e => e.shortname) as schema (schema)}
+                <Label for="{uid}-add-schema" class="sr-only">{$_("schema_shortnames")}</Label>
+                <Select id="{uid}-add-schema" onchange={(e) => addShortname("content_schema_shortnames", e)}>
+                    <option value="">{$_("select_schema")}</option>
+                    {#await schemaOptions then schemas}
+                        {#each schemas as schema (schema)}
                             <option value={schema}>{schema}</option>
                         {/each}
                     {/await}
                 </Select>
 
-                <hr class="my-4" />
+                <h3 class="font-semibold text-text pt-2 border-t border-border">{$_("workflow_shortnames")}</h3>
 
-                <h3 class="font-semibold mb-2">Workflow Shortnames</h3>
-
-                <div class="mb-3">
-                    <div class="flex flex-wrap gap-1 mt-1">
+                {#if content.workflow_shortnames.length > 0}
+                    <ul class="flex flex-wrap gap-1.5" aria-label={$_("workflow_shortnames")}>
                         {#each content.workflow_shortnames as workflow (workflow)}
-                <span class="bg-blue-100 text-blue-800 px-2 py-1 text-xs rounded-md flex items-center gap-1">
-                    {workflow}
-                    <button type="button" class="text-xs" onclick={() => {
-                        content.workflow_shortnames = content.workflow_shortnames.filter(w => w !== workflow);
-                    }}>×</button>
-                </span>
+                            <li class={chip}>
+                                {workflow}
+                                <IconButton size="sm" class="text-primary hover:bg-primary/10" label={$_("remove_item", { values: { name: workflow } })} onclick={() => removeShortname("workflow_shortnames", workflow)}>
+                                    <CloseOutline size="xs" />
+                                </IconButton>
+                            </li>
                         {/each}
-                    </div>
-                </div>
+                    </ul>
+                {/if}
 
-                <Select class="mb-2" onclick={(e) => {
-                        const target = e.target as HTMLSelectElement;
-                        if (target.value && !content.workflow_shortnames.includes(target.value)) {
-                            content.workflow_shortnames = [...content.workflow_shortnames, target.value];
-                            target.value = "";
-                        }
-                    }}>
-                    {#await Dmart.query({ space_name: "management", type: QueryType.search, subpath: "/workflow", search: "", retrieve_json_payload: true, limit: 99 }) then workflows}
-                        {#each (workflows?.records ?? []).map(e => e.shortname) as workflow (workflow)}
+                <Label for="{uid}-add-workflow" class="sr-only">{$_("workflow_shortnames")}</Label>
+                <Select id="{uid}-add-workflow" onchange={(e) => addShortname("workflow_shortnames", e)}>
+                    <option value="">{$_("select_workflow")}</option>
+                    {#await workflowOptions then workflows}
+                        {#each workflows as workflow (workflow)}
                             <option value={workflow}>{workflow}</option>
                         {/each}
                     {/await}
                 </Select>
-            </div>
-
+            </section>
         </div>
 
-            <div class="border p-3 rounded-md">
-                <h3 class="font-semibold mb-2">PDF Schema Shortnames</h3>
+        <section class={section}>
+            <h3 class="font-semibold text-text">{$_("pdf_schema_shortnames")}</h3>
 
-                {#if content.enable_pdf_schema_shortnames?.length > 0}
-                    {#each content.enable_pdf_schema_shortnames as _shortname, index (index)}
-                        <div class="flex items-center gap-2 mt-1">
-                            <Input bind:value={content.enable_pdf_schema_shortnames[index]} placeholder="Schema shortname" />
-                            <Button size="xs" color="red" onclick={() => removeItem('enable_pdf_schema_shortnames', index)}>×</Button>
-                        </div>
-                    {/each}
-                {/if}
-                <Button size="xs" class="mt-2 text-gray hover:text-gray cursor-pointer" outline onclick={() => addItem('enable_pdf_schema_shortnames', '')}>Add PDF Schema Shortname</Button>
-            </div>
+            {#if content.enable_pdf_schema_shortnames?.length > 0}
+                {#each content.enable_pdf_schema_shortnames as _shortname, index (index)}
+                    <div class="flex items-center gap-2">
+                        <Input class="grow" bind:value={content.enable_pdf_schema_shortnames[index]} placeholder={$_("schema_shortname")} aria-label="{$_('schema_shortname')} {index + 1}" />
+                        <IconButton size="sm" variant="danger" label={$_("remove_item", { values: { name: String(index + 1) } })} onclick={() => removeItem("enable_pdf_schema_shortnames", index)}>
+                            <TrashBinOutline size="sm" />
+                        </IconButton>
+                    </div>
+                {/each}
+            {/if}
+            <Button size="xs" color="alternative" onclick={() => addItem("enable_pdf_schema_shortnames", "")}>
+                <PlusOutline size="xs" class="me-1" aria-hidden="true" />
+                {$_("add_pdf_schema_shortname")}
+            </Button>
+        </section>
 
-        <div class="border p-4 rounded-lg">
-            <h3 class="font-semibold mb-2">Folder Options</h3>
+        <section class={section}>
+            <h3 class="font-semibold text-text">{$_("folder_options")}</h3>
 
             <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
-                <div class="flex items-center">
-                    <Checkbox id="allow_view" bind:checked={content.allow_view} />
-                    <Label for="allow_view" class="ml-2">Allow resource view</Label>
-                </div>
-
-                <div class="flex items-center">
-                    <Checkbox id="allow_create" bind:checked={content.allow_create} />
-                    <Label for="allow_create" class="ml-2">Allow resource creation</Label>
-                </div>
-
-                <div class="flex items-center">
-                    <Checkbox id="allow_update" bind:checked={content.allow_update} />
-                    <Label for="allow_update" class="ml-2">Allow resource update</Label>
-                </div>
-
-                <div class="flex items-center">
-                    <Checkbox id="allow_delete" bind:checked={content.allow_delete} />
-                    <Label for="allow_delete" class="ml-2">Allow resource delete</Label>
-                </div>
-
-                <div class="flex items-center">
-                    <Checkbox id="allow_create_category" bind:checked={content.allow_create_category} />
-                    <Label for="allow_create_category" class="ml-2">Allow folder creation</Label>
-                </div>
-
-                <div class="flex items-center">
-                    <Checkbox id="allow_csv" bind:checked={content.allow_csv} />
-                    <Label for="allow_csv" class="ml-2">Allow CSV download</Label>
-                </div>
-
-                <div class="flex items-center">
-                    <Checkbox id="allow_upload_csv" bind:checked={content.allow_upload_csv} />
-                    <Label for="allow_upload_csv" class="ml-2">Allow CSV upload</Label>
-                </div>
-
-                <div class="flex items-center">
-                    <Checkbox id="use_media" bind:checked={content.use_media} />
-                    <Label for="use_media" class="ml-2">Content has media</Label>
-                </div>
-
-                <div class="flex items-center">
-                    <Checkbox id="stream" bind:checked={content.stream} />
-                    <Label for="stream" class="ml-2">Enable websocket stream</Label>
-                </div>
-
-                <div class="flex items-center">
-                    <Checkbox id="expand_children" bind:checked={content.expand_children} />
-                    <Label for="expand_children" class="ml-2">Expand children</Label>
-                </div>
-
-                <div class="flex items-center">
-                    <Checkbox id="disable_filter" bind:checked={content.disable_filter} />
-                    <Label for="disable_filter" class="ml-2">Disable filter</Label>
-                </div>
+                {#each options as option (option.key)}
+                    <div class="flex items-center gap-2">
+                        <Checkbox id="{uid}-{option.key}" bind:checked={content[option.key]} />
+                        <Label for="{uid}-{option.key}" class="mb-0 font-normal">{$_(option.label)}</Label>
+                    </div>
+                {/each}
             </div>
-        </div>
+        </section>
     </div>
-</Card>
+</div>

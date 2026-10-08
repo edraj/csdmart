@@ -1,530 +1,382 @@
 <script lang="ts">
-  import {
-    ContentType,
-    Dmart,
-    RequestType,
-    ResourceType,
-  } from "@edraj/tsdmart";
-  import { Level, showToast } from "@/utils/toast";
-  import {
-    Badge,
-    Button,
-    Card,
-    CardPlaceholder,
-    Dropdown,
-    DropdownItem,
-    Modal,
-  } from "flowbite-svelte";
-  import { JSONEditor, Mode } from "svelte-jsoneditor";
-  import { AxiosError } from "axios";
-  import {
-    DotsHorizontalOutline,
-    EyeOutline,
-    EyeSolid,
-    FileCsvOutline,
-    FileImageOutline,
-    FileLinesOutline,
-    FileLinesSolid,
-    FileMusicSolid,
-    FileOutline,
-    FileVideoSolid,
-    ListOutline,
-    PenSolid,
-    TrashBinSolid,
-    UploadOutline,
-  } from "flowbite-svelte-icons";
-  import ModalViewAttachments from "@/components/management/Modals/ModalViewAttachments.svelte";
-  import { getFileExtension } from "@/utils/getFileExtension";
-  import ModalCreateAttachments from "@/components/management/Modals/ModalCreateAttachments.svelte";
-  import Prism from "@/components/Prism.svelte";
-  import { currentEntry } from "@/stores/global";
-  import { untrack } from "svelte";
+    import { ContentType, Dmart, RequestType, ResourceType } from "@edraj/tsdmart";
+    import { Level, showToast } from "@/utils/toast";
+    import { Button, Dropdown, DropdownItem, Modal } from "flowbite-svelte";
+    import {
+        DotsHorizontalOutline,
+        EyeOutline,
+        FileCsvOutline,
+        FileImageOutline,
+        FileLinesOutline,
+        FileLinesSolid,
+        FileMusicSolid,
+        FileOutline,
+        FileVideoSolid,
+        ListOutline,
+        PenOutline,
+        TrashBinOutline,
+        UploadOutline,
+    } from "flowbite-svelte-icons";
+    import ModalViewAttachments from "@/components/management/Modals/ModalViewAttachments.svelte";
+    import { getFileExtension } from "@/utils/getFileExtension";
+    import ConfirmDialog from "@/components/ui/ConfirmDialog.svelte";
+    import EmptyState from "@/components/ui/EmptyState.svelte";
+    import IconButton from "@/components/ui/IconButton.svelte";
+    import Lazy from "@/components/ui/Lazy.svelte";
+    import LazyJsonEditor from "@/components/ui/LazyJsonEditor.svelte";
+    import { formatDate } from "@/utils/format";
+    import { localizedText } from "@/utils/localized";
+    import { _ } from "@/i18n";
 
-  let {
-    attachments = [],
-    resource_type,
-    space_name,
-    subpath,
-    parent_shortname,
-  }: {
-    attachments: any;
-    resource_type: ResourceType;
-    space_name: string;
-    subpath: string;
-    parent_shortname: string;
-    refreshEntry: any;
-  } = $props();
+    let {
+        attachments = {},
+        resource_type,
+        space_name,
+        subpath,
+        parent_shortname,
+        refreshEntry,
+    }: {
+        attachments: Record<string, unknown>;
+        resource_type: ResourceType;
+        space_name: string;
+        subpath: string;
+        parent_shortname: string;
+        refreshEntry: () => Promise<void> | void;
+    } = $props();
 
-  async function fetchDataAssetsForAttachments() {
-    for (const attachment of filteredAttachments) {
-      if (["csv", "parquet", "jsonl"].includes(attachment.resource_type)) {
-        const r = await Dmart.fetchDataAsset({
-          resourceType: resource_type,
-          dataAssetType: attachment.resource_type,
-          spaceName: space_name,
-          subpath: subpath,
-          shortname: parent_shortname,
-          query_string: `SELECT * FROM '${attachment.shortname}'`,
-        });
-        if (!(r instanceof AxiosError)) {
-          attachment.dataAsset = r;
-        } else {
-          attachment.dataAsset = {
-            code: (r as any).response?.data?.error?.code,
-            message: (r as any).response?.data?.error?.message,
-          };
-          if ((r as any).response?.data?.error?.info?.length > 0) {
-            attachment.dataAsset.details = (r as any).response?.data?.error?.info[0].msg;
-          }
+    // Element ids for the per-card menus must be unique per instance.
+    const uid = $props.id();
+
+    // ── Grouping by content type ────────────────────────────────────────────
+    const allAttachments = $derived((Object.values(attachments ?? {}) as any[][]).flat(1));
+    const contentTypeGroups = $derived.by(() => {
+        const groups: Record<string, any[]> = {};
+        for (const attachment of allAttachments) {
+            let contentType = "other";
+            if (attachment.resource_type === ResourceType.media && attachment.attributes?.payload?.content_type) {
+                contentType = attachment.attributes.payload.content_type;
+            } else if (attachment.resource_type === ResourceType.csv) {
+                contentType = "csv";
+            } else if (attachment.resource_type === ResourceType.json) {
+                contentType = "json";
+            } else if (attachment.resource_type === ResourceType.comment) {
+                contentType = "comment";
+            }
+            (groups[contentType] ??= []).push(attachment);
         }
-      } else if (attachment.resource_type === "sqlite") {
-        const tables = await Dmart.fetchDataAsset({
-          resourceType: resource_type,
-          dataAssetType: attachment.resource_type,
-          spaceName: space_name,
-          subpath,
-          shortname: parent_shortname,
-          query_string: "SELECT * FROM temp.information_schema.tables",
-          filter_data_assets: [attachment.shortname],
-        });
-        attachment.dataAsset = (
-          await Promise.all(
-            tables.map(async (table) => {
-              const r = await Dmart.fetchDataAsset({
-                resourceType: resource_type,
-                dataAssetType: attachment.resource_type,
-                spaceName: space_name,
-                subpath: subpath,
-                shortname: parent_shortname,
-                query_string: `SELECT * FROM '${table.table_name}' LIMIT 10`,
-                filter_data_assets: [attachment.shortname],
-              });
-              return r instanceof AxiosError
-                ? null
-                : { table_name: table.table_name, rows: r };
-            }),
-          )
-        ).filter((item) => item !== null);
-      }
-    }
-  }
-
-  let isModalInUpdateMode = $state(false);
-  let openViewAttachmentModal = $state(false);
-
-  let content = $state({
-    json: {},
-    text: undefined,
-  });
-
-  let isDeleteLoading = $state(false);
-  let modelError: any = $state(null);
-  async function handleDelete(item: {
-    shortname: string;
-    subpath: string;
-    resource_type: ResourceType;
-  }) {
-    const request_dict = {
-      space_name,
-      request_type: RequestType.delete,
-      records: [
-        {
-          resource_type: item.resource_type,
-          shortname: item.shortname,
-          subpath: `${item.subpath}/${parent_shortname}`,
-          attributes: {},
-        },
-      ],
-    };
-    try {
-      isDeleteLoading = true;
-      modelError = null;
-      const response = await Dmart.request(request_dict);
-      if (response.status === "success") {
-        showToast(
-          Level.info,
-          `Attachment ${item.shortname} deleted successfully.`,
-        );
-        $currentEntry?.refreshEntry();
-        openCreateAttachmentModal = false;
-        openDeleteModal = false;
-      } else {
-        showToast(Level.warn);
-        modelError = response;
-      }
-    } catch (error: any) {
-      modelError = error.response?.data?.error;
-      showToast(Level.warn);
-    } finally {
-      isDeleteLoading = false;
-    }
-  }
-
-  function handleEditModal(attachment) {
-    selectedAttachment = attachment;
-    isModalInUpdateMode = true;
-    openCreateAttachmentModal = true;
-  }
-
-  function handleRenderMenu(items: any, _context: any) {
-    items = items.filter(
-      (item) => !["tree", "text", "table"].includes(item.text),
+        return groups;
+    });
+    let selectedFilter = $state("all");
+    const filteredAttachments = $derived(
+        selectedFilter === "all" ? allAttachments : (contentTypeGroups[selectedFilter] ?? allAttachments),
     );
-    const separator = {
-      separator: true,
-    };
 
-    const itemsWithoutSpace = items.slice(0, items.length - 2);
-    return itemsWithoutSpace.concat([
-      separator,
-      {
-        space: true,
-      },
-    ]);
-  }
-
-  function viewMeta(attachment) {
-    selectedAttachment = attachment;
-    content = {
-      json: attachment,
-      text: undefined,
-    };
-    openViewAttachmentModal = true;
-  }
-
-  function editAttachment(attachment) {
-    selectedAttachment = attachment;
-    handleEditModal(selectedAttachment);
-  }
-
-  function confirmDelete(attachment) {
-    selectedAttachment = attachment;
-    modelError = null;
-    openDeleteModal = true;
-  }
-
-  let openDeleteModal = $state(false);
-  let openViewContentModal = $state(false);
-  let openCreateAttachmentModal = $state(false);
-  let selectedAttachment: any = $state(null);
-
-  function handleViewContentModal(attachment) {
-    selectedAttachment = attachment;
-    openViewContentModal = true;
-  }
-
-  $effect(() => {
-    if (selectedFilter === "all") {
-      filteredAttachments = Object.values(attachments).flat(1);
-    } else {
-      filteredAttachments = attachments[selectedFilter] || [];
+    function attachmentKey(attachment: any): string {
+        return attachment.uuid ?? `${attachment.resource_type}:${attachment.shortname}`;
     }
-  });
 
-  let createMetaContent = $state({});
-  let createPayloadContent = $state({});
-  function handleCreateAttachmentModal(e) {
-    e.stopPropagation();
-    isModalInUpdateMode = false;
-    selectedAttachment = null;
-    createMetaContent = {};
-    createPayloadContent = {};
-    openCreateAttachmentModal = true;
-  }
-
-  let selectedFilter = $state("all");
-  // svelte-ignore state_referenced_locally
-  let filteredAttachments: any = $state(Object.values(attachments).flat(1));
-  let contentTypeGroups: any = $state({});
-
-  function groupAttachmentsByContentType() {
-    const allAttachments = Object.values(attachments).flat(1);
-    const groups = { all: allAttachments };
-
-    allAttachments.forEach((attachment: any) => {
-      let contentType = "other";
-
-      if (
-        attachment.resource_type === ResourceType.media &&
-        attachment.attributes?.payload?.content_type
-      ) {
-        contentType = attachment.attributes.payload.content_type;
-      } else if (attachment.resource_type === ResourceType.csv) {
-        contentType = "csv";
-      } else if (attachment.resource_type === ResourceType.json) {
-        contentType = "json";
-      } else if (attachment.resource_type === ResourceType.comment) {
-        contentType = "comment";
-      }
-
-      groups[contentType] = groups[contentType] || [];
-      groups[contentType].push(attachment);
-    });
-
-    return groups;
-  }
-  $effect(() => {
-    contentTypeGroups = groupAttachmentsByContentType();
-    untrack(() => {
-      filteredAttachments =
-        contentTypeGroups[selectedFilter] || contentTypeGroups.all;
-    });
-  });
-  $effect(() => {
-    if (selectedFilter) {
-      untrack(() => {
-        filteredAttachments =
-          contentTypeGroups[selectedFilter] || contentTypeGroups.all;
-      });
+    // ── View meta ───────────────────────────────────────────────────────────
+    let openViewAttachmentModal = $state(false);
+    let metaContent = $state<{ json: unknown; text?: undefined }>({ json: {} });
+    function viewMeta(attachment: any) {
+        selectedAttachment = attachment;
+        metaContent = { json: attachment, text: undefined };
+        openViewAttachmentModal = true;
     }
-  });
+
+    // ── View content ────────────────────────────────────────────────────────
+    let openViewContentModal = $state(false);
+    function viewContent(attachment: any) {
+        selectedAttachment = attachment;
+        openViewContentModal = true;
+    }
+
+    // ── Create / edit ───────────────────────────────────────────────────────
+    let isModalInUpdateMode = $state(false);
+    let openCreateAttachmentModal = $state(false);
+    let selectedAttachment: any = $state(null);
+    let createMetaContent = $state({});
+    let createPayloadContent = $state({});
+
+    function editAttachment(attachment: any) {
+        selectedAttachment = attachment;
+        isModalInUpdateMode = true;
+        openCreateAttachmentModal = true;
+    }
+
+    function addAttachment() {
+        isModalInUpdateMode = false;
+        selectedAttachment = null;
+        createMetaContent = {};
+        createPayloadContent = {};
+        openCreateAttachmentModal = true;
+    }
+
+    // ── Delete ──────────────────────────────────────────────────────────────
+    let openDeleteModal = $state(false);
+    let isDeleteLoading = $state(false);
+    let deleteError: unknown = $state(null);
+
+    function confirmDelete(attachment: any) {
+        selectedAttachment = attachment;
+        deleteError = null;
+        openDeleteModal = true;
+    }
+
+    async function handleDelete() {
+        const item = selectedAttachment;
+        if (!item) return;
+        const request_dict = {
+            space_name,
+            request_type: RequestType.delete,
+            records: [
+                {
+                    resource_type: item.resource_type as ResourceType,
+                    shortname: item.shortname,
+                    subpath: `${item.subpath}/${parent_shortname}`,
+                    attributes: {},
+                },
+            ],
+        };
+        try {
+            isDeleteLoading = true;
+            deleteError = null;
+            const response = await Dmart.request(request_dict);
+            if (response.status === "success") {
+                showToast(Level.info, $_("attachment_deleted", { values: { shortname: item.shortname } }));
+                await refreshEntry();
+                openDeleteModal = false;
+            } else {
+                showToast(Level.warn);
+                deleteError = response;
+            }
+        } catch (error: unknown) {
+            deleteError = error;
+            showToast(Level.warn);
+        } finally {
+            isDeleteLoading = false;
+        }
+    }
+
+    function handleRenderMenu(items: any[]) {
+        items = items.filter((item) => !["tree", "text", "table"].includes(item.text));
+        const itemsWithoutSpace = items.slice(0, items.length - 2);
+        return itemsWithoutSpace.concat([{ separator: true }, { space: true }]);
+    }
+
+    const chipBase =
+        "inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium cursor-pointer transition-colors whitespace-nowrap";
+    const chipOn = "border-primary bg-primary text-text-on-primary";
+    const chipOff = "border-border bg-surface-2 text-text-muted hover:bg-surface-3 hover:text-text";
 </script>
 
-<Modal bind:open={openViewAttachmentModal} size="lg">
-  <div class="p-6">
-    <JSONEditor
-      onRenderMenu={handleRenderMenu}
-      mode={Mode.text}
-      {content}
-      readOnly={true}
-    />
-  </div>
+<Modal bind:open={openViewAttachmentModal} size="lg" title={$_("attachment_metadata")} class="rounded-modal shadow-modal">
+    <LazyJsonEditor onRenderMenu={handleRenderMenu} mode="text" content={metaContent} readOnly={true} />
 </Modal>
 
+<div class="flex flex-col gap-4 w-full">
+    <div class="flex flex-wrap items-center justify-between gap-3">
+        <div class="flex flex-wrap items-center gap-2" role="group" aria-label={$_("filter_by_type")}>
+            <button
+                type="button"
+                class="{chipBase} {selectedFilter === 'all' ? chipOn : chipOff}"
+                aria-pressed={selectedFilter === "all"}
+                onclick={() => (selectedFilter = "all")}
+            >
+                <ListOutline size="sm" aria-hidden="true" />
+                {$_("all")}
+                <span class="tabular-nums opacity-80">({allAttachments.length})</span>
+            </button>
 
-{#await fetchDataAssetsForAttachments()}
-  <div class="flex flex-row">
-    <CardPlaceholder size="md" class="mt-8" />
-    <CardPlaceholder size="md" class="mt-8" />
-    <CardPlaceholder size="md" class="mt-8" />
-  </div>
-{:then _}
-  <div class="d-flex justify-content-center flex-column px-5 mt-2">
-    <div class="flex justify-between">
-      <div>
-        <Badge
-          class={selectedFilter === "all"
-            ? "m-1 bg-primary text-white"
-            : "m-1 bg-[#F5F5FF] text-primary"}
-          style="cursor: pointer;"
-          onclick={() => {
-            selectedFilter = "all";
-          }}
-        >
-          <ListOutline size="lg" />
-          ALL ({contentTypeGroups.all?.length || 0})
-        </Badge>
+            {#each Object.keys(contentTypeGroups) as contentType (contentType)}
+                <button
+                    type="button"
+                    class="{chipBase} {selectedFilter === contentType ? chipOn : chipOff}"
+                    aria-pressed={selectedFilter === contentType}
+                    onclick={() => (selectedFilter = contentType)}
+                >
+                    {#if contentType === ContentType.image}
+                        <FileImageOutline size="sm" aria-hidden="true" />
+                    {:else if contentType === ContentType.audio}
+                        <FileMusicSolid size="sm" aria-hidden="true" />
+                    {:else if contentType === ContentType.video}
+                        <FileVideoSolid size="sm" aria-hidden="true" />
+                    {:else if contentType === ContentType.text || contentType === ContentType.markdown || contentType === ContentType.html}
+                        <FileLinesSolid size="sm" aria-hidden="true" />
+                    {:else if contentType === "csv"}
+                        <FileCsvOutline size="sm" aria-hidden="true" />
+                    {:else}
+                        <FileOutline size="sm" aria-hidden="true" />
+                    {/if}
+                    {contentType}
+                    <span class="tabular-nums opacity-80">({contentTypeGroups[contentType]?.length || 0})</span>
+                </button>
+            {/each}
+        </div>
 
-        {#each Object.keys(contentTypeGroups).filter((key) => key !== "all") as contentType (contentType)}
-          <Badge
-            class={selectedFilter === contentType
-              ? "m-1 bg-primary text-white"
-              : "m-1 bg-[#F5F5FF] text-black"}
-            style="cursor: pointer;"
-            onclick={() => {
-              selectedFilter = contentType;
-            }}
-          >
-            <span class="inline-flex items-center gap-2">
-              {#if contentType === ContentType.image}
-                <FileImageOutline size="lg" />
-              {:else if contentType === ContentType.audio}
-                <FileMusicSolid size="lg" />
-              {:else if contentType === ContentType.video}
-                <FileVideoSolid size="lg" />
-              {:else if contentType === ContentType.text || contentType === ContentType.markdown || contentType === ContentType.html}
-                <FileLinesSolid size="lg" />
-              {:else if contentType === "csv"}
-                <FileCsvOutline size="lg" />
-              {:else}
-                <FileOutline size="lg" />
-              {/if}
-              {contentType.toUpperCase()} ({contentTypeGroups[contentType]
-                ?.length || 0})
-            </span>
-          </Badge>
-        {/each}
-      </div>
-
-      <!-- Keep the upload button as is -->
-      <div class="flex items-center gap-2">
-        <Button
-          class="text-primary cursor-pointer hover:bg-primary hover:text-white"
-          outline
-          onclick={handleCreateAttachmentModal}
-        >
-          <UploadOutline size="md" class="mr-2" />
-          <strong>UPLOAD</strong>
+        <Button size="sm" color="primary" onclick={addAttachment}>
+            <UploadOutline size="sm" class="me-1.5" aria-hidden="true" />
+            {$_("upload")}
         </Button>
-      </div>
     </div>
 
-    <div
-      class="my-5 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-4 gap-4 w-full place-items-center"
-    >
-      {#each filteredAttachments as attachment (attachment.uuid ?? `${attachment.resource_type}:${attachment.shortname}`)}
-        <Card class="relative w-full">
-          <div class="absolute top-2 left-2">
-            <Button class="!p-1" color="light">
-              <DotsHorizontalOutline />
-              <Dropdown simple>
-                <DropdownItem
-                  class="w-full"
-                  onclick={() => viewMeta(attachment)}
-                >
-                  <div class="flex items-center gap-2">
-                    <EyeSolid size="sm" /> View Meta
-                  </div>
-                </DropdownItem>
-                <DropdownItem
-                  class="w-full"
-                  onclick={() => editAttachment(attachment)}
-                >
-                  <div class="flex items-center gap-2">
-                    <PenSolid size="sm" /> Edit
-                  </div>
-                </DropdownItem>
-                <DropdownItem
-                  class="w-full"
-                  onclick={() => confirmDelete(attachment)}
-                >
-                  <div class="flex items-center gap-2 text-red-600">
-                    <TrashBinSolid size="sm" /> Delete
-                  </div>
-                </DropdownItem>
-              </Dropdown>
+    {#if filteredAttachments.length === 0}
+        <EmptyState title={$_("no_attachments")} hint={$_("no_attachments_hint")}>
+            <Button size="sm" color="alternative" onclick={addAttachment}>
+                <UploadOutline size="sm" class="me-1.5" aria-hidden="true" />
+                {$_("upload")}
             </Button>
-          </div>
+        </EmptyState>
+    {:else}
+        <ul class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 w-full" role="list">
+            {#each filteredAttachments as attachment, index (attachmentKey(attachment))}
+                {@const name = localizedText(attachment.attributes?.displayname, attachment.shortname)}
+                {@const description = localizedText(attachment.attributes?.description, "")}
+                {@const contentType = attachment.attributes?.payload?.content_type}
+                <li class="relative flex flex-col rounded-card border border-border bg-surface-2 shadow-card p-4">
+                    <div class="flex items-start justify-between gap-2">
+                        <span
+                            class="inline-flex items-center justify-center w-10 h-10 rounded-control bg-primary-soft text-primary"
+                            aria-hidden="true"
+                        >
+                            {#if attachment.resource_type === ResourceType.media}
+                                {#if contentType === ContentType.image}
+                                    <FileImageOutline size="lg" />
+                                {:else if contentType === ContentType.audio}
+                                    <FileMusicSolid size="lg" />
+                                {:else if contentType === ContentType.video}
+                                    <FileVideoSolid size="lg" />
+                                {:else if [ContentType.text, ContentType.markdown, ContentType.html].includes(contentType)}
+                                    <FileLinesSolid size="lg" />
+                                {:else}
+                                    <FileOutline size="lg" />
+                                {/if}
+                            {:else if attachment.resource_type === ResourceType.csv}
+                                <FileCsvOutline size="lg" />
+                            {:else if [ResourceType.comment, ResourceType.json].includes(attachment.resource_type)}
+                                <FileLinesOutline size="lg" />
+                            {:else}
+                                <FileOutline size="lg" />
+                            {/if}
+                        </span>
 
-          <div class="flex flex-col items-center text-center p-4">
-            <span
-              class="inline-block px-3 py-1 mb-3 border border-gray-300 rounded-md text-sm font-medium bg-primary"
-            >
-              {#if attachment.resource_type === ResourceType.media}
-                {#if attachment.attributes?.payload.content_type === ContentType.image}
-                  <FileImageOutline size="xl" class="text-white" />
-                {:else if attachment.attributes?.payload.content_type === ContentType.audio}
-                  <FileMusicSolid size="xl" class="text-white" />
-                {:else if attachment.attributes?.payload.content_type === ContentType.video}
-                  <FileVideoSolid size="xl" class="text-white" />
-                {:else if [ContentType.text, ContentType.markdown, ContentType.html].includes(attachment.attributes?.payload.content_type)}
-                  <FileLinesSolid size="xl" class="text-white" />
-                {:else}
-                  <FileOutline size="xl" class="text-white" />
-                {/if}
-              {:else if attachment.resource_type === ResourceType.csv}
-                <FileCsvOutline size="xl" class="text-white" />
-              {:else if [ResourceType.comment, ResourceType.json].includes(attachment.resource_type)}
-                <FileLinesOutline size="xl" class="text-white" />
-              {:else}
-                <FileOutline size="xl" class="text-white" />
-              {/if}
-            </span>
-            {#if attachment.resource_type === ResourceType.media}
-              <a
-                class="font-semibold text-lg underline text-primary"
-                href={Dmart.getAttachmentUrl({
-                  resource_type: attachment.resource_type,
-                  space_name,
-                  subpath,
-                  parent_shortname:
-                    resource_type === ResourceType.folder
-                      ? ""
-                      : parent_shortname,
-                  shortname: attachment.shortname,
-                  ext: getFileExtension(attachment.attributes?.payload?.body),
-                })}
-                target="_blank"
-                rel="noopener noreferrer"
-                >{attachment.attributes?.displayname?.en ||
-                  attachment.shortname}</a
-              >
-            {:else}
-              <p class="font-semibold text-lg">
-                {attachment.attributes?.displayname?.en || attachment.shortname}
-              </p>
-            {/if}
-            <p class="text-gray-600 mt-2 mb-4 line-clamp-3">
-              {attachment.attributes?.description?.en || ""}
-            </p>
+                        <!-- The menu trigger and the dropdown are siblings, never
+                             one interactive element inside another. -->
+                        <div class="flex items-center gap-1">
+                            {#if attachment.resource_type !== ResourceType.reaction}
+                                <IconButton
+                                    label={$_("view_content")}
+                                    variant="outline"
+                                    size="sm"
+                                    onclick={() => viewContent(attachment)}
+                                >
+                                    <EyeOutline size="sm" />
+                                </IconButton>
+                            {/if}
+                            <IconButton
+                                id="{uid}-menu-{index}"
+                                label={$_("attachment_actions", { values: { name } })}
+                                variant="outline"
+                                size="sm"
+                            >
+                                <DotsHorizontalOutline size="sm" />
+                            </IconButton>
+                            <Dropdown simple triggeredBy="#{uid}-menu-{index}" class="min-w-44">
+                                <DropdownItem onclick={() => viewMeta(attachment)}>
+                                    <span class="flex items-center gap-2">
+                                        <EyeOutline size="sm" aria-hidden="true" /> {$_("view_metadata")}
+                                    </span>
+                                </DropdownItem>
+                                <DropdownItem onclick={() => editAttachment(attachment)}>
+                                    <span class="flex items-center gap-2">
+                                        <PenOutline size="sm" aria-hidden="true" /> {$_("edit")}
+                                    </span>
+                                </DropdownItem>
+                                <DropdownItem onclick={() => confirmDelete(attachment)}>
+                                    <span class="flex items-center gap-2 text-danger">
+                                        <TrashBinOutline size="sm" aria-hidden="true" /> {$_("delete")}
+                                    </span>
+                                </DropdownItem>
+                            </Dropdown>
+                        </div>
+                    </div>
 
-            <div class="text-xs text-gray-500 mt-auto">
-              Type: {attachment.resource_type} ({attachment.attributes?.payload
-                ?.content_type ?? "N/A"})
-              <br />
-              Updated: {new Date(
-                attachment?.attributes.updated_at,
-              ).toLocaleDateString()}
-            </div>
-          </div>
-          {#if attachment.resource_type !== ResourceType.reaction}
-            <!-- svelte-ignore a11y_no_static_element_interactions -->
-            <!-- svelte-ignore a11y_click_events_have_key_events -->
-            <div
-              class="absolute top-2 right-2"
-              onclick={() => handleViewContentModal(attachment)}
-            >
-              <Button class="!p-1" color="light">
-                <EyeOutline />
-              </Button>
-            </div>
-          {/if}
-        </Card>
-      {/each}
-    </div>
-  </div>
-{/await}
+                    <div class="mt-3 min-w-0">
+                        {#if attachment.resource_type === ResourceType.media}
+                            <a
+                                class="font-semibold text-base text-primary hover:underline break-words"
+                                href={Dmart.getAttachmentUrl({
+                                    resource_type: attachment.resource_type,
+                                    space_name,
+                                    subpath,
+                                    parent_shortname: resource_type === ResourceType.folder ? "" : parent_shortname,
+                                    shortname: attachment.shortname,
+                                    ext: getFileExtension(attachment.attributes?.payload?.body),
+                                })}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                            >
+                                {name}
+                            </a>
+                        {:else}
+                            <p class="font-semibold text-base text-text break-words">{name}</p>
+                        {/if}
+                        {#if description}
+                            <p class="mt-1 text-sm text-text-muted line-clamp-3">{description}</p>
+                        {/if}
+                    </div>
+
+                    <dl class="mt-auto pt-3 text-xs text-text-faint space-y-0.5">
+                        <div class="flex gap-1">
+                            <dt>{$_("type")}:</dt>
+                            <dd class="text-text-muted">{attachment.resource_type} ({contentType ?? $_("not_applicable")})</dd>
+                        </div>
+                        <div class="flex gap-1 tabular-nums">
+                            <dt>{$_("updated")}:</dt>
+                            <dd class="text-text-muted">{formatDate(attachment?.attributes?.updated_at, "date") || $_("not_applicable")}</dd>
+                        </div>
+                    </dl>
+                </li>
+            {/each}
+        </ul>
+    {/if}
+</div>
 
 <ModalViewAttachments
-  bind:openViewContentModal
-  {selectedAttachment}
-  {space_name}
-  {subpath}
-  parent_resource_type={resource_type}
-  {parent_shortname}
+    bind:openViewContentModal
+    {selectedAttachment}
+    {space_name}
+    {subpath}
+    parent_resource_type={resource_type}
+    {parent_shortname}
 />
 
-<ModalCreateAttachments
-  bind:isOpen={openCreateAttachmentModal}
-  isUpdateMode={isModalInUpdateMode}
-  {selectedAttachment}
-  parentResourceType={resource_type}
-  {space_name}
-  {subpath}
-  {parent_shortname}
-  bind:meta={createMetaContent}
-  bind:payload={createPayloadContent}
+{#if openCreateAttachmentModal}
+    <Lazy load={() => import("@/components/management/Modals/ModalCreateAttachments.svelte")} pending="none">
+        {#snippet children(ModalCreateAttachments)}
+            <ModalCreateAttachments
+                bind:isOpen={openCreateAttachmentModal}
+                isUpdateMode={isModalInUpdateMode}
+                {selectedAttachment}
+                parentResourceType={resource_type}
+                {space_name}
+                {subpath}
+                {parent_shortname}
+                bind:meta={createMetaContent}
+                bind:payload={createPayloadContent}
+                {refreshEntry}
+            />
+        {/snippet}
+    </Lazy>
+{/if}
+
+<ConfirmDialog
+    bind:open={openDeleteModal}
+    variant="danger"
+    title={$_("delete_attachment")}
+    body={`${$_("confirm_deleting_attachment", { values: { shortname: selectedAttachment?.shortname ?? "" } })}\n${$_("cannot_be_undone")}`}
+    loading={isDeleteLoading}
+    loadingLabel={$_("deleting")}
+    error={deleteError}
+    onConfirm={handleDelete}
 />
-
-<Modal bind:open={openDeleteModal} size="md" title="Confirm Deletion">
-  {#if selectedAttachment}
-    <p class="text-center mb-6">
-      Are you sure you want to delete the attachment <span class="font-bold"
-        >{selectedAttachment.shortname}</span
-      >?<br />
-      This action cannot be undone.
-    </p>
-  {/if}
-
-  {#if modelError}
-    <div class="mt-4">
-      <p class="text-red-600 font-medium mb-2">Error:</p>
-      <div class="max-h-60 overflow-auto">
-        <Prism code={modelError} />
-      </div>
-    </div>
-  {/if}
-
-  <div class="flex justify-between w-full">
-    <Button color="alternative" onclick={() => (openDeleteModal = false)}
-      >Cancel</Button
-    >
-    <Button
-      color="red"
-      onclick={() => handleDelete(selectedAttachment!)}
-      disabled={isDeleteLoading}
-      >{isDeleteLoading ? "Deleting..." : "Delete"}</Button
-    >
-  </div>
-</Modal>
-

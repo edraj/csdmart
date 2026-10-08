@@ -1,31 +1,18 @@
 <script lang="ts">
-    import { _ } from "svelte-i18n";
-    import {
-        Button,
-        Input,
-        Label,
-        Modal,
-        Select,
-        Table,
-        TableBody,
-        TableBodyCell,
-        TableBodyRow,
-        TableHead,
-        TableHeadCell,
-    } from "flowbite-svelte";
+    import { _ } from "@/i18n";
+    import { Button, Input, Label, Modal, Select } from "flowbite-svelte";
     import { Dmart, RequestType, ResourceType } from "@edraj/tsdmart";
     import { Level, showToast } from "@/utils/toast";
-    import { JSONEditor, Mode } from "svelte-jsoneditor";
     import Prism from "@/components/Prism.svelte";
-    import {
-        getChildren,
-        getChildrenAndSubChildren,
-    } from "@/lib/dmart_services";
-    import {
-        PlusOutline,
-        TrashBinSolid,
-        PenSolid,
-    } from "flowbite-svelte-icons";
+    import LazyJsonEditor from "@/components/ui/LazyJsonEditor.svelte";
+    import ConfirmDialog from "@/components/ui/ConfirmDialog.svelte";
+    import EmptyState from "@/components/ui/EmptyState.svelte";
+    import IconButton from "@/components/ui/IconButton.svelte";
+    import { getChildren, getChildrenAndSubChildren, getSpaces } from "@/lib/dmart_services";
+    import { spaces as spacesStore } from "@/stores/management/spaces";
+    import { errorMessage } from "@/utils/errorMessage";
+    import { limitJsonForDisplay } from "@/utils/displayJson";
+    import { EyeOutline, PenOutline, PlusOutline, TrashBinOutline } from "flowbite-svelte-icons";
 
     let {
         relationships = $bindable([]),
@@ -55,20 +42,21 @@
 
     let relAttributes: any = $state({ json: {} });
 
-    let spaces: any[] = $state([]);
     let subpaths: string[] = $state([]);
     let shortnames: any[] = $state([]);
     let isLoadingSubpaths = $state(false);
     let isLoadingShortnames = $state(false);
 
-    async function loadSpaces() {
-        try {
-            const result = await Dmart.getSpaces();
-            spaces = result?.records || [];
-        } catch {
-            spaces = [];
+    // The spaces store is filled once at boot; only fall back to a request
+    // when nothing has loaded it yet.
+    const spaces = $derived($spacesStore ?? []);
+    $effect(() => {
+        if (showForm && $spacesStore === null) {
+            getSpaces().catch(() => {
+                /* the select stays empty; the toast on save explains */
+            });
         }
-    }
+    });
 
     async function loadSubpaths(spaceName: string) {
         if (!spaceName) {
@@ -79,12 +67,7 @@
         try {
             const tempSubpaths: string[] = [];
             const rootChildren = await getChildren(spaceName, "/", 100);
-            await getChildrenAndSubChildren(
-                tempSubpaths,
-                spaceName,
-                "",
-                rootChildren,
-            );
+            await getChildrenAndSubChildren(tempSubpaths, spaceName, "", rootChildren);
             subpaths = tempSubpaths.reverse();
         } catch {
             subpaths = [];
@@ -101,21 +84,13 @@
         isLoadingShortnames = true;
         try {
             const result = await getChildren(spaceName, subpathVal, 100);
-            shortnames = (result.records || []).filter(
-                (r: any) => r.resource_type !== "folder",
-            );
+            shortnames = (result.records || []).filter((r: any) => r.resource_type !== "folder");
         } catch {
             shortnames = [];
         } finally {
             isLoadingShortnames = false;
         }
     }
-
-    $effect(() => {
-        if (spaces.length === 0) {
-            loadSpaces();
-        }
-    });
 
     $effect(() => {
         if (relSpaceName) {
@@ -151,10 +126,8 @@
         showForm = false;
     }
 
-    function handleRenderMenu(items: any) {
-        return items.filter(
-            (item: any) => !["tree", "table"].includes(item.text),
-        );
+    function handleRenderMenu(items: any[]) {
+        return items.filter((item: any) => !["tree", "table"].includes(item.text));
     }
 
     function populateFormForEdit(index: number) {
@@ -199,7 +172,7 @@
         };
     }
 
-    async function saveRelationships(updatedRelationships: any[]) {
+    async function saveRelationships(updatedRelationships: any[]): Promise<boolean> {
         isSaving = true;
         try {
             await Dmart.request({
@@ -216,13 +189,11 @@
                     },
                 ],
             });
-            showToast(Level.info, "Relationships saved successfully!");
-        } catch (e: any) {
-            showToast(
-                Level.warn,
-                e.response?.data?.error?.message ||
-                    "Failed to save relationships",
-            );
+            showToast(Level.info, $_("relationships_saved"));
+            return true;
+        } catch (e: unknown) {
+            showToast(Level.warn, errorMessage(e, $_("relationships_save_failed")));
+            return false;
         } finally {
             isSaving = false;
         }
@@ -240,107 +211,97 @@
             updated = [...relationships, rel];
         }
 
-        await saveRelationships(updated);
-        relationships = updated;
-        resetForm();
+        if (await saveRelationships(updated)) {
+            relationships = updated;
+            resetForm();
+        }
     }
 
-    async function removeRelationship(index: number) {
-        const updated = relationships.filter(
-            (_: any, i: number) => i !== index,
-        );
-        await saveRelationships(updated);
-        relationships = updated;
+    // ── Remove: confirmed first ────────────────────────────────────────────
+    let removeIndex = $state(-1);
+    let removeOpen = $state(false);
+    const removeTarget = $derived(removeIndex >= 0 ? relationships[removeIndex] : null);
+
+    function askRemove(index: number) {
+        removeIndex = index;
+        removeOpen = true;
+    }
+
+    async function removeRelationship() {
+        const updated = relationships.filter((_: any, i: number) => i !== removeIndex);
+        if (await saveRelationships(updated)) {
+            relationships = updated;
+            removeOpen = false;
+        }
     }
 
     let isDetailsOpen = $state(false);
     let detailsRel: any = $state(null);
+    const detailsAttributes = $derived(limitJsonForDisplay(detailsRel?.attributes ?? {}));
 
     function openDetails(rel: any) {
         detailsRel = rel;
         isDetailsOpen = true;
     }
+
+    function locatorLabel(rel: any): string {
+        return `${rel?.related_to?.space_name ?? ""}${rel?.related_to?.subpath ?? "/"}/${rel?.related_to?.shortname ?? ""}`.replace(/\/+/g, "/");
+    }
 </script>
 
-<div class="space-y-4 w-full p-4">
+<div class="space-y-4 w-full">
     {#if relationships && relationships.length > 0}
-        <div class="w-full overflow-x-auto">
-            <Table striped hoverable>
-                <TableHead>
-                    <TableHeadCell>Type</TableHeadCell>
-                    <TableHeadCell>Space Name</TableHeadCell>
-                    <TableHeadCell>Subpath</TableHeadCell>
-                    <TableHeadCell>Shortname</TableHeadCell>
-                    <TableHeadCell class="text-right">Actions</TableHeadCell>
-                </TableHead>
-                <TableBody>
+        <div class="rounded-card border border-border bg-surface-2 shadow-card overflow-x-auto">
+            <table class="w-full text-sm text-start border-collapse">
+                <thead class="bg-surface text-text-muted text-xs font-semibold">
+                    <tr>
+                        <th scope="col" class="p-2.5 text-start">{$_("type")}</th>
+                        <th scope="col" class="p-2.5 text-start">{$_("space_name")}</th>
+                        <th scope="col" class="p-2.5 text-start">{$_("subpath")}</th>
+                        <th scope="col" class="p-2.5 text-start">{$_("shortname")}</th>
+                        <th scope="col" class="p-2.5 text-end">{$_("actions")}</th>
+                    </tr>
+                </thead>
+                <tbody>
                     {#each relationships as rel, index (index)}
-                        <TableBodyRow
-                            class="cursor-pointer"
-                            onclick={() => openDetails(rel)}
-                        >
-                            <TableBodyCell>
-                                {rel.related_to?.type || "content"}
-                            </TableBodyCell>
-                            <TableBodyCell>
-                                {rel.related_to?.space_name || "-"}
-                            </TableBodyCell>
-                            <TableBodyCell>
-                                {rel.related_to?.subpath || "/"}
-                            </TableBodyCell>
-                            <TableBodyCell>
-                                {rel.related_to?.shortname || "-"}
-                            </TableBodyCell>
-                            <TableBodyCell class="text-right">
-                                <div
-                                    class="inline-flex items-center gap-1"
-                                    onclick={(e) => e.stopPropagation()}
-                                    role="presentation"
-                                >
-                                    <Button
-                                        size="xs"
-                                        color="light"
-                                        onclick={() =>
-                                            populateFormForEdit(index)}
-                                    >
-                                        <PenSolid size="sm" />
-                                    </Button>
-                                    <Button
-                                        size="xs"
-                                        color="light"
-                                        onclick={() =>
-                                            removeRelationship(index)}
-                                        disabled={isSaving}
-                                    >
-                                        <TrashBinSolid
-                                            size="sm"
-                                            class="text-red-500"
-                                        />
-                                    </Button>
+                        <tr class="border-t border-border hover:bg-surface-3 transition-colors">
+                            <td class="p-2.5 text-text">{rel.related_to?.type || "content"}</td>
+                            <td class="p-2.5 text-text">{rel.related_to?.space_name || "-"}</td>
+                            <td class="p-2.5 text-text font-mono text-xs">{rel.related_to?.subpath || "/"}</td>
+                            <td class="p-2.5 text-text">{rel.related_to?.shortname || "-"}</td>
+                            <td class="p-2.5">
+                                <div class="inline-flex items-center justify-end gap-1 w-full">
+                                    <IconButton label={$_("view_details")} size="sm" onclick={() => openDetails(rel)}>
+                                        <EyeOutline size="sm" />
+                                    </IconButton>
+                                    <IconButton label={$_("edit")} size="sm" onclick={() => populateFormForEdit(index)}>
+                                        <PenOutline size="sm" />
+                                    </IconButton>
+                                    <IconButton label={$_("remove")} size="sm" variant="danger" disabled={isSaving} onclick={() => askRemove(index)}>
+                                        <TrashBinOutline size="sm" />
+                                    </IconButton>
                                 </div>
-                            </TableBodyCell>
-                        </TableBodyRow>
+                            </td>
+                        </tr>
                     {/each}
-                </TableBody>
-            </Table>
+                </tbody>
+            </table>
         </div>
     {:else}
-        <p class="text-gray-500 text-center py-4">
-            No relationships defined yet.
-        </p>
+        <EmptyState title={$_("no_relationships")} hint={$_("no_relationships_hint")} />
     {/if}
 
-    <div class="flex justify-center">
+    <div class="flex justify-end">
         <Button
-            color="blue"
-            outline
+            size="sm"
+            color="primary"
             onclick={() => {
                 resetForm();
                 showForm = true;
             }}
         >
-            <PlusOutline size="sm" class="mr-2" />
-            Add Relationship
+            <PlusOutline size="sm" class="me-1.5" aria-hidden="true" />
+            {$_("add_relationship")}
         </Button>
     </div>
 </div>
@@ -348,18 +309,15 @@
 <Modal
     bind:open={showForm}
     size="lg"
-    title={isEditing ? "Edit Relationship" : "New Relationship"}
+    title={isEditing ? $_("edit_relationship") : $_("new_relationship")}
     onclose={resetForm}
+    class="rounded-modal shadow-modal"
 >
-    <div class="space-y-3 w-full">
+    <div class="space-y-4 w-full">
         <div>
-            <Label for="rel-space">Space Name</Label>
-            <Select
-                id="rel-space"
-                bind:value={relSpaceName}
-                onchange={onSpaceChange}
-            >
-                <option value="">-- Select Space --</option>
+            <Label for="rel-space" class="mb-1.5">{$_("space_name")}</Label>
+            <Select id="rel-space" bind:value={relSpaceName} onchange={onSpaceChange}>
+                <option value="">{$_("select_space")}</option>
                 {#each spaces as space (space.shortname)}
                     <option value={space.shortname}>{space.shortname}</option>
                 {/each}
@@ -367,46 +325,33 @@
         </div>
 
         <div>
-            <Label for="rel-subpath">Subpath</Label>
-            <Select
-                id="rel-subpath"
-                bind:value={relSubpath}
-                onchange={onSubpathChange}
-                disabled={!relSpaceName || isLoadingSubpaths}
-            >
+            <Label for="rel-subpath" class="mb-1.5">{$_("subpath")}</Label>
+            <Select id="rel-subpath" bind:value={relSubpath} onchange={onSubpathChange} disabled={!relSpaceName || isLoadingSubpaths}>
                 <option value="/">/</option>
                 {#each subpaths as path (path)}
                     <option value={path}>{path}</option>
                 {/each}
             </Select>
             {#if isLoadingSubpaths}
-                <p class="text-xs text-gray-400 mt-1">
-                    Loading subpaths...
-                </p>
+                <p class="text-xs text-text-muted mt-1">{$_("loading_subpaths")}</p>
             {/if}
         </div>
 
         <div>
-            <Label for="rel-shortname">Shortname</Label>
-            <Select
-                id="rel-shortname"
-                bind:value={relShortname}
-                disabled={!relSpaceName || isLoadingShortnames}
-            >
-                <option value="">-- Select --</option>
+            <Label for="rel-shortname" class="mb-1.5">{$_("shortname")}</Label>
+            <Select id="rel-shortname" bind:value={relShortname} disabled={!relSpaceName || isLoadingShortnames}>
+                <option value="">{$_("select_entry_option")}</option>
                 {#each shortnames as item (item.shortname)}
                     <option value={item.shortname}>{item.shortname}</option>
                 {/each}
             </Select>
             {#if isLoadingShortnames}
-                <p class="text-xs text-gray-400 mt-1">
-                    Loading entries...
-                </p>
+                <p class="text-xs text-text-muted mt-1">{$_("loading_entries")}</p>
             {/if}
         </div>
 
         <div>
-            <Label for="rel-type">Resource Type</Label>
+            <Label for="rel-type" class="mb-1.5">{$_("resource_type")}</Label>
             <Select id="rel-type" bind:value={relType}>
                 {#each Object.values(ResourceType) as rt (rt)}
                     <option value={rt}>{rt}</option>
@@ -415,96 +360,69 @@
         </div>
 
         <div>
-            <Label for="rel-schema">Schema Shortname (optional)</Label>
-            <Input
-                id="rel-schema"
-                type="text"
-                bind:value={relSchemaShortname}
-                placeholder="Optional schema shortname"
-            />
+            <Label for="rel-schema" class="mb-1.5">{$_("schema_shortname")} <span class="text-text-faint font-normal">({$_("optional")})</span></Label>
+            <Input id="rel-schema" type="text" bind:value={relSchemaShortname} placeholder={$_("schema_shortname")} />
         </div>
 
         <div>
-            <Label>Attributes</Label>
-            <div
-                class="border rounded-md overflow-hidden"
-                style="min-height: 120px;"
-            >
-                <JSONEditor
-                    onRenderMenu={handleRenderMenu}
-                    mode={Mode.text}
-                    bind:content={relAttributes}
-                />
+            <p class="text-sm font-medium text-text mb-1.5" id="rel-attributes-label">{$_("attributes")}</p>
+            <div aria-labelledby="rel-attributes-label" style="min-height: 120px;">
+                <LazyJsonEditor onRenderMenu={handleRenderMenu} mode="text" bind:content={relAttributes} />
             </div>
         </div>
     </div>
 
-    <div class="flex justify-end gap-2 w-full pt-4 border-t mt-4">
-        <Button color="alternative" onclick={resetForm}>Cancel</Button>
-        <Button
-            color="blue"
-            onclick={addRelationship}
-            disabled={!relSpaceName || !relShortname || isSaving}
-        >
+    <div class="flex items-center justify-end gap-2 w-full pt-4 border-t border-border mt-4">
+        <Button color="alternative" onclick={resetForm}>{$_("cancel")}</Button>
+        <Button color="primary" onclick={addRelationship} disabled={!relSpaceName || !relShortname || isSaving}>
             {#if isSaving}
-                Saving...
+                {$_("saving")}
             {:else}
-                {isEditing ? "Update" : "Add"}
+                {isEditing ? $_("save_changes") : $_("add")}
             {/if}
         </Button>
     </div>
 </Modal>
 
-<Modal bind:open={isDetailsOpen} size="lg" title="Relationship Details">
+<Modal bind:open={isDetailsOpen} size="lg" title={$_("relationship_details")} class="rounded-modal shadow-modal">
     {#if detailsRel}
-        <div class="space-y-3 w-full">
-            <div class="grid grid-cols-3 gap-2">
-                <div class="font-medium text-gray-700">Type</div>
-                <div class="col-span-2">
-                    {detailsRel.related_to?.type || "content"}
-                </div>
-            </div>
-            <div class="grid grid-cols-3 gap-2">
-                <div class="font-medium text-gray-700">Space Name</div>
-                <div class="col-span-2">
-                    {detailsRel.related_to?.space_name || "-"}
-                </div>
-            </div>
-            <div class="grid grid-cols-3 gap-2">
-                <div class="font-medium text-gray-700">Subpath</div>
-                <div class="col-span-2">
-                    {detailsRel.related_to?.subpath || "/"}
-                </div>
-            </div>
-            <div class="grid grid-cols-3 gap-2">
-                <div class="font-medium text-gray-700">Shortname</div>
-                <div class="col-span-2">
-                    {detailsRel.related_to?.shortname || "-"}
-                </div>
-            </div>
+        <dl class="grid grid-cols-3 gap-x-4 gap-y-2 text-sm w-full">
+            <dt class="font-medium text-text-muted">{$_("type")}</dt>
+            <dd class="col-span-2 text-text">{detailsRel.related_to?.type || "content"}</dd>
+            <dt class="font-medium text-text-muted">{$_("space_name")}</dt>
+            <dd class="col-span-2 text-text">{detailsRel.related_to?.space_name || "-"}</dd>
+            <dt class="font-medium text-text-muted">{$_("subpath")}</dt>
+            <dd class="col-span-2 text-text font-mono text-xs">{detailsRel.related_to?.subpath || "/"}</dd>
+            <dt class="font-medium text-text-muted">{$_("shortname")}</dt>
+            <dd class="col-span-2 text-text">{detailsRel.related_to?.shortname || "-"}</dd>
             {#if detailsRel.related_to?.schema_shortname}
-                <div class="grid grid-cols-3 gap-2">
-                    <div class="font-medium text-gray-700">
-                        Schema Shortname
-                    </div>
-                    <div class="col-span-2">
-                        {detailsRel.related_to.schema_shortname}
-                    </div>
-                </div>
+                <dt class="font-medium text-text-muted">{$_("schema_shortname")}</dt>
+                <dd class="col-span-2 text-text">{detailsRel.related_to.schema_shortname}</dd>
             {/if}
-            <div>
-                <p class="font-medium text-gray-700 mb-2">Attributes</p>
-                <div class="max-h-80 overflow-auto">
-                    <Prism code={detailsRel.attributes ?? {}} />
-                </div>
+        </dl>
+        <div class="mt-4">
+            <p class="text-sm font-medium text-text-muted mb-2">{$_("attributes")}</p>
+            {#if detailsAttributes.truncated}
+                <p class="text-xs text-text-muted mb-1">{$_("preview_truncated")}</p>
+            {/if}
+            <div class="max-h-80 overflow-auto">
+                <Prism code={detailsAttributes.value as object | string} />
             </div>
         </div>
     {/if}
 
-    <div class="flex justify-end w-full pt-4 border-t mt-4">
-        <Button
-            color="alternative"
-            onclick={() => (isDetailsOpen = false)}>Close</Button
-        >
+    <div class="flex justify-end w-full pt-4 border-t border-border mt-4">
+        <Button color="alternative" onclick={() => (isDetailsOpen = false)}>{$_("close")}</Button>
     </div>
 </Modal>
+
+<ConfirmDialog
+    bind:open={removeOpen}
+    variant="danger"
+    title={$_("remove_relationship")}
+    body={$_("confirm_remove_relationship", { values: { target: removeTarget ? locatorLabel(removeTarget) : "" } })}
+    confirmLabel={$_("remove")}
+    loading={isSaving}
+    loadingLabel={$_("saving")}
+    onConfirm={removeRelationship}
+/>

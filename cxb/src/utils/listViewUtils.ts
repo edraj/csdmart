@@ -8,6 +8,24 @@ import {isTimestampKey} from "@/utils/columnsUtils";
  * Utility functions for ListView components
  */
 
+/**
+ * The translator and locale a cell is rendered with. ListView reads `$_` and
+ * `$locale` once per render and passes them in, instead of each cell doing a
+ * `get(store)` subscribe/unsubscribe of its own; callers outside a component
+ * can omit it and pay for the store read.
+ */
+export interface ValueContext {
+    t: (key: string) => string;
+    locale: string | null | undefined;
+}
+
+function defaultContext(): ValueContext {
+    return {
+        t: (key) => get(_)(key),
+        locale: get(locale),
+    };
+}
+
 function findValue(obj: any, k: string): any {
     if (!obj || typeof obj !== "object") return undefined;
     if (obj[k] !== undefined) return obj[k];
@@ -16,10 +34,9 @@ function findValue(obj: any, k: string): any {
     return foundKey ? obj[foundKey] : undefined;
 }
 
-function localizedDisplayName(item: any): string {
+function localizedDisplayName(item: any, loc: string | null | undefined): string {
     const dn = item?.attributes?.displayname ?? item?.displayname;
     if (dn && typeof dn === "object") {
-        const loc = get(locale);
         return (
             (loc ? dn[loc] : undefined) ||
             dn.en ||
@@ -32,16 +49,16 @@ function localizedDisplayName(item: any): string {
     return item?.attributes?.payload?.body?.title || item?.shortname || "";
 }
 
-export function getAttributeValue(item: any, key: string): string {
+export function getAttributeValue(item: any, key: string, ctx: ValueContext = defaultContext()): string {
     if (!item || !key) return "";
-    if (key === "displayname") return localizedDisplayName(item);
+    if (key === "displayname") return localizedDisplayName(item, ctx.locale);
     if (key === "status") {
         return item.attributes?.is_active === false
-            ? get(_)("inactive")
-            : get(_)("active");
+            ? ctx.t("inactive")
+            : ctx.t("active");
     }
     if (key === "author") {
-        return item.attributes?.owner_shortname || get(_)("unknown");
+        return item.attributes?.owner_shortname || ctx.t("unknown");
     }
 
     let value: any;
@@ -61,7 +78,7 @@ export function getAttributeValue(item: any, key: string): string {
             findValue(item, key);
     }
 
-    if (value === null || value === undefined) return get(_)("not_applicable");
+    if (value === null || value === undefined) return ctx.t("not_applicable");
 
     // A timestamp column is a timestamp whatever path reaches it: the default
     // columns use `attributes.created_at`, folder columns may use the bare
@@ -71,7 +88,7 @@ export function getAttributeValue(item: any, key: string): string {
     }
 
     if (typeof value === "object" && !Array.isArray(value)) {
-        const loc = get(locale);
+        const loc = ctx.locale;
         const localized =
             (loc ? value[loc] : undefined) || value.en || value.ar || value.ku;
         if (localized !== undefined) return String(localized);

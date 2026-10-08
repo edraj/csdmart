@@ -31,7 +31,7 @@
   class="inline-flex items-center gap-1 cursor-pointer whitespace-nowrap select-none"
   onclick={toggle}
 >
-  <svg class="w-3 h-3 mr-1 shrink-0" viewBox="0 0 16 16" aria-hidden="true">
+  <svg class="w-3 h-3 me-1 shrink-0" viewBox="0 0 16 16" aria-hidden="true">
     <path
       d="M4 6 l4 -4 l4 4"
       fill="none"

@@ -3,6 +3,11 @@ import { removeEmpty } from "@/utils/renderer/schemaEntryRenderer";
 import { Level, showToast } from "@/utils/toast";
 import { jsonEditorContentParser } from "@/utils/jsonEditor";
 import { normalizeSubpath, parentOf, trashDestination } from "@/utils/subpath";
+import { get } from "svelte/store";
+import { _ } from "@/i18n";
+
+/** The active locale's message, for a module that has no component context. */
+const t = (key: string) => get(_)(key);
 
 /**
  * Gets the parent subpath from a given path
@@ -60,7 +65,7 @@ export async function saveEntry(
     try {
         content = jsonEditorContentParser(jeContent);
     } catch {
-        return { success: false, errorMessage: "Invalid JSON format" };
+        return { success: false, errorMessage: t("invalid_json") };
     }
 
     const shortname = content.shortname;
@@ -116,7 +121,7 @@ export async function saveEntry(
                 attributes: content as Record<string, any>
             }]
         });
-        showToast(Level.info, `Entry has been updated successfully!`);
+        showToast(Level.info, t("entry_updated"));
         return { success: true };
     } catch (error: any) {
         return { success: false, errorMessage: error.response?.data || error.message };
@@ -152,11 +157,11 @@ export async function deleteEntry(
             }]
         };
         await Dmart.request(body);
-        showToast(Level.info, `Entry deleted successfully`);
+        showToast(Level.info, t("entry_deleted"));
         return { success: true };
     } catch (error: any) {
-        showToast(Level.warn, `Failed to delete the entry!`);
-        return { success: false, errorMessage: error.response?.data?.error };
+        showToast(Level.warn, t("entry_delete_failed"));
+        return { success: false, errorMessage: error?.response?.data?.error ?? error?.message };
     }
 }
 
@@ -198,11 +203,11 @@ export async function moveEntryToTrash(
                 },
             ],
         });
-        showToast(Level.info, `Entry deleted successfully`);
+        showToast(Level.info, t("entry_trashed"));
         return { success: true };
     } catch (error: any) {
-        showToast(Level.warn, `Failed to delete the entry!`);
-        return { success: false, errorMessage: error.message };
+        showToast(Level.warn, t("entry_trash_failed"));
+        return { success: false, errorMessage: error?.response?.data?.error?.message ?? error?.message };
     }
 }
 
@@ -254,10 +259,10 @@ export async function bulkMoveEntryToTrash(
             request_type: RequestType.move,
             records: records,
         });
-        showToast(Level.info, `Entries moved to trash successfully`);
+        showToast(Level.info, t("entries_trashed"));
         return { success: true };
     } catch (error: any) {
-        showToast(Level.warn, `Failed to move entries to trash!`);
-        return { success: false, errorMessage: error.message };
+        showToast(Level.warn, t("entries_trash_failed"));
+        return { success: false, errorMessage: error?.response?.data?.error?.message ?? error?.message };
     }
 }

@@ -2,10 +2,13 @@
     import PermissionsExplorer from "@/components/management/renderers/PermissionsExplorer.svelte";
     import SpaceMapView from "@/components/management/renderers/SpaceMapView.svelte";
     import { Dmart, ResourceType } from "@edraj/tsdmart";
-    import { Card } from "flowbite-svelte";
-    import { goto } from "@roxi/routify";
+    import { url } from "@roxi/routify";
+    import { ArrowRightOutline } from "flowbite-svelte-icons";
+    import LoadingState from "@/components/ui/LoadingState.svelte";
+    import EmptyState from "@/components/ui/EmptyState.svelte";
+    import { _ } from "@/i18n";
 
-    const { roles } = $props();
+    const { roles = [] }: { roles: string[] } = $props();
 
     // ── View mode ──────────────────────────────────────────────────────────────
     let viewMode: "list" | "map" = $state("list");
@@ -33,7 +36,7 @@
         const cache: Record<string, RoleData> = {};
         results.forEach((result, i) => {
             if (result.status === "fulfilled") {
-                cache[roles[i]] = result.value as RoleData;
+                cache[roles[i]] = result.value as unknown as RoleData;
             }
         });
         roleDataCache = cache;
@@ -42,24 +45,16 @@
 
     loadRoleData();
 
-    // ── Helpers ────────────────────────────────────────────────────────────────
-    function handleGoToRole(e, role) {
-        e.preventDefault();
-        $goto(
-            `/management/content/[space_name]/[subpath]/[shortname]/[resource_type]`,
-            {
-                space_name: "management",
-                subpath: "roles",
-                shortname: role,
-                resource_type: "role",
-            },
-        );
+    function roleHref(role: string): string {
+        return $url(`/management/content/[space_name]/[subpath]/[shortname]/[resource_type]`, {
+            space_name: "management",
+            subpath: "roles",
+            shortname: role,
+            resource_type: "role",
+        });
     }
 
     // ── Map view data ──────────────────────────────────────────────────────────
-    /**
-     * Merged map: space → subpath → { resource_types, actions, conditions, allowed_fields_values, filter_fields_values }
-     */
     type SubpathInfo = {
         resource_types: string[];
         actions: string[];
@@ -79,10 +74,8 @@
         const resourceTypes: string[] = permission.resource_types ?? [];
         const actions: string[] = permission.actions ?? [];
         const conditions: string[] = permission.conditions ?? [];
-        const allowedFieldsValues: Record<string, unknown> =
-            permission.allowed_fields_values ?? {};
-        const filterFieldsValues: string =
-            permission.filter_fields_values ?? "";
+        const allowedFieldsValues: Record<string, unknown> = permission.allowed_fields_values ?? {};
+        const filterFieldsValues: string = permission.filter_fields_values ?? "";
 
         for (const [space, paths] of Object.entries(subpaths)) {
             if (!spaceMap[space]) spaceMap[space] = {};
@@ -98,21 +91,16 @@
                 }
                 const info = spaceMap[space][subpath];
                 for (const rt of resourceTypes) {
-                    if (!info.resource_types.includes(rt))
-                        info.resource_types.push(rt);
+                    if (!info.resource_types.includes(rt)) info.resource_types.push(rt);
                 }
                 for (const act of actions) {
                     if (!info.actions.includes(act)) info.actions.push(act);
                 }
                 for (const cond of conditions) {
-                    if (!info.conditions.includes(cond))
-                        info.conditions.push(cond);
+                    if (!info.conditions.includes(cond)) info.conditions.push(cond);
                 }
                 if (Object.keys(allowedFieldsValues).length > 0) {
-                    info.allowed_fields_values = {
-                        ...info.allowed_fields_values,
-                        ...allowedFieldsValues,
-                    };
+                    info.allowed_fields_values = { ...info.allowed_fields_values, ...allowedFieldsValues };
                 }
                 if (filterFieldsValues) {
                     info.filter_fields_values = info.filter_fields_values
@@ -149,8 +137,7 @@
         const permissionNamesSet = new Set<string>();
         for (const result of roleEntries) {
             if (result.status === "fulfilled") {
-                const permissionNames: string[] =
-                    (result.value as any)?.permissions ?? [];
+                const permissionNames: string[] = (result.value as any)?.permissions ?? [];
                 permissionNames.forEach((p) => permissionNamesSet.add(p));
             }
         }
@@ -185,57 +172,47 @@
             buildMap();
         }
     });
+
+    const toggleBase = "px-3 py-1.5 rounded-control text-sm font-medium transition-colors cursor-pointer";
+    const toggleOn = "bg-primary text-text-on-primary";
+    const toggleOff = "text-text-muted hover:text-text hover:bg-surface-3";
 </script>
 
-<Card class="w-full max-w-4xl mx-auto p-4 my-2">
-    <!-- Tab buttons -->
-    <div class="flex gap-2 mb-4 border-b border-gray-200 pb-2">
-        <button
-                class="px-4 py-1.5 rounded-t text-sm font-medium transition-colors {viewMode ===
-            'list'
-                ? 'bg-blue-600 text-white'
-                : 'text-gray-500 hover:text-gray-700 hover:bg-gray-100'}"
-                onclick={() => (viewMode = "list")}
-        >
-            List
+<div class="w-full max-w-4xl mx-auto rounded-card border border-border bg-surface-2 shadow-card p-4 my-2">
+    <div class="flex gap-1 mb-4 border-b border-border pb-3" role="group" aria-label={$_("view")}>
+        <button type="button" class="{toggleBase} {viewMode === 'list' ? toggleOn : toggleOff}" aria-pressed={viewMode === "list"} onclick={() => (viewMode = "list")}>
+            {$_("list")}
         </button>
-        <button
-                class="px-4 py-1.5 rounded-t text-sm font-medium transition-colors {viewMode ===
-            'map'
-                ? 'bg-blue-600 text-white'
-                : 'text-gray-500 hover:text-gray-700 hover:bg-gray-100'}"
-                onclick={() => (viewMode = "map")}
-        >
-            Map
+        <button type="button" class="{toggleBase} {viewMode === 'map' ? toggleOn : toggleOff}" aria-pressed={viewMode === "map"} onclick={() => (viewMode = "map")}>
+            {$_("map")}
         </button>
     </div>
 
-    <!-- List view (uses cached role data to avoid duplicate API calls) -->
     {#if viewMode === "list"}
         {#if roleDataLoading}
-            <p class="text-center text-gray-500 py-4">Loading roles...</p>
+            <LoadingState label={$_("loading_roles")} />
+        {:else if roles.length === 0}
+            <EmptyState title={$_("no_roles_added")} />
         {:else}
-            {#each roles as role (role)}
-                <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-                <!-- svelte-ignore a11y_click_events_have_key_events -->
-                <p
-                        onclick={(e) => handleGoToRole(e, role)}
-                        class="text-4xl cursor-pointer"
-                >
-                    {role}
-                </p>
-                {#if roleDataCache[role]}
-                    <PermissionsExplorer
-                            permissions={roleDataCache[role].permissions}
-                            showTabs={false}
-                    />
-                {/if}
-            {/each}
+            <div class="space-y-6">
+                {#each roles as role (role)}
+                    <section>
+                        <h3 class="text-lg font-semibold">
+                            <a href={roleHref(role)} class="inline-flex items-center gap-1.5 text-text hover:text-primary rounded-control">
+                                {role}
+                                <ArrowRightOutline size="sm" class="rtl:rotate-180 text-text-faint" aria-hidden="true" />
+                            </a>
+                        </h3>
+                        {#if roleDataCache[role]}
+                            <PermissionsExplorer permissions={roleDataCache[role].permissions} showTabs={false} />
+                        {/if}
+                    </section>
+                {/each}
+            </div>
         {/if}
     {/if}
 
-    <!-- Map view -->
     {#if viewMode === "map"}
         <SpaceMapView {spaceMap} loading={mapLoading} />
     {/if}
-</Card>
+</div>

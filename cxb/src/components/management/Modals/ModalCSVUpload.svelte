@@ -3,9 +3,11 @@
     import { Dmart, QueryType, ResourceType } from "@edraj/tsdmart";
     import { Level, showToast } from "@/utils/toast";
     import { currentListView } from "@/stores/global";
+    import LoadingState from "@/components/ui/LoadingState.svelte";
+    import { formatNumber } from "@/utils/format";
+    import { _ } from "@/i18n";
     import {
         describeCsvFailureRow,
-        formatCount,
         groupCsvFailures,
         mergeCsvImportResults,
         uploadCsv,
@@ -22,12 +24,15 @@
         isOpen: boolean;
     } = $props();
 
+    const uid = $props.id();
+
     let selectedResourceType = $state(ResourceType.content);
     let selectedSchema = $state<string | null>(null);
-    let payloadFiles = $state([]);
+    let payloadFiles = $state<File[]>([]);
     let isUploading = $state(false);
     let resourceTypeError = $state(false);
     let schemaError = $state(false);
+    let fileError = $state(false);
     let isUpdate = $state(false);
 
     // What the last upload came to, and the choices it was made with — a
@@ -43,43 +48,19 @@
         (() => {
             if (space_name === "management") {
                 if (subpath === "users" || subpath === "/users") {
-                    return [
-                        {
-                            name: ResourceType.user.toString(),
-                            value: ResourceType.user,
-                        },
-                    ];
+                    return [{ name: ResourceType.user.toString(), value: ResourceType.user }];
                 }
                 if (subpath === "roles" || subpath === "/roles") {
-                    return [
-                        {
-                            name: ResourceType.role.toString(),
-                            value: ResourceType.role,
-                        },
-                    ];
+                    return [{ name: ResourceType.role.toString(), value: ResourceType.role }];
                 }
                 if (subpath === "permissions" || subpath === "/permissions") {
-                    return [
-                        {
-                            name: ResourceType.permission.toString(),
-                            value: ResourceType.permission,
-                        },
-                    ];
+                    return [{ name: ResourceType.permission.toString(), value: ResourceType.permission }];
                 }
             }
             return [
-                {
-                    name: ResourceType.content.toString(),
-                    value: ResourceType.content,
-                },
-                {
-                    name: ResourceType.folder.toString(),
-                    value: ResourceType.folder,
-                },
-                {
-                    name: ResourceType.ticket.toString(),
-                    value: ResourceType.ticket,
-                },
+                { name: ResourceType.content.toString(), value: ResourceType.content },
+                { name: ResourceType.folder.toString(), value: ResourceType.folder },
+                { name: ResourceType.ticket.toString(), value: ResourceType.ticket },
             ];
         })(),
     );
@@ -91,10 +72,7 @@
                     selectedResourceType = ResourceType.user;
                 } else if (subpath === "roles" || subpath === "/roles") {
                     selectedResourceType = ResourceType.role;
-                } else if (
-                    subpath === "permissions" ||
-                    subpath === "/permissions"
-                ) {
+                } else if (subpath === "permissions" || subpath === "/permissions") {
                     selectedResourceType = ResourceType.permission;
                 } else {
                     selectedResourceType = ResourceType.content;
@@ -111,56 +89,42 @@
             payloadFiles = [];
             result = null;
             sent = null;
+            resourceTypeError = false;
+            schemaError = false;
+            fileError = false;
         }
     });
 
-    function parseQuerySchemaResponse(schemas) {
-        const records = schemas?.records ?? [];
+    // The dropdown only needs shortnames.
+    const schemaOptions = $derived(Dmart.query({
+        space_name,
+        type: QueryType.search,
+        subpath: "/schema",
+        search: "",
+        retrieve_json_payload: false,
+        limit: 100,
+    }).then((schemas) =>
+        (schemas?.records ?? [])
+            .map((e) => e.shortname)
+            .filter((e) => !["meta_schema", "folder_rendering"].includes(e))
+            .map((e) => ({ name: e, value: e })),
+    ));
 
-        const _schemas = records.map((e) => e.shortname);
-        const result = _schemas.filter(
-            (e: any) => !["meta_schema", "folder_rendering"].includes(e),
-        );
-
-        let r = result.map((e: any) => ({
-            name: e,
-            value: e,
-        }));
-        return r;
-    }
-
-    function handleFileChange(e) {
-        const files = e.target.files;
-        if (files.length > 0) {
+    function handleFileChange(e: Event) {
+        const files = (e.target as HTMLInputElement).files;
+        if (files && files.length > 0) {
             payloadFiles = Array.from(files);
             result = null;
+            fileError = false;
         }
     }
 
     async function handleCSVUpload() {
-        resourceTypeError = false;
-        schemaError = false;
+        resourceTypeError = !selectedResourceType;
+        schemaError = !selectedSchema;
+        fileError = payloadFiles.length === 0;
 
-        let hasError = false;
-
-        if (!selectedResourceType) {
-            showToast(Level.warn, "Please select a resource type");
-            resourceTypeError = true;
-            hasError = true;
-        }
-
-        if (!selectedSchema) {
-            showToast(Level.warn, "Please select a schema");
-            schemaError = true;
-            hasError = true;
-        }
-
-        if (!payloadFiles.length) {
-            showToast(Level.warn, "Please select a CSV file");
-            hasError = true;
-        }
-
-        if (hasError) {
+        if (resourceTypeError || schemaError || fileError) {
             return;
         }
 
@@ -216,148 +180,139 @@
         if (result.ok && result.failedCount === 0) {
             showToast(
                 Level.info,
-                `CSV uploaded: ${formatCount(result.imported)} ${upload.isUpdate ? "updated" : "imported"}`,
+                upload.isUpdate
+                    ? $_("csv_rows_updated", { values: { count: result.imported } })
+                    : $_("csv_rows_imported", { values: { count: result.imported } }),
             );
             result = null;
             payloadFiles = [];
             isOpen = false;
         } else {
-            showToast(Level.warn, result.message ?? `${formatCount(result.failedCount)} rows failed`);
+            showToast(Level.warn, result.message ?? $_("csv_rows_failed", { values: { count: result.failedCount } }));
         }
     }
+
+    const fieldError = "mt-1 text-sm text-danger";
 </script>
 
-<Modal bodyClass="h-auto justify-center" bind:open={isOpen} size="md">
-    {#snippet header()}
-        <h3>Upload CSV</h3>
-    {/snippet}
-    <div>
-        <Label>
-            Resource Type
+<Modal bind:open={isOpen} size="md" title={$_("upload_csv")} class="rounded-modal shadow-modal">
+    <div class="space-y-4">
+        <div>
+            <Label for="{uid}-resource-type" class="mb-1.5">{$_("resource_type")}</Label>
             <Select
-                class="my-2 {resourceTypeError ? 'border-red-500' : ''}"
+                id="{uid}-resource-type"
                 items={resourceTypeItems}
                 bind:value={selectedResourceType}
                 onchange={() => (resourceTypeError = false)}
                 disabled={resourceTypeItems.length === 1}
+                aria-invalid={resourceTypeError}
             />
             {#if resourceTypeError}
-                <p class="text-red-500 text-xs mt-1">
-                    Resource type is required
-                </p>
+                <p class={fieldError} role="alert">{$_("resource_type_required")}</p>
             {/if}
-        </Label>
+        </div>
 
-        <Label class="mt-3">
-            Schema
-            {#await Dmart.query( { space_name, type: QueryType.search, subpath: "/schema", search: "", retrieve_json_payload: true, limit: 100 }, )}
-                <div role="status" class="max-w-sm animate-pulse">
-                    <div
-                        class="h-3 bg-gray-200 rounded-full dark:bg-gray-700 mx-2 my-2.5"
-                    ></div>
-                </div>
-            {:then schemas}
+        <div>
+            <Label for="{uid}-schema" class="mb-1.5">{$_("schema")}</Label>
+            {#await schemaOptions}
+                <LoadingState variant="skeleton" rows={1} />
+            {:then items}
                 <Select
-                    class="mt-2 {schemaError ? 'border-red-500' : ''}"
-                    items={parseQuerySchemaResponse(schemas)}
+                    id="{uid}-schema"
+                    {items}
+                    placeholder={$_("select_schema")}
                     bind:value={selectedSchema}
                     onchange={() => (schemaError = false)}
+                    aria-invalid={schemaError}
                 />
-                {#if schemaError}
-                    <p class="text-red-500 text-xs mt-1">Schema is required</p>
-                {/if}
             {/await}
-        </Label>
+            {#if schemaError}
+                <p class={fieldError} role="alert">{$_("schema_required")}</p>
+            {/if}
+        </div>
 
-        <Label class="mt-3">
-            CSV File
+        <div>
+            <Label for="{uid}-file" class="mb-1.5">{$_("csv_file")}</Label>
             <input
+                id="{uid}-file"
                 type="file"
                 accept=".csv"
                 onchange={handleFileChange}
-                class="mt-2 block w-full text-sm text-gray-900 border border-gray-300 rounded-lg cursor-pointer bg-gray-50 dark:text-gray-400 focus:outline-none dark:bg-gray-700 dark:border-gray-600 dark:placeholder-gray-400"
+                aria-invalid={fileError}
+                class="block w-full text-sm text-text border border-border rounded-control cursor-pointer bg-surface-2 file:me-3 file:border-0 file:bg-surface-3 file:text-text file:px-3 file:py-2 focus:outline-none"
             />
-        </Label>
+            {#if fileError}
+                <p class={fieldError} role="alert">{$_("csv_file_required")}</p>
+            {/if}
+        </div>
 
-        <Label class="mt-3 flex items-start">
+        <div class="flex items-start gap-3">
             <input
+                id="{uid}-update"
                 type="checkbox"
                 bind:checked={isUpdate}
-                class="mt-1 mr-3 w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500 dark:focus:ring-blue-600 dark:ring-offset-gray-800 focus:ring-2 dark:bg-gray-700 dark:border-gray-600"
+                class="mt-1 h-4 w-4 rounded-control border-border-strong bg-surface-2 text-primary focus:ring-primary"
             />
             <div class="flex-1">
-                <span
-                    class="text-sm font-medium text-gray-900 dark:text-gray-300"
-                    >Update entries</span
-                >
-                <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">
-                    {#if isUpdate}
-                        • Will update existing entries with matching shortname
-                    {:else}
-                        • Will create new entries from CSV data
-                    {/if}
+                <Label for="{uid}-update" class="mb-0">{$_("update_entries")}</Label>
+                <p class="text-xs text-text-muted mt-1">
+                    {isUpdate ? $_("csv_update_help") : $_("csv_create_help")}
                 </p>
             </div>
-        </Label>
+        </div>
 
         {#if result}
-            <div
-                class="mt-4 p-4 border border-red-300 bg-red-50 text-red-800 rounded max-h-80 overflow-y-auto dark:bg-gray-800 dark:border-red-800 dark:text-red-300"
-            >
-                <h4 class="font-semibold">
-                    {formatCount(result.imported)}
-                    {sent?.isUpdate ? "updated" : "imported"}, {formatCount(result.failedCount)} failed
+            <div class="rounded-card border border-danger/30 bg-danger-soft text-text p-4 max-h-80 overflow-y-auto" role="alert">
+                <h4 class="font-semibold text-sm tabular-nums">
+                    {sent?.isUpdate
+                        ? $_("csv_rows_updated", { values: { count: result.imported } })
+                        : $_("csv_rows_imported", { values: { count: result.imported } })},
+                    {$_("csv_rows_failed", { values: { count: result.failedCount } })}
                 </h4>
                 {#if result.message}
                     <p class="mt-2 text-sm break-words">{result.message}</p>
                 {/if}
                 {#if result.resumeRow}
-                    <Button size="xs" class="mt-2 bg-primary" onclick={continueUpload} disabled={isUploading}>
-                        Continue from row {formatCount(result.resumeRow)}
+                    <Button size="xs" color="primary" class="mt-2" onclick={continueUpload} disabled={isUploading}>
+                        {$_("continue_from_row", { values: { row: formatNumber(result.resumeRow) } })}
                     </Button>
                 {/if}
                 {#each failureGroups.slice(0, MAX_GROUPS) as group (group.error)}
                     <div class="mt-3">
                         <p class="text-sm font-medium break-words">
                             {group.error}
-                            <span class="font-normal">
-                                ({formatCount(group.rows.length)} {group.rows.length === 1 ? "row" : "rows"})
+                            <span class="font-normal text-text-muted tabular-nums">
+                                ({$_("n_rows", { values: { count: group.rows.length } })})
                             </span>
                         </p>
-                        <ul class="mt-1 text-xs space-y-0.5">
+                        <ul class="mt-1 text-xs space-y-0.5 text-text-muted">
                             {#each group.rows.slice(0, MAX_ROWS_PER_GROUP) as failure (failure.row)}
                                 <li class="break-all">{describeCsvFailureRow(failure)}</li>
                             {/each}
                             {#if group.rows.length > MAX_ROWS_PER_GROUP}
-                                <li>… and {formatCount(group.rows.length - MAX_ROWS_PER_GROUP)} more</li>
+                                <li>{$_("and_n_more", { values: { count: group.rows.length - MAX_ROWS_PER_GROUP } })}</li>
                             {/if}
                         </ul>
                     </div>
                 {/each}
                 {#if failureGroups.length > MAX_GROUPS}
-                    <p class="mt-3 text-xs">
-                        … and {formatCount(failureGroups.length - MAX_GROUPS)} other errors
+                    <p class="mt-3 text-xs text-text-muted">
+                        {$_("and_n_other_errors", { values: { count: failureGroups.length - MAX_GROUPS } })}
                     </p>
                 {/if}
             </div>
         {/if}
     </div>
 
-    {#snippet footer()}
-        <Button color="alternative" onclick={() => (isOpen = false)}
-            >Cancel</Button
-        >
-        <Button
-            class="bg-primary"
-            onclick={handleCSVUpload}
-            disabled={isUploading}
-        >
+    <div class="flex items-center justify-end gap-2 mt-6">
+        <Button color="alternative" onclick={() => (isOpen = false)} disabled={isUploading}>{$_("cancel")}</Button>
+        <Button color="primary" onclick={handleCSVUpload} disabled={isUploading}>
             {#if isUploading}
-                <Spinner size="4" class="mr-2" />
-                Uploading...
+                <Spinner size="4" class="me-2" />
+                {$_("uploading")}
             {:else}
-                Upload
+                {$_("upload")}
             {/if}
         </Button>
-    {/snippet}
+    </div>
 </Modal>

@@ -1,59 +1,36 @@
 <script lang="ts">
     import {
         ClockArrowOutline,
-        CloseOutline,
         DownloadOutline,
         FileCirclePlusOutline,
         FileCopyOutline,
         FileExportOutline,
-        SearchOutline,
         TrashBinOutline,
         UploadOutline,
     } from "flowbite-svelte-icons";
-    import {
-        Button,
-        ButtonGroup,
-        Input,
-        InputAddon,
-        Modal,
-    } from "flowbite-svelte";
-    import ModalCreateEntry from "@/components/management/Modals/ModalCreateEntry.svelte";
-    import ModalCSVUpload from "@/components/management/Modals/ModalCSVUpload.svelte";
-    import ModalCSVDownload from "@/components/management/Modals/ModalCSVDownload.svelte";
-    import ModalBulkMoveCopy from "@/components/management/Modals/ModalBulkMoveCopy.svelte";
-    import Prism from "@/components/Prism.svelte";
+    import { Button } from "flowbite-svelte";
+    import Toolbar from "@/components/ui/Toolbar.svelte";
+    import ConfirmDialog from "@/components/ui/ConfirmDialog.svelte";
+    import Lazy from "@/components/ui/Lazy.svelte";
     import { onMount } from "svelte";
     import { checkAccess } from "@/utils/checkAccess";
-    import {
-        currentEntry,
-        currentListView,
-        subpathInManagementNoAction,
-    } from "@/stores/global";
+    import { currentEntry, currentListView, subpathInManagementNoAction } from "@/stores/global";
     import { bulkBucket } from "@/stores/management/bulk_bucket";
     import { Dmart, RequestType, ResourceType, type ActionRequest } from "@edraj/tsdmart";
-    import { _ } from "svelte-i18n";
+    import { _ } from "@/i18n";
     import { Level, showToast } from "@/utils/toast";
     import { searchListView } from "@/stores/management/triggers";
     import { user } from "@/stores/user";
     import { goto, params } from "@roxi/routify";
+    import { errorMessage } from "@/utils/errorMessage";
+    import { bulkMoveEntryToTrash } from "@/utils/entryManagement";
+    import { normalizeSubpath, recordSubpath, trashRestoreTarget, trashRoot } from "@/utils/subpath";
 
-    import {
-        bulkMoveEntryToTrash,
-    } from "@/utils/entryManagement";
-    import {
-        normalizeSubpath,
-        recordSubpath,
-        trashRestoreTarget,
-        trashRoot,
-    } from "@/utils/subpath";
-
-    let { space_name, subpath }: { space_name: string; subpath: string } =
-        $props();
+    let { space_name, subpath }: { space_name: string; subpath: string } = $props();
 
     let canCreate = $state(false);
     let canUploadCSV = $state(false);
     let canDownloadCSV = $state(false);
-    let isCSVDownloadModalOpen = $state(false);
 
     const isEntryTrash = $derived(
         space_name === "personal" &&
@@ -79,19 +56,9 @@
         }
         if (space_name === "management") {
             if (subpathInManagementNoAction.includes(subpath)) {
-                canCreate = checkAccess(
-                    "create",
-                    space_name,
-                    subpath,
-                    subpath.slice(0, -1),
-                );
+                canCreate = checkAccess("create", space_name, subpath, subpath.slice(0, -1));
             } else {
-                canCreate = checkAccess(
-                    "create",
-                    space_name,
-                    subpath,
-                    "content",
-                );
+                canCreate = checkAccess("create", space_name, subpath, "content");
             }
         } else {
             canCreate =
@@ -100,105 +67,130 @@
         }
     });
 
-    let isOpen = $state(false);
+    // ── Modals: each loads its component (and the editors it pulls in) the
+    //    first time it opens, so none of them sits in the list's chunk. ─────
+    let isCreateOpen = $state(false);
+    let isCSVUploadModalOpen = $state(false);
+    let isCSVDownloadModalOpen = $state(false);
+    let isBulkMoveCopyOpen = $state(false);
+    let bulkActionType = $state<"move" | "copy">("move");
 
+    function openBulkMove() {
+        bulkActionType = "move";
+        isBulkMoveCopyOpen = true;
+    }
+
+    function openBulkCopy() {
+        bulkActionType = "copy";
+        isBulkMoveCopyOpen = true;
+    }
+
+    // ── Destructive actions: one dialog, two verbs ──────────────────────────
+    // `confirmAction` is the verb the dialog speaks; `confirmOpen` is bound to
+    // the dialog so Escape and the overlay close it the same way Cancel does.
+    let confirmAction = $state<"delete" | "trash">("delete");
+    let confirmOpen = $state(false);
     let isActionLoading = $state(false);
-    let openDeleteModal = $state(false);
-    let modelError: any = $state(null);
+    let actionError = $state<unknown>(null);
     let forceDelete = $state(false);
     const showForce = $derived(
         $bulkBucket.some(
             (b) => b.resource_type === ResourceType.folder || b.resource_type === ResourceType.user,
         ),
     );
-    function deleteCurrentEntry() {
-        modelError = null;
+    const selectedCount = $derived($bulkBucket.length);
+    const selectedNames = $derived($bulkBucket.map((e) => e.shortname).join(", "));
+
+    function askDelete() {
+        actionError = null;
         forceDelete = false;
-        openDeleteModal = true;
+        confirmAction = "delete";
+        confirmOpen = true;
     }
+
+    function askTrash() {
+        actionError = null;
+        confirmAction = "trash";
+        confirmOpen = true;
+    }
+
     async function handleBulkDelete() {
-        if ($bulkBucket.length) {
-            try {
-                isActionLoading = true;
-                modelError = null;
-                // Each record names its own subpath: on a non-exact list (the
-                // Trash page, folders with expand_children) rows come from
-                // several subpaths, and the list's own would be wrong for them.
-                const records = $bulkBucket.map((b) => ({
-                    resource_type: b.resource_type as ResourceType,
-                    shortname: b.shortname,
-                    subpath: recordSubpath(b, subpath),
-                    attributes: {},
-                }));
+        if (!$bulkBucket.length) return;
+        try {
+            isActionLoading = true;
+            actionError = null;
+            // Each record names its own subpath: on a non-exact list (the
+            // Trash page, folders with expand_children) rows come from
+            // several subpaths, and the list's own would be wrong for them.
+            const records = $bulkBucket.map((b) => ({
+                resource_type: b.resource_type as ResourceType,
+                shortname: b.shortname,
+                subpath: recordSubpath(b, subpath),
+                attributes: {},
+            }));
 
-                const request_body: ActionRequest & { force?: boolean } = {
-                    space_name,
-                    request_type: RequestType.delete,
-                    force: showForce && forceDelete,
-                    records: records,
-                };
-                const response = await Dmart.request(request_body);
+            const request_body: ActionRequest & { force?: boolean } = {
+                space_name,
+                request_type: RequestType.delete,
+                force: showForce && forceDelete,
+                records: records,
+            };
+            const response = await Dmart.request(request_body);
 
-                if (response?.status === "success") {
-                    showToast(Level.info);
-                    await $currentListView?.fetchPageRecords();
-                    bulkBucket.set([]);
-                    openDeleteModal = false;
-                } else {
-                    showToast(Level.warn);
-                    modelError = response;
-                }
-            } catch (error: any) {
-                modelError = error.response?.data?.error;
-                showToast(
-                    Level.warn,
-                    "Failed to delete entries. Please try again later.",
-                );
-            } finally {
-                isActionLoading = false;
+            if (response?.status === "success") {
+                showToast(Level.info, $_("entries_deleted", { values: { count: records.length } }));
+                await $currentListView?.fetchPageRecords();
+                bulkBucket.set([]);
+                confirmOpen = false;
+            } else {
+                showToast(Level.warn);
+                actionError = response;
             }
+        } catch (error: unknown) {
+            actionError = error;
+            showToast(Level.warn, errorMessage(error, $_("entries_delete_failed")));
+        } finally {
+            isActionLoading = false;
         }
     }
 
     async function handleBulkTrash() {
-        if ($bulkBucket.length) {
-            try {
-                isActionLoading = true;
-                const result = await bulkMoveEntryToTrash(
-                    $state.snapshot($bulkBucket),
-                    space_name,
-                    $user.shortname ?? "",
-                );
+        if (!$bulkBucket.length) return;
+        try {
+            isActionLoading = true;
+            actionError = null;
+            const result = await bulkMoveEntryToTrash(
+                $state.snapshot($bulkBucket),
+                space_name,
+                $user.shortname ?? "",
+            );
 
-                if (result.success) {
-                    await $currentListView?.fetchPageRecords();
-                    $bulkBucket = [];
-                }
-            } catch {
-                showToast(
-                    Level.warn,
-                    "Failed to move entries to trash. Please try again later.",
-                );
-            } finally {
-                isActionLoading = false;
+            if (result.success) {
+                await $currentListView?.fetchPageRecords();
+                $bulkBucket = [];
+                confirmOpen = false;
+            } else {
+                actionError = result.errorMessage;
             }
+        } catch (error: unknown) {
+            actionError = error;
+            showToast(Level.warn, errorMessage(error, $_("entries_trash_failed")));
+        } finally {
+            isActionLoading = false;
         }
     }
 
+    // ── Search ──────────────────────────────────────────────────────────────
+    // The list clears the shared query when the folder changes; the box
+    // follows, and typing overrides it until the next change.
+    let searchInput = $derived($searchListView);
 
-    let searchInput = $state($searchListView);
-    async function handleSearch(e?: Event) {
-        e?.preventDefault();
-        searchListView.set(searchInput);
+    function handleSearch(queryText: string) {
+        searchListView.set(queryText);
         // A new search starts from page 1; keeping the old page offset
         // would land past the end of a smaller result set.
         const { page: _page, search: _search, ...rest } = $params;
-        $goto("$leaf", searchInput ? { ...rest, search: searchInput } : rest);
-    }
-
-    let isCSVUploadModalOpen = $state(false);
-    function handleCSVUploadModal() {
-        isCSVUploadModalOpen = true;
+        $goto("$leaf", queryText ? { ...rest, search: queryText } : rest);
     }
 
     async function restoreEntries() {
@@ -239,211 +231,133 @@
             bulkBucket.set([]);
             await $currentListView?.fetchPageRecords();
             showToast(Level.info, $_("entries_restored"));
-        } catch (error: any) {
-            showToast(
-                Level.warn,
-                error?.response?.data?.error?.message ?? error?.message ?? $_("entries_restore_failed"),
-            );
+        } catch (error: unknown) {
+            showToast(Level.warn, errorMessage(error, $_("entries_restore_failed")));
         } finally {
             isActionLoading = false;
         }
     }
 
-    let isBulkMoveCopyOpen = $state(false);
-    let bulkActionType = $state("move");
-
-    function openBulkMove() {
-        bulkActionType = "move";
-        isBulkMoveCopyOpen = true;
-    }
-
-    function openBulkCopy() {
-        bulkActionType = "copy";
-        isBulkMoveCopyOpen = true;
-    }
 </script>
 
-<div class="flex flex-col md:flex-row justify-between items-center my-2 mx-3">
-    <div class="w-1/2">
-        <form onsubmit={handleSearch}>
-            <ButtonGroup class="w-full">
-                <Input
-                    id="website-admin"
-                    placeholder="Search..."
-                    bind:value={searchInput}
-                    type="search"
-                />
-                {#if searchInput.length > 0}
-                    <InputAddon
-                        class="cursor-pointer"
-                        onclick={(e) => {
-                            searchInput = "";
-                            handleSearch(e);
-                        }}
-                    >
-                        <CloseOutline
-                            class="h-4 w-4 text-gray-500 dark:text-gray-400"
-                        />
-                    </InputAddon>
-                {/if}
-                <InputAddon class="cursor-pointer" onclick={handleSearch}>
-                    <SearchOutline
-                        class="h-4 w-4 text-gray-500 dark:text-gray-400"
-                    />
-                </InputAddon>
-            </ButtonGroup>
-        </form>
-    </div>
-    <div>
-        {#if $bulkBucket.length === 0}
-            {#if canCreate && !isEntryTrash}
-                <Button
-                    class="bg-primary cursor-pointer"
-                    size="xs"
-                    onclick={() => (isOpen = true)}
-                >
-                    <FileCirclePlusOutline size="md" /> Create
-                </Button>
-            {/if}
-            {#if canUploadCSV}
-                <Button
-                    class="text-primary cursor-pointer"
-                    size="xs"
-                    outline
-                    onclick={handleCSVUploadModal}
-                >
-                    <UploadOutline size="md" /> Upload
-                </Button>
-            {/if}
-            {#if canDownloadCSV}
-                <Button
-                    class="text-primary cursor-pointer"
-                    size="xs"
-                    outline
-                    onclick={() => (isCSVDownloadModalOpen = true)}
-                >
-                    <DownloadOutline size="md" /> Download
-                </Button>
-            {/if}
+<Toolbar
+    class="my-2 mx-3"
+    bind:search={searchInput}
+    placeholder={$_("search")}
+    onSearch={handleSearch}
+>
+    {#if selectedCount === 0}
+        {#if canCreate && !isEntryTrash}
+            <Button size="sm" color="primary" onclick={() => (isCreateOpen = true)}>
+                <FileCirclePlusOutline size="sm" class="me-1.5" aria-hidden="true" />
+                {$_("create")}
+            </Button>
         {/if}
-        {#if $bulkBucket.length}
-            {#if isEntryTrash}
-                <Button
-                    class="text-primary cursor-pointer"
-                    size="xs"
-                    outline
-                    onclick={restoreEntries}
-                >
-                    <ClockArrowOutline size="md" /> Restore
-                </Button>
-                <Button
-                    class="text-red-500 cursor-pointer"
-                    size="xs"
-                    outline
-                    onclick={deleteCurrentEntry}
-                    disabled={isActionLoading}
-                >
-                    <TrashBinOutline size="md" /> Bulk delete
-                </Button>
-            {:else}
-                <Button
-                    class="text-primary cursor-pointer"
-                    size="xs"
-                    outline
-                    onclick={openBulkMove}
-                >
-                    <FileExportOutline size="md" /> Bulk Move
-                </Button>
-                <Button
-                    class="text-primary cursor-pointer"
-                    size="xs"
-                    outline
-                    onclick={openBulkCopy}
-                >
-                    <FileCopyOutline size="md" /> Bulk Copy
-                </Button>
-                <Button
-                    class="text-red-500 cursor-pointer"
-                    size="xs"
-                    outline
-                    onclick={handleBulkTrash}
-                    disabled={isActionLoading}
-                >
-                    <TrashBinOutline size="md" /> Bulk Trash
-                </Button>
-                <Button
-                    class="text-red-600 cursor-pointer"
-                    size="xs"
-                    outline
-                    onclick={deleteCurrentEntry}
-                >
-                    <TrashBinOutline size="md" /> Bulk delete
-                </Button>
-            {/if}
+        {#if canUploadCSV}
+            <Button size="sm" color="alternative" onclick={() => (isCSVUploadModalOpen = true)}>
+                <UploadOutline size="sm" class="me-1.5" aria-hidden="true" />
+                {$_("upload")}
+            </Button>
         {/if}
-    </div>
-</div>
+        {#if canDownloadCSV}
+            <Button size="sm" color="alternative" onclick={() => (isCSVDownloadModalOpen = true)}>
+                <DownloadOutline size="sm" class="me-1.5" aria-hidden="true" />
+                {$_("download")}
+            </Button>
+        {/if}
+    {:else}
+        <span class="text-sm text-text-muted tabular-nums me-1" aria-live="polite">
+            {$_("n_selected", { values: { count: selectedCount } })}
+        </span>
+        {#if isEntryTrash}
+            <Button size="sm" color="alternative" onclick={restoreEntries} disabled={isActionLoading}>
+                <ClockArrowOutline size="sm" class="me-1.5" aria-hidden="true" />
+                {$_("restore")}
+            </Button>
+            <Button size="sm" color="red" outline onclick={askDelete} disabled={isActionLoading}>
+                <TrashBinOutline size="sm" class="me-1.5" aria-hidden="true" />
+                {$_("bulk_delete")}
+            </Button>
+        {:else}
+            <Button size="sm" color="alternative" onclick={openBulkMove} disabled={isActionLoading}>
+                <FileExportOutline size="sm" class="me-1.5 rtl:rotate-180" aria-hidden="true" />
+                {$_("bulk_move")}
+            </Button>
+            <Button size="sm" color="alternative" onclick={openBulkCopy} disabled={isActionLoading}>
+                <FileCopyOutline size="sm" class="me-1.5" aria-hidden="true" />
+                {$_("bulk_copy")}
+            </Button>
+            <Button size="sm" color="red" outline onclick={askTrash} disabled={isActionLoading}>
+                <TrashBinOutline size="sm" class="me-1.5" aria-hidden="true" />
+                {$_("bulk_trash")}
+            </Button>
+            <Button size="sm" color="red" outline onclick={askDelete} disabled={isActionLoading}>
+                <TrashBinOutline size="sm" class="me-1.5" aria-hidden="true" />
+                {$_("bulk_delete")}
+            </Button>
+        {/if}
+    {/if}
+</Toolbar>
 
-{#if canCreate}
-    <ModalCreateEntry {space_name} {subpath} bind:isOpen />
+{#if canCreate && isCreateOpen}
+    <Lazy load={() => import("@/components/management/Modals/ModalCreateEntry.svelte")} pending="none">
+        {#snippet children(ModalCreateEntry)}
+            <ModalCreateEntry {space_name} {subpath} bind:isOpen={isCreateOpen} />
+        {/snippet}
+    </Lazy>
 {/if}
 
-{#if canUploadCSV}
-    <ModalCSVUpload {space_name} {subpath} bind:isOpen={isCSVUploadModalOpen} />
+{#if canUploadCSV && isCSVUploadModalOpen}
+    <Lazy load={() => import("@/components/management/Modals/ModalCSVUpload.svelte")} pending="none">
+        {#snippet children(ModalCSVUpload)}
+            <ModalCSVUpload {space_name} {subpath} bind:isOpen={isCSVUploadModalOpen} />
+        {/snippet}
+    </Lazy>
 {/if}
 
-{#if canDownloadCSV}
-    <ModalCSVDownload
-        {space_name}
-        {subpath}
-        bind:isOpen={isCSVDownloadModalOpen}
-    />
+{#if canDownloadCSV && isCSVDownloadModalOpen}
+    <Lazy load={() => import("@/components/management/Modals/ModalCSVDownload.svelte")} pending="none">
+        {#snippet children(ModalCSVDownload)}
+            <ModalCSVDownload {space_name} {subpath} bind:isOpen={isCSVDownloadModalOpen} />
+        {/snippet}
+    </Lazy>
 {/if}
 
-<ModalBulkMoveCopy
-    {space_name}
-    {subpath}
-    bind:isOpen={isBulkMoveCopyOpen}
-    actionType={bulkActionType}
-/>
+{#if isBulkMoveCopyOpen}
+    <Lazy load={() => import("@/components/management/Modals/ModalBulkMoveCopy.svelte")} pending="none">
+        {#snippet children(ModalBulkMoveCopy)}
+            <ModalBulkMoveCopy
+                {space_name}
+                {subpath}
+                bind:isOpen={isBulkMoveCopyOpen}
+                actionType={bulkActionType}
+            />
+        {/snippet}
+    </Lazy>
+{/if}
 
-<Modal bind:open={openDeleteModal} size="md" title="Confirm Deletion">
-    <p class="text-center mb-6">
-        Are you sure you want to delete <span class="font-bold"
-            >{$bulkBucket.map((e) => e.shortname).join(", ")}</span
-        >
-        {$bulkBucket.length === 1 ? "entry" : "entries"}?<br />
-        This action cannot be undone.
-    </p>
-
-    {#if showForce}
-        <label class="flex items-start gap-2 mb-4 text-sm cursor-pointer">
-            <input type="checkbox" bind:checked={forceDelete} class="mt-0.5" />
+<ConfirmDialog
+    bind:open={confirmOpen}
+    variant="danger"
+    title={confirmAction === "trash"
+        ? $_("trash_n_entries", { values: { count: selectedCount } })
+        : $_("delete_n_entries", { values: { count: selectedCount } })}
+    body={confirmAction === "trash"
+        ? $_("confirm_trash_entries", { values: { names: selectedNames } })
+        : `${$_("confirm_delete_entries", { values: { names: selectedNames } })}\n${$_("cannot_be_undone")}`}
+    confirmLabel={confirmAction === "trash" ? $_("move_to_trash") : $_("delete")}
+    loading={isActionLoading}
+    loadingLabel={confirmAction === "trash" ? $_("moving") : $_("deleting")}
+    error={actionError}
+    onConfirm={confirmAction === "trash" ? handleBulkTrash : handleBulkDelete}
+>
+    {#if confirmAction === "delete" && showForce}
+        <label class="flex items-start gap-2 text-sm cursor-pointer">
+            <input type="checkbox" bind:checked={forceDelete} class="mt-0.5 h-4 w-4 rounded-control border-border-strong text-primary focus:ring-primary" />
             <span>
-                <span class="font-semibold">{$_("force_delete")}</span>
-                <span class="block text-gray-600">{$_("force_delete_help")}</span>
+                <span class="font-semibold text-text">{$_("force_delete")}</span>
+                <span class="block text-text-muted">{$_("force_delete_help")}</span>
             </span>
         </label>
     {/if}
-
-    {#if modelError}
-        <div class="mt-4">
-            <p class="text-red-600 font-medium mb-2">Error:</p>
-            <div class="max-h-60 overflow-auto">
-                <Prism code={modelError} />
-            </div>
-        </div>
-    {/if}
-
-    <div class="flex justify-between w-full">
-        <Button color="alternative" onclick={() => (openDeleteModal = false)}
-            >Cancel</Button
-        >
-        <Button
-            color="red"
-            onclick={handleBulkDelete}
-            disabled={isActionLoading}
-            >{isActionLoading ? "Deleting..." : "Delete"}</Button
-        >
-    </div>
-</Modal>
+</ConfirmDialog>

@@ -1,75 +1,97 @@
 <script lang="ts">
-    import {ResourceType} from "@edraj/tsdmart";
-    import {marked} from "marked";
-    import DOMPurify from "dompurify";
+    import { ResourceType } from "@edraj/tsdmart";
     import Prism from "@/components/Prism.svelte";
+    import LoadingState from "@/components/ui/LoadingState.svelte";
+    import { renderMarkdown } from "@/utils/markdown";
+    import { limitJsonForDisplay } from "@/utils/displayJson";
+    import { _ } from "@/i18n";
 
-    export let attributes: any = {};
-  export let resource_type: ResourceType;
-  export let url: string;
-  export let displayname: string = "";
-  let content_type: string = attributes?.payload?.content_type || "";
-  let body: any = attributes?.payload?.body;
+    // Shows one attachment's content inside the view modal. Props are reactive
+    // (runes), so switching the selected attachment while the modal is open
+    // re-renders the right thing instead of the first one.
+    let {
+        attributes = {},
+        resource_type,
+        url,
+        displayname = "",
+    }: {
+        attributes?: Record<string, any>;
+        resource_type: ResourceType;
+        url: string;
+        displayname?: string;
+    } = $props();
+
+    const contentType = $derived<string>(attributes?.payload?.content_type || "");
+    const body = $derived(attributes?.payload?.body);
+    const jsonPreview = $derived(limitJsonForDisplay(body));
 </script>
 
 {#if resource_type === ResourceType.comment}
-  <div class="h-full w-full">
-    <p style="margin: 0px"><b>State:</b> {attributes?.payload?.body?.state}</p>
-    <br />
-    <p style="margin: 0px"><b>Body:</b> {attributes?.payload?.body?.body}</p>
-  </div>
+    <dl class="w-full text-sm space-y-2">
+        <div>
+            <dt class="font-medium text-text-muted">{$_("state")}</dt>
+            <dd class="text-text">{attributes?.payload?.body?.state ?? $_("not_applicable")}</dd>
+        </div>
+        <div>
+            <dt class="font-medium text-text-muted">{$_("body")}</dt>
+            <dd class="text-text whitespace-pre-wrap break-words">{attributes?.payload?.body?.body ?? ""}</dd>
+        </div>
+    </dl>
 {:else if resource_type === ResourceType.json || resource_type === ResourceType.reaction}
-  <div>
-    <div class="h-full w-full">
-      <Prism language="json" code={body} />
+    <div class="w-full space-y-2">
+        {#if jsonPreview.truncated}
+            <p class="text-xs text-text-muted">{$_("preview_truncated")}</p>
+        {/if}
+        <div class="max-h-[70vh] overflow-auto">
+            <Prism language="json" code={jsonPreview.value as object | string} />
+        </div>
+        {#if resource_type === ResourceType.reaction}
+            <p class="text-sm text-text"><span class="font-medium text-text-muted">{$_("type")}:</span> {attributes?.type ?? $_("not_applicable")}</p>
+        {/if}
     </div>
-    {#if resource_type === ResourceType.reaction}
-      <p style="margin: 0px"><b>Type: </b> {attributes.type ?? "N/A"}</p>
+{:else if contentType.includes("image")}
+    {#if url.endsWith("svg")}
+        <object data={url} type="image/svg+xml" title={displayname} class="max-w-full">
+            <img src={url} alt={displayname} class="max-w-full h-auto rounded-control border border-border" loading="lazy" decoding="async" />
+        </object>
+    {:else}
+        <img src={url} alt={displayname} class="max-w-full h-auto rounded-control border border-border" loading="lazy" decoding="async" />
     {/if}
-  </div>
-{:else if content_type.includes("image")}
-  {#if url.endsWith('svg')}
-    <object data={url} type="image/svg+xml" title="{displayname}">
-      <img src={url} alt={displayname} class="mw-100 border" />
-    </object>
-  {:else}
-    <img src={url} alt={displayname} class="mw-100 border" />
-  {/if}
-{:else if content_type.includes("audio")}
-  <audio controls src={url}>
-    <track kind="captions" />
-  </audio>
-{:else if content_type.includes("video")}
-  <video controls src={url}>
-    <track kind="captions" />
-  </video>
-{:else if content_type.includes("pdf")}
-  <!-- iframe, not <object>: the CSP this app serves carries object-src 'none',
-       so an <object> embed is refused outright and the user gets the fallback
-       text below instead of the document. An iframe falls under frame-src,
-       which inherits default-src 'self' — and the payload is same-origin. -->
-  <iframe
-          title={displayname}
-          class="pdf-viewer"
-          src={url}
-  ></iframe>
-{:else if ["markdown", "html", "text"].includes(content_type)}
-  <div class="w-full h-full">
-    <article class="prose">
-      <!-- marked does NOT strip HTML, and the body is server-supplied
-           attachment content — sanitize before injecting. -->
-      {@html DOMPurify.sanitize(marked(body) as string)}
-    </article>
-  </div>
+{:else if contentType.includes("audio")}
+    <audio controls src={url} class="w-full">
+        <track kind="captions" />
+    </audio>
+{:else if contentType.includes("video")}
+    <video controls src={url} class="max-w-full max-h-[70vh]">
+        <track kind="captions" />
+    </video>
+{:else if contentType.includes("pdf")}
+    <!-- iframe, not <object>: the CSP this app serves carries object-src 'none',
+         so an <object> embed is refused outright and the user gets the fallback
+         text below instead of the document. An iframe falls under frame-src,
+         which inherits default-src 'self' — and the payload is same-origin. -->
+    <iframe title={displayname} class="pdf-viewer" src={url}></iframe>
+{:else if ["markdown", "html", "text"].includes(contentType)}
+    <div class="w-full">
+        {#await renderMarkdown(typeof body === "string" ? body : "")}
+            <LoadingState variant="skeleton" rows={4} />
+        {:then html}
+            <article class="prose dark:prose-invert max-w-none">
+                <!-- eslint-disable-next-line svelte/no-at-html-tags -- sanitised by renderMarkdown -->
+                {@html html}
+            </article>
+        {/await}
+    </div>
 {:else}
-  <a href={url} title={displayname}
-     target="_blank" rel="noopener noreferrer" download>link {displayname}</a>
+    <a href={url} title={displayname} target="_blank" rel="noopener noreferrer" download class="text-primary hover:underline">
+        {$_("download_file", { values: { name: displayname } })}
+    </a>
 {/if}
 
 <style>
-  .pdf-viewer {
-    width: 100%;
-    height: 90vh;
-    min-height: 500px;
-  }
+    .pdf-viewer {
+        width: 100%;
+        height: 90vh;
+        min-height: 500px;
+    }
 </style>
