@@ -691,6 +691,79 @@ jobs:
           echo "one or more driver legs did not succeed"
           exit 1
 
+  e2e-playwright:
+    name: E2E browser tests (Playwright)
+    # Hosted: the suite needs a Chromium with its system libraries, which
+    # `playwright install --with-deps` can only put on a runner it may apt on.
+    # Builds both SPAs and the JIT server, seeds SQLite with the bundled sample
+    # spaces (e2e/run-server.sh — the same script a developer runs locally) and
+    # drives cxb and the catalog through a real browser: sign-in, navigation,
+    # the language and theme switches, dark mode, phone width. Every test fails
+    # on an uncaught exception or an unexpected console.error, which is how each
+    # regression caught in the manual browser walks showed up.
+    runs-on: ubuntu-24.04
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 22
+
+      - name: Resolve the lock-file SDK
+        id: sdk
+        run: echo "version=$(cat dist/LOCKFILE_SDK)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5.4.0
+        env:
+          # Isolated root, same reasoning as the dependency-graph job: the
+          # image's own .NET 10 SDK would otherwise be selected over this one.
+          DOTNET_INSTALL_DIR: ${{ runner.temp }}/dotnet-e2e-sdk
+        with:
+          dotnet-version: ${{ steps.sdk.outputs.version }}
+
+      - name: Install and build the SPAs
+        # --frozen-lockfile first so the resolution is the lockfile's;
+        # build-ui.sh then finds node_modules populated and only builds.
+        run: |
+          yarn install --frozen-lockfile
+          ./build-ui.sh
+
+      - name: Build the server (embeds both SPAs)
+        run: dotnet build dmart.csproj -c Release --nologo
+
+      - name: Install Chromium for Playwright
+        run: yarn --cwd e2e playwright install --with-deps chromium
+
+      - name: Start a seeded server
+        run: |
+          E2E_BIN="$(pwd)/bin/Release/net10.0/dmart" bash e2e/run-server.sh
+          echo "E2E_BASE_URL=http://127.0.0.1:5399" >> "$GITHUB_ENV"
+
+      - name: Run the suite
+        run: yarn --cwd e2e test
+
+      - name: Stop the server
+        if: always()
+        run: kill "$(cat e2e/.work/pid)" 2>/dev/null || true
+
+      - name: Upload the report and traces
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: playwright-report
+          path: |
+            e2e/playwright-report
+            e2e/test-results
+            e2e/.work/server.log
+            e2e/.work/seed.log
+          retention-days: 7
+          if-no-files-found: ignore
+
   aot-publish:
     runs-on: self-hosted
     # Fork guard — see build-and-test-matrix.
