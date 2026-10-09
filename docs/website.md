@@ -5,8 +5,17 @@ a static site, and the server serves it under `WEBSITE_URL` (default
 `/website`). Pages are real HTML with the text in the markup, so crawlers and
 link previews see the content without running JavaScript.
 
-The bundled `website` space is dmart.cc: its 14 documentation pages, the home
-page and the navigation. `dmart seed` loads it like any other sample space.
+A ready-made `website` space is the **`website` pack** in
+[edraj/website](https://github.com/edraj/website): dmart.cc's 14 documentation
+pages, its home page and its navigation, with the schemas below and a
+`website_public` role for opening it to anonymous readers. Install it with that
+repository's `pack/install.sh`; it is no longer part of `dmart seed`.
+
+dmart.cc itself is built the other way this content model supports: by a
+separate frontend (Svelte + Routify) that reads the same space through the
+public API at build time. `dmart website build` is the zero-tooling path, with
+nothing to install beyond dmart; that repository is the bring-your-own-frontend
+path.
 
 ## The content model
 
@@ -57,8 +66,14 @@ website: space 'website' has nothing an anonymous visitor can read under /pages 
 
 This is deliberate. A fresh install shouldn't serve a public website by
 default, and one switch should control both whether the API serves this
-content to strangers and whether the site contains it. To make the space
-public, use the API rather than SQL (see `docs/permissions.md`):
+content to strangers and whether the site contains it.
+
+With the `website` pack, that switch is `pack/install.sh --public`: it adds the
+pack's `website_public` role (query and view of active entries in `website`,
+nothing else) to the anonymous user, beside `world`.
+
+Without the pack, widen `world` itself. Use the API rather than SQL (see
+`docs/permissions.md`):
 
 ```bash
 curl -X POST localhost:5099/managed/request \

@@ -37,6 +37,17 @@
   locally, a fresh builder went from 828 s to 119 s including the build.
   Releases still build in a fresh container, from the same cache.
 
+### Removed
+
+- **The bundled `website` space, and the converter that produced it.**
+  dmart.cc's content now lives as the `website` pack in
+  [edraj/website](https://github.com/edraj/website), next to the Svelte +
+  Routify site that builds dmart.cc from it through the public API. `dmart seed`
+  no longer loads a `website` space, and the seed shrinks from 992K to 740K.
+  `dmart website build` is unchanged and renders any `website` space,
+  including one installed from that pack (`pack/install.sh`).
+  `tools/website-migrate/` is gone, since the pack is now the source.
+
 ## v1.5.22 — 2026-10-08
 
 ### Added

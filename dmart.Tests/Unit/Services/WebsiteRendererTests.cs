@@ -385,7 +385,7 @@ public sealed class WebsiteRendererTests : IDisposable
         t.Figure("architecture").ShouldNotBeNull();
 
         // Figures are inlined into the page, so the same rule holds for them.
-        // The explainer tells the seeded home page's five-scene story.
+        // The explainer tells the five-scene story of the `website` pack's home page.
         var explainer = t.Figure("explainer");
         explainer.ShouldNotBeNull();
         Regex.Matches(explainer, "<g class=\"sc[ \"]").Count.ShouldBe(5);

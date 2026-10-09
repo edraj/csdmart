@@ -38,9 +38,21 @@ AUTH_RATE_LIMIT_PER_MINUTE=120
 CFG
 chmod 600 "$WORK/config.env"
 
-# Bundled sample spaces → flat files → database. The suite asserts on their
-# content (the Website space, its pages, the "Why DMART?" post).
+# Bundled sample spaces → flat files → database.
 BACKEND_ENV="$WORK/config.env" "$BIN" seed > "$WORK/seed.log" 2>&1
+
+# The suite asserts on the Website space (its 14 pages, the "Why DMART?"
+# post), which is no longer bundled: it is the `website` pack in edraj/website.
+# Install it from a pinned commit, or from a local checkout's pack/ via
+# E2E_WEBSITE_PACK for an offline run.
+PACK=${E2E_WEBSITE_PACK:-}
+if [ -z "$PACK" ]; then
+  REF=${E2E_WEBSITE_REF:-f45eb83f548ad9a00c3a0f6973ff6273ba48d5d5}
+  mkdir -p "$WORK/website"
+  curl -fsSL "https://codeload.github.com/edraj/website/tar.gz/$REF" | tar -xz -C "$WORK/website" --strip-components=1
+  PACK="$WORK/website/pack"
+fi
+DMART_BIN="$BIN" BACKEND_ENV="$WORK/config.env" "$PACK/install.sh" > "$WORK/pack.log" 2>&1
 
 BACKEND_ENV="$WORK/config.env" "$BIN" serve > "$WORK/server.log" 2>&1 &
 echo $! > "$WORK/pid"

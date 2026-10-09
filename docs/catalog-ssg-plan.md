@@ -254,8 +254,11 @@ dynamic-import helper to hydrate).
 
 ## The `website` space (migration landed)
 
-dmart.cc's 14 pages now exist as dmart content in `seed/spaces/website`,
-converted by `tools/website-migrate/convert.py`.
+dmart.cc's 14 pages now exist as dmart content, converted by
+`tools/website-migrate/convert.py`. **Moved 2026-10-09:** the space is now
+the `website` pack in [edraj/website](https://github.com/edraj/website), and
+the converter and `seed/spaces/website` left this repository with it
+(dmart.cc is built there by a Routify app from the public API).
 
 **Fidelity, measured rather than asserted.** The converted markdown reproduces
 the source's document structure exactly:
