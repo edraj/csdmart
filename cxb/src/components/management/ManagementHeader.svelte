@@ -47,11 +47,12 @@
 
     let drawerOpen = $state(false);
 
-    function goToProfile(e: Event) {
-        e.preventDefault();
-        e.stopPropagation();
-        $goto("/management/profile");
-    }
+    // Read here, during initialisation. Routify's helpers look up the router
+    // context when first subscribed, and Svelte 5 subscribes to a `$store` the
+    // first time it is read: a `$goto` first read inside a click handler finds
+    // no context ("Routify: Unable to access context"), throws, and the click
+    // does nothing.
+    const go = $goto;
 
     function logout(e: Event) {
         e.preventDefault();
@@ -61,7 +62,7 @@
 
     function navigate(href: string) {
         drawerOpen = false;
-        $goto(href);
+        go(href);
     }
 
     function isActive(match: string) {
@@ -167,7 +168,7 @@
             <span class="max-w-32 truncate">{$user.shortname}</span>
         </button>
         <Dropdown simple triggeredBy="#management-user-menu" class="min-w-44">
-            <DropdownItem onclick={goToProfile}>
+            <DropdownItem href={$url("/management/profile")}>
                 <span class="flex items-center gap-2">
                     <UserSolid size="sm" aria-hidden="true" /> {$_("profile")}
                 </span>

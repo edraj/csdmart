@@ -49,6 +49,19 @@ test.describe("cxb", () => {
       await expect(page.getByRole("heading", { level: 1, name: "Spaces" })).toBeVisible();
     });
 
+    // The other tests open pages by URL; this one clicks through the header,
+    // which is how a person gets around. A `$goto` first read inside a click
+    // handler found no router context, so the tabs and the account menu's
+    // Profile did nothing (a console error the page fixture fails on).
+    test("the header's tabs and the account menu's Profile navigate", async ({ page }) => {
+      await page.goto("/cxb/management/content");
+      await page.getByRole("link", { name: "Tools" }).first().click();
+      await expect(page).toHaveURL(/\/cxb\/management\/tools/);
+      await page.locator("#management-user-menu").click();
+      await page.getByText("Profile", { exact: true }).click();
+      await expect(page).toHaveURL(/\/cxb\/management\/profile/);
+    });
+
     test("tools pages render", async ({ page }) => {
       await page.goto("/cxb/management/tools");
       await expect(page.getByRole("heading", { level: 1, name: "Tools" })).toBeVisible();
