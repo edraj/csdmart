@@ -290,6 +290,26 @@ public class SearchPermissionCompositionTests
         sql.ShouldContain(" AND (space_name::text = ");
     }
 
+    [Theory]
+    [InlineData("@payload.body.k:v or @payload.body.k:w")]
+    [InlineData("@payload.body.k:v) or @payload.body.k:w")]
+    [InlineData("(@payload.body.k:v or @payload.body.k:w")]
+    public void Join_Narrowing_Applies_To_Every_Branch_Of_The_SubQuery_Search(string subQuerySearch)
+    {
+        // The join appends `@shortname:a|b` (the base page's keys) to the
+        // sub-query's own search. Appended raw, an `or` left it on the last
+        // branch, and the first pulled right rows for any key.
+        var narrowed = QueryService.NarrowJoinSearch(subQuerySearch, "@shortname:a|b");
+        var sql = string.Join(" ", SearchExpressionParser.Parse(narrowed, 0).Clauses);
+
+        TopLevelOr(sql).OrIndex.ShouldBe(-1);
+        sql.ShouldEndWith(") AND ((shortname::text = @s_4 OR shortname::text = @s_5)))");
+    }
+
+    [Fact]
+    public void Join_Narrowing_Alone_Is_Sent_As_It_Is()
+        => QueryService.NarrowJoinSearch(null, "@shortname:a|b").ShouldBe("@shortname:a|b");
+
     [Fact]
     public void BalanceParens_Drops_Stray_Closers_And_Completes_Open_Groups()
     {

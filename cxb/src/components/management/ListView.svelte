@@ -1,5 +1,6 @@
 <script lang="ts">
     import { resolveTotal } from "@shared/query-total";
+    import { andSearch } from "@shared/search-compose";
     import { functionCreateDatatable, Sort } from "@/components/management/datatable";
     import Pagination from "@/components/ui/Pagination.svelte";
     import { rowKey } from "@/utils/rowKey";
@@ -314,7 +315,10 @@
         isFetching = true;
         fetchError = null;
         try {
-            let _search = $searchListView;
+            // Typed text, hidden folders and the folder's own query, each its
+            // own group: joined by spaces, an `or` in the typed text escaped
+            // the filters after it (see andSearch).
+            const fragments: string[] = [$searchListView];
 
             if (subpath === "/") {
                 if ($spaces === null || $spaces.length === 0) {
@@ -325,13 +329,14 @@
                 const hideFolders = currentSpace?.attributes?.hide_folders;
 
                 if (hideFolders?.length) {
-                    _search += ` -@shortname:${hideFolders.join("|")}`;
+                    fragments.push(`-@shortname:${hideFolders.join("|")}`);
                 }
             }
 
             if (query?.type && query?.search) {
-                _search += ` ${query.search.trim()}`;
+                fragments.push(query.search);
             }
+            const _search = andSearch(...fragments);
             const limit = objectDatatable.numberRowsPerPage;
             const pageNo = objectDatatable.numberActivePage;
             const _subpath = (subpath ?? '').replaceAll('-', '/');
