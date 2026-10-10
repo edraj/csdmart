@@ -306,9 +306,10 @@ run's details are in this file's git history.
      tombstones. Two catches: a soft delete sets `deleted_at` but not
      `updated_at`, and rehash-on-login leaves `updated_at` alone (harmless,
      since the old hash verifies the same password).
-4. **Password self-service.** SSP changes passwords over LDAP, which the face
-   refuses. dmart's own reset flow (`/user/otp-request`,
-   `/user/password-reset-confirm`) would replace SSP.
+4. ~~**Password self-service.**~~ Done: dmart's change and reset flows
+   replace SSP. A reset may name the account by its hosted mailbox; the code
+   goes to the contact channel. See `docs/user-directory-fields.md`.
+   Not done: importing `{SSHA}` hashes from OpenLDAP.
 5. ~~**Per-service delegation.**~~ Done: `USER_SERVICE_GRANTERS`.
 6. ~~**cxb, SDKs and query grammar**~~ Done. tsdmart's types wait on a
    release of that package.

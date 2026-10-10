@@ -206,3 +206,32 @@ paged full listing continues across pages instead of failing.
   `USER_MAIL_DOMAINS` narrows.
 - **SDKs.** `dmart.Client` shares `Dmart.Models`, so `User` has the fields.
   tsdmart has a `UserDirectoryFields` type on the profile and on user records.
+
+## Password self-service (what replaces SSP)
+
+LTB Self Service Password changes passwords over LDAP, which the face
+refuses: it accepts no writes and no Password Modify. dmart's own flows
+replace it, and because the face reads the same row, a new password is the
+one every LDAP bind checks from that moment.
+
+- **Change**: signed in, with the current password (`/user/profile`,
+  `old_password`). The catalog's account page does this.
+- **Reset**: `/user/otp-request` with `purpose: reset`, then
+  `/user/password-reset-confirm`. The catalog and cxb both have the pages.
+  The user may name the account by shortname, contact email, phone number,
+  or **hosted mailbox**.
+  - Named by mailbox, the code goes where a shortname reset sends it: the
+    phone number, else the contact email. Never to the mailbox, which is the
+    account being recovered. This is the reason `mailbox` and `email` are
+    separate fields; SSP on i1 sent reset mail to the very mailbox the user
+    had lost.
+- **Sign in** with the hosted mailbox and a password works too, as it does
+  over IMAP. A one-time **code** cannot sign in by mailbox: a code proves
+  control of an address, and whoever can read a mailbox (an alias forwarded
+  elsewhere, an administrator) does not own the account.
+- **Caches.** Dovecot's auth cache keeps accepting an old password until the
+  new one is used or its TTL passes; `doveadm auth cache flush <address>`
+  ends that at once (matrix-deploy's `roles/dovecot/defaults/main.yml`).
+- **Migrating from OpenLDAP.** dmart verifies only Argon2id, so `{SSHA}`
+  hashes cannot be imported as they are. Moving a directory over means each
+  user sets a password once through the reset flow.

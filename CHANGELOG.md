@@ -34,6 +34,10 @@
   services.
   - Search them with `@mailbox:`, `@mail_aliases:` and `@services:`.
   - cxb's user form edits them under "Mail and services".
+  - The hosted mailbox signs in with a password (as over IMAP), and names
+    the account in a password reset. The reset code goes to the phone or
+    contact email, never to the mailbox being recovered. One-time-code login
+    does not accept it.
   - An update checks them only when they change, so an admin UI that sends
     the whole record back is not blocked by a value set before a rule
     tightened.

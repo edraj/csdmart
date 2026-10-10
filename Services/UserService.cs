@@ -329,7 +329,7 @@ public sealed class UserService(
     public async Task<Result<(string Access, string Refresh, User User, bool Created)>> LoginAsync(
         UserLoginRequest req, Dictionary<string, string>? requestHeaders = null, CancellationToken ct = default)
     {
-        var user = await ResolveUserAsync(req, ct);
+        var user = await ResolveUserAsync(req, ct, allowMailbox: true);
         if (user is null)
         {
             // Deliberate constant-work path — see DecoyHash. The body already
@@ -674,7 +674,10 @@ public sealed class UserService(
         // user (shortname > email > msisdn): a shortname login carries no
         // verification requirement even if the body also echoes an email/msisdn.
         if (!string.IsNullOrEmpty(req.Shortname)) return null;
-        if (!string.IsNullOrEmpty(req.Email) && !user.IsEmailVerified)
+        // An email that named the user's hosted mailbox rather than their
+        // contact email is no contact channel either, like a shortname.
+        if (!string.IsNullOrEmpty(req.Email) && !user.IsEmailVerified
+            && string.Equals(user.Email, req.Email.Trim(), StringComparison.OrdinalIgnoreCase))
             return Result<(string, string, User, bool)>.Fail(
                 InternalErrorCode.USER_ISNT_VERIFIED, "Email is not verified.", ErrorTypes.Auth);
         if (!string.IsNullOrEmpty(req.Msisdn) && !user.IsMsisdnVerified)
@@ -1511,12 +1514,23 @@ public sealed class UserService(
             !string.IsNullOrEmpty(token));
     }
 
-    private async Task<User?> ResolveUserAsync(UserLoginRequest req, CancellationToken ct)
+    // allowMailbox: an `email` that is no one's contact email may name a
+    // hosted mailbox (docs/user-directory-fields.md), the address the user
+    // signs in to mail with. Password logins only. A one-time code proves
+    // control of the address it was sent to, and a mailbox is the account,
+    // not a contact for it: whoever can read the mailbox (an alias forwarded
+    // elsewhere, an administrator) must not get a way in from that alone.
+    private async Task<User?> ResolveUserAsync(UserLoginRequest req, CancellationToken ct, bool allowMailbox = false)
     {
-        return req.Shortname is not null ? await users.GetByShortnameAsync(req.Shortname, ct)
-             : req.Email is not null     ? await users.GetByEmailAsync(req.Email, ct)
-             : req.Msisdn is not null    ? await users.GetByMsisdnAsync(req.Msisdn, ct)
-             : null;
+        if (req.Shortname is not null) return await users.GetByShortnameAsync(req.Shortname, ct);
+        if (req.Email is not null)
+        {
+            if (await users.GetByEmailAsync(req.Email, ct) is { } byContact) return byContact;
+            return allowMailbox && DirectoryFields.NormalizeAddress(req.Email) is { } mailbox
+                ? await users.GetByAddressAsync(mailbox, "mailbox", ct)
+                : null;
+        }
+        return req.Msisdn is not null ? await users.GetByMsisdnAsync(req.Msisdn, ct) : null;
     }
 
     private static Language ParseLanguage(string? code) => code?.ToLowerInvariant() switch
