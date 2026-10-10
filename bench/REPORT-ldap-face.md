@@ -308,8 +308,7 @@ run's details are in this file's git history.
 4. **Password self-service.** SSP changes passwords over LDAP, which the face
    refuses. dmart's own reset flow (`/user/otp-request`,
    `/user/password-reset-confirm`) would replace SSP.
-5. **Per-service delegation.** Who may grant `mail` versus `gitea`, on the
-   model of groups' `grantable_by`.
+5. ~~**Per-service delegation.**~~ Done: `USER_SERVICE_GRANTERS`.
 6. **cxb, SDKs and query grammar** for the new fields.
 7. **matrix-deploy settings:**
    - Gitea's `add-ldap` sets no page size. An unpaged sync of more than 500

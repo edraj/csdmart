@@ -600,6 +600,8 @@ public static class RequestHandler
         var (dirMailbox, dirAliases, dirServices) = ParseDirectoryFields(attrs, existing: null);
         if (await directoryFields.ValidateAsync(rec.Shortname, dirMailbox, dirAliases, dirServices, ct) is { } dirError)
             return (Response.Fail(InternalErrorCode.INVALID_DATA, dirError, ErrorTypes.Request), rec);
+        if (await directoryFields.CheckServiceGrantsAsync(actor, [], dirServices, ct) is { } grantError)
+            return (Response.Fail(InternalErrorCode.NOT_ALLOWED, grantError, ErrorTypes.Request), rec);
 
         var rolesList = ExtractStringList(attrs, "roles");
         var groupsList = ExtractStringList(attrs, "groups");
@@ -1016,6 +1018,8 @@ public static class RequestHandler
                 {
                     if (await directoryFields.ValidateAsync(existing.Shortname, dirMailbox, dirAliases, dirServices, ct) is { } dirError)
                         return (Response.Fail(InternalErrorCode.INVALID_DATA, dirError, ErrorTypes.Request), rec, null);
+                    if (await directoryFields.CheckServiceGrantsAsync(actor, existing.Services, dirServices, ct) is { } grantError)
+                        return (Response.Fail(InternalErrorCode.NOT_ALLOWED, grantError, ErrorTypes.Request), rec, null);
                 }
                 var newPayload = PayloadMerge.MergeBody(existing.Payload, attrs.GetValueOrDefault("payload"));
                 // Python parity (serve_request_update): validate the MERGED payload

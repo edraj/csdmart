@@ -278,4 +278,39 @@ public class SettingsValidatorTests
         r.FailureMessage!.ShouldContain("ldap.example.com");
         r.FailureMessage!.ShouldNotContain("10.77.0.0/16");
     }
+
+    // ---- directory fields: services and who may grant them ----
+
+    [Fact]
+    public void Service_Granters_Must_Be_Pairs_Naming_Offered_Services()
+    {
+        var s = Valid();
+        s.UserServices = "mail,gitea";
+        s.UserServiceGranters = "mail:mail_admin, gitea:dev_lead, matrix:ops, helpdesk, :x";
+        var r = new DmartSettingsValidator().Validate(null, s);
+        r.Failed.ShouldBeTrue();
+        r.FailureMessage!.ShouldContain("'matrix', which is not in UserServices");
+        r.FailureMessage!.ShouldContain("must be service:role pairs (got helpdesk, :x)");
+        r.FailureMessage!.ShouldNotContain("mail_admin");
+    }
+
+    [Fact]
+    public void Service_Granters_Parse_Into_Roles_Per_Service()
+    {
+        var map = new DmartSettings { UserServiceGranters = "Mail:mail_admin,mail:helpdesk,gitea:dev_lead" }
+            .ParseUserServiceGranters(out var invalid);
+        invalid.ShouldBeEmpty();
+        map["mail"].ShouldBe(new[] { "mail_admin", "helpdesk" }, ignoreOrder: true);
+        map["gitea"].ShouldBe(new[] { "dev_lead" });
+    }
+
+    [Fact]
+    public void An_Offered_Service_That_Is_Not_A_Slug_Fails()
+    {
+        var s = Valid();
+        s.UserServices = "mail,Web Mail";
+        var r = new DmartSettingsValidator().Validate(null, s);
+        r.Failed.ShouldBeTrue();
+        r.FailureMessage!.ShouldContain("web mail");
+    }
 }

@@ -155,9 +155,38 @@ public sealed class DmartSettings
     // Comma-separated mail domains this deployment hosts. When set, a user's
     // mailbox and aliases must be in one of them; empty accepts any domain.
     public string UserMailDomains { get; set; } = "";
+    // Who may grant a service, on the model of a role's grantable_by: comma-
+    // separated "service:role" pairs, one per role that may add or remove that
+    // service on a user ("mail:mail_admin,mail:helpdesk,gitea:dev_lead"). A
+    // global admin may grant anything; anyone else, only the services a role
+    // they hold is listed for. A service with no pair is global-admin only.
+    public string UserServiceGranters { get; set; } = "";
 
     public string[] ParseUserServices() => SplitList(UserServices).Select(x => x.ToLowerInvariant()).ToArray();
     public string[] ParseUserMailDomains() => SplitList(UserMailDomains).Select(x => x.ToLowerInvariant()).ToArray();
+
+    // service -> the roles that may grant it. Pairs that are not "service:role"
+    // are returned in `invalid` for the validator.
+    public Dictionary<string, HashSet<string>> ParseUserServiceGranters(out string[] invalid)
+    {
+        var map = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
+        var bad = new List<string>();
+        foreach (var pair in SplitList(UserServiceGranters))
+        {
+            var colon = pair.IndexOf(':');
+            var service = colon > 0 ? pair[..colon].Trim().ToLowerInvariant() : "";
+            var role = colon > 0 ? pair[(colon + 1)..].Trim() : "";
+            if (service.Length == 0 || role.Length == 0 || role.Contains(':'))
+            {
+                bad.Add(pair);
+                continue;
+            }
+            if (!map.TryGetValue(service, out var roles)) map[service] = roles = new(StringComparer.Ordinal);
+            roles.Add(role);
+        }
+        invalid = bad.ToArray();
+        return map;
+    }
 
     // ---- LDAP directory face (Ldap/) ----
     // A read-only LDAPv3 listener that serves the users table as a directory, so

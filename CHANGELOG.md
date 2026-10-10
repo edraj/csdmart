@@ -28,8 +28,10 @@
   `user_services`, maintained in the same transaction as each user write and
   rebuilt at startup when they are empty. Soft delete releases them, and they
   are carried in Parquet and zip backups. `USER_SERVICES` and
-  `USER_MAIL_DOMAINS` optionally restrict the values. See
-  `docs/user-directory-fields.md`.
+  `USER_MAIL_DOMAINS` optionally restrict the values.
+  `USER_SERVICE_GRANTERS` (`service:role` pairs) says which roles may grant
+  which service. Anyone who is not a global admin may change only those
+  services. See `docs/user-directory-fields.md`.
 - **An experimental, read-only LDAP face over the users table** (`LDAP_PORT`,
   off by default). It lets Postfix, Dovecot, Gitea and Dex search and bind
   against dmart instead of a separate directory.

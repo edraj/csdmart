@@ -57,8 +57,21 @@ and auditable. Groups keep serving `memberOf`.
   - If `USER_SERVICES` is set, each must be one of them.
 - **Who may set them.** Only through the managed API, under the ordinary user
   update permission. `/user/profile` never touches them: a user cannot grant
-  themselves a service or an address. Per-service delegation, on the model of
-  groups' `grantable_by`, is deliberately left for later.
+  themselves a service or an address.
+- **Who may grant a service** (`USER_SERVICE_GRANTERS`), on the model of a
+  role's `grantable_by`:
+  - The setting is comma-separated `service:role` pairs, one per role that
+    may grant that service: `mail:mail_admin,mail:helpdesk,gitea:dev_lead`.
+  - A global admin may grant or revoke anything.
+  - Anyone else may change only the services a role they hold is listed for.
+    A service with no pair is global-admin only.
+  - Only the **change** is checked. A `mail` delegate can turn mail on or off
+    for a user who also has `gitea` without being trusted with gitea, and an
+    update that does not name `services` is not a change.
+  - Refusals are `NOT_ALLOWED`, naming the services.
+  - The service catalogue (`USER_SERVICES`) is configuration, so its
+    granters are too. Restricting who may set `mailbox` and `mail_aliases`
+    is a permission's `restricted_fields`, as for any other field.
 - **Soft delete releases them.** `mailbox`, `mail_aliases` and `services` are
   cleared with `email`/`msisdn`/`password`, so the addresses become available
   again.
@@ -180,7 +193,6 @@ paged full listing continues across pages instead of failing.
 
 ## Not in scope here
 
-- Per-service delegation (`grantable_by` for services)
 - Editing these fields in cxb
 - SDK models (dmart.Client, tsdmart)
 - Query-grammar support for `@services:`

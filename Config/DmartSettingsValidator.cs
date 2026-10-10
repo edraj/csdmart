@@ -47,6 +47,23 @@ internal sealed class DmartSettingsValidator : IValidateOptions<DmartSettings>
                 failures.Add($"LdapTrustedPeers has entries that are not an address or CIDR range: {string.Join(", ", badPeers)}");
         }
 
+        // Directory fields: a service name the write path would reject can
+        // never be granted, so a typo here should stop startup instead.
+        var offered = s.ParseUserServices();
+        var badServices = offered.Where(x => !Dmart.Utils.DirectoryFields.IsValidService(x)).ToArray();
+        if (badServices.Length > 0)
+            failures.Add($"UserServices has names that are not lowercase slugs: {string.Join(", ", badServices)}");
+        var granters = s.ParseUserServiceGranters(out var badPairs);
+        if (badPairs.Length > 0)
+            failures.Add($"UserServiceGranters entries must be service:role pairs (got {string.Join(", ", badPairs)})");
+        foreach (var service in granters.Keys)
+        {
+            if (!Dmart.Utils.DirectoryFields.IsValidService(service))
+                failures.Add($"UserServiceGranters names '{service}', which is not a valid service name");
+            else if (offered.Length > 0 && !offered.Contains(service, StringComparer.Ordinal))
+                failures.Add($"UserServiceGranters names '{service}', which is not in UserServices");
+        }
+
         // Fail on an unrecognized driver rather than defaulting. A typo'd
         // DATABASE_DRIVER that silently ran on PostgreSQL would only surface
         // as "why is my SQLite file empty" long after deployment.
