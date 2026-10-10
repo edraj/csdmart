@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.6.2 — 2026-10-10
+
+### Fixed
+
+- **cxb: the account menu's Profile and the header tabs navigate again.**
+  Clicking Profile did nothing. Svelte 5 subscribes to a `$store` the first
+  time it is read, and Routify's helpers look up the router context only
+  then; read first inside a click handler, `$goto` found none and threw.
+  Profile is now a link in both headers, and the management header takes
+  `$goto` during initialisation. A Playwright test clicks through the header
+  (#370).
+
 ## v1.6.1 — 2026-10-10
 
 ### Fixed
