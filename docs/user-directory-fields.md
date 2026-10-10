@@ -125,10 +125,26 @@ pins `is_deleted`).
 The foreign keys make drift a constraint error rather than a silent orphan: a
 path that deletes or renames a user without the index rows fails at commit.
 
-A startup check rebuilds both tables from `users` when they are empty but some
-user has directory fields. That covers the upgrade, and any restore that
-loaded `users` without them. The rebuild is the same SQL as the per-row sync,
-with no shortname filter.
+`DirectoryIndexRepair` rebuilds both tables from `users` at startup when they
+are empty but some user has directory fields. That covers the upgrade, and
+any restore that loaded `users` without them. The rebuild is the same SQL as
+the per-row sync, with no shortname filter, in one all-or-nothing transaction
+with no command timeout. The 3M-user scale run shaped three details:
+
+- **The services insert uses `ON CONFLICT DO NOTHING`, not `DISTINCT`.**
+  `DISTINCT` over 7M rows is a sort that spills to disk under a memory cap.
+- **On PostgreSQL the foreign keys are dropped and re-added in the same
+  transaction.** Kept in place, every row fires a check that takes
+  `FOR KEY SHARE` on its `users` row: a random read and a dirtied page each.
+  At 3M users that ran 18 minutes without finishing. Deferred instead, the
+  same checks run at `COMMIT`, which is bound by the connection's 30-second
+  timeout. Re-adding validates every row with one join: the whole rebuild
+  took 118 s on PostgreSQL and 49 s on SQLite.
+- **Failure is safe.** If the rebuild fails, `DirectoryIndexStatus` flips to
+  not-ready, the rebuild retries every minute, and the LDAP face answers
+  lookups that need the index with `unavailable`. "No such entry" would make
+  Postfix bounce mail for real addresses with a permanent 550; `unavailable`
+  makes it defer. `uid` lookups do not need the index and keep working.
 
 ### Clashes
 

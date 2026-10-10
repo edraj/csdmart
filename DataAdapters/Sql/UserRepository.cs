@@ -1697,10 +1697,15 @@ public sealed class UserRepository(
             SELECT a.value, u.shortname, 'alias' FROM users u CROSS JOIN {Each("mail_aliases", "a")}
              WHERE {In("u.shortname")} AND {live} AND {IsArray("mail_aliases")}
             """,
+            // ON CONFLICT rather than DISTINCT: services are de-duplicated on
+            // write already, and DISTINCT over a whole-table rebuild is a sort —
+            // at 3M users, 7M rows spilling to disk under a 1 GB cap, for minutes.
+            // (SQLite needs the SELECT's WHERE to parse an upsert after a join.)
             $"""
             INSERT INTO user_services (service, shortname)
-            SELECT DISTINCT s.value, u.shortname FROM users u CROSS JOIN {Each("services", "s")}
+            SELECT s.value, u.shortname FROM users u CROSS JOIN {Each("services", "s")}
              WHERE {In("u.shortname")} AND {live} AND {IsArray("services")}
+            ON CONFLICT DO NOTHING
             """,
         ];
     }
@@ -1720,14 +1725,41 @@ public sealed class UserRepository(
         await using (var probe = conn.Command(
             $"SELECT CASE WHEN {hasFields} AND NOT EXISTS (SELECT 1 FROM user_addresses) AND NOT EXISTS (SELECT 1 FROM user_services) THEN 1 ELSE 0 END"))
         {
+            probe.CommandTimeout = 0;
             if (DbParams.ReadCount(await probe.ExecuteScalarAsync(ct)) == 0) return 0;
         }
 
+        // One all-or-nothing transaction, and NO command timeout: at 3M users
+        // the insert is 13M rows, which on a memory-capped PostgreSQL ran past
+        // Npgsql's default 30 s, rolled back, and left the index empty. A
+        // half-built index would be worse than an empty one — the probe above
+        // would see rows and never finish the job.
+        // On PostgreSQL the foreign keys are dropped for the bulk insert and
+        // re-added after it, in the same transaction. Kept in place, each of
+        // the 13M rows fires a row-level check that takes FOR KEY SHARE on its
+        // users row — a random heap read plus a dirtied page per row. At 3M users
+        // under a 1 GB cap that was 31 GB read and 10 GB written in 18 minutes,
+        // unfinished. Re-adding validates them all with one set-based join.
+        // (Deferred instead, the same 13M checks run at COMMIT, which is bound
+        // by the connection's timeout rather than these commands' zero.)
+        // SQLite's checks are plain index probes and need none of this.
+        string[] pre = sqlite ? [] :
+        [
+            "ALTER TABLE user_addresses DROP CONSTRAINT IF EXISTS user_addresses_shortname_fkey",
+            "ALTER TABLE user_services DROP CONSTRAINT IF EXISTS user_services_shortname_fkey",
+        ];
+        string[] post = sqlite ? [] :
+        [
+            "ALTER TABLE user_addresses ADD CONSTRAINT user_addresses_shortname_fkey FOREIGN KEY (shortname) REFERENCES users(shortname) DEFERRABLE INITIALLY DEFERRED",
+            "ALTER TABLE user_services ADD CONSTRAINT user_services_shortname_fkey FOREIGN KEY (shortname) REFERENCES users(shortname) DEFERRABLE INITIALLY DEFERRED",
+        ];
+
         await using var tx = await conn.BeginTransactionAsync(ct);
         var written = 0;
-        foreach (var sql in DirectoryIndexStatements(sqlite, filtered: false))
+        foreach (var sql in pre.Concat(DirectoryIndexStatements(sqlite, filtered: false)).Concat(post))
         {
             await using var cmd = conn.Command(sql, tx);
+            cmd.CommandTimeout = 0;
             var n = await cmd.ExecuteNonQueryAsync(ct);
             if (sql.StartsWith("INSERT", StringComparison.Ordinal)) written += n;
         }

@@ -2946,6 +2946,7 @@ builder.Services.AddHostedService<AdminBootstrap>();
 // and a no-op on every boot after the first — see LegacyLockoutBackfill.
 builder.Services.AddHostedService<LegacyLockoutRepair>();
 // Same ordering requirement: the index tables come from the schema initializers.
+builder.Services.AddSingleton<DirectoryIndexStatus>();
 builder.Services.AddHostedService<DirectoryIndexRepair>();
 
 // IP-based rate limiter for authentication endpoints. Account lockout (on the

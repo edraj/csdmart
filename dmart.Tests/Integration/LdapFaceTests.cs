@@ -198,6 +198,30 @@ public sealed class LdapFaceTests(LdapFaceTests.Fixture fx) : IClassFixture<Ldap
     }
 
     [FactIfPg]
+    public async Task An_Index_Still_Being_Rebuilt_Answers_Unavailable_Not_Empty()
+    {
+        // Postfix treats "no such entry" as a permanent 550 and bounces the
+        // mail; `unavailable` makes it defer and retry. While the index is not
+        // ready, lookups that depend on it must say the second thing.
+        var status = fx.Host.Services.GetRequiredService<DirectoryIndexStatus>();
+        await using var c = await Client.ConnectAsync(fx.Port);
+        (await c.BindAsync(ServiceDn, Password)).ShouldBe(LdapResult.Success);
+        status.Set(false);
+        try
+        {
+            (await c.SearchAsync($"ou=people,{Base}", Filter.Eq("mail", fx.AliceMailbox))).Code.ShouldBe(LdapResult.Unavailable);
+            (await c.SearchAsync($"ou=people,{Base}", Filter.Eq("mailAlias", fx.AliceAlias))).Code.ShouldBe(LdapResult.Unavailable);
+            (await c.SearchAsync($"ou=people,{Base}", Filter.Eq("authorizedService", fx.Granted))).Code.ShouldBe(LdapResult.Unavailable);
+            // uid does not touch the index, so Dex and Gitea logins keep working.
+            (await c.SearchAsync($"ou=people,{Base}", Filter.Eq("uid", fx.Alice))).Entries.ShouldHaveSingleItem();
+        }
+        finally
+        {
+            status.Set(true);
+        }
+    }
+
+    [FactIfPg]
     public async Task An_Unindexed_Search_Stops_At_The_Scan_Budget_Unless_Paged()
     {
         await using var c = await Client.ConnectAsync(fx.Port);

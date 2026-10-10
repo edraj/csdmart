@@ -32,7 +32,7 @@ internal readonly record struct LdapPrincipal(PrincipalKind Kind, string? Shortn
 // email), mailAlias = mail_aliases, authorizedService = services. Groups are
 // memberOf and nothing else.
 internal sealed class LdapDirectory(
-    UserRepository users, AccessRepository access, IOptions<DmartSettings> settings)
+    UserRepository users, AccessRepository access, IOptions<DmartSettings> settings, DirectoryIndexStatus index)
 {
     // User rows fetched per keyset page during a scan.
     private const int ScanPage = 500;
@@ -290,6 +290,12 @@ internal sealed class LdapDirectory(
     {
         if (f.Anchors(PointIndexed.Contains) is { } points)
         {
+            if (!index.Ready && points.Any(p => !p.Attribute.Equals("uid", StringComparison.OrdinalIgnoreCase)
+                                                && !p.Attribute.Equals("mobile", StringComparison.OrdinalIgnoreCase)))
+            {
+                IndexNotReady(s);
+                yield break;
+            }
             var seen = new HashSet<string>(StringComparer.Ordinal);
             foreach (var (attr, value) in points)
             {
@@ -301,6 +307,11 @@ internal sealed class LdapDirectory(
 
         if (f.Anchors(a => a.Equals("authorizedService", StringComparison.OrdinalIgnoreCase)) is { } grants)
         {
+            if (!index.Ready)
+            {
+                IndexNotReady(s);
+                yield break;
+            }
             var services = grants.Select(g => g.Value.Trim().ToLowerInvariant()).Distinct(StringComparer.Ordinal).ToList();
             // One service (the usual case) comes out of its index range already
             // unique; a union of several needs de-duplicating.
@@ -316,6 +327,11 @@ internal sealed class LdapDirectory(
         await foreach (var u in KeysetAsync(s, (after, n) => users.ListForDirectoryAsync(after, n, ct)))
             yield return u;
     }
+
+    // "No such user" from an index still being rebuilt would make Postfix bounce
+    // mail for real addresses (a permanent 550). `unavailable` makes it defer.
+    private static void IndexNotReady(Search s)
+        => s.Fail(LdapResult.Unavailable, "the user directory index is being rebuilt; retry shortly");
 
     // Pages through a shortname-ordered source, charging each row to the
     // budget. Holds no connection between pages, so a paged LDAP search can

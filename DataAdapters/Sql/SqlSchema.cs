@@ -349,19 +349,25 @@ public static class SqlSchema
     -- a GIN index finds an alias fast but cannot stop two users holding it.
     -- The deferred foreign keys turn a write path that forgets these rows into
     -- a commit-time error instead of a silent orphan.
+    -- The foreign keys are NAMED because the bulk rebuild drops and re-adds
+    -- them (UserRepository.RebuildDirectoryIndexIfEmptyAsync).
     CREATE TABLE IF NOT EXISTS user_addresses (
         address    TEXT PRIMARY KEY,               -- lowercased
-        shortname  TEXT NOT NULL REFERENCES users(shortname) DEFERRABLE INITIALLY DEFERRED,
-        kind       TEXT NOT NULL CHECK (kind IN ('mailbox', 'alias'))
+        shortname  TEXT NOT NULL,
+        kind       TEXT NOT NULL CHECK (kind IN ('mailbox', 'alias')),
+        CONSTRAINT user_addresses_shortname_fkey FOREIGN KEY (shortname)
+            REFERENCES users(shortname) DEFERRABLE INITIALLY DEFERRED
     );
     CREATE INDEX IF NOT EXISTS idx_user_addresses_shortname ON user_addresses (shortname);
 
     CREATE TABLE IF NOT EXISTS user_services (
         service    TEXT NOT NULL,
-        shortname  TEXT NOT NULL REFERENCES users(shortname) DEFERRABLE INITIALLY DEFERRED,
+        shortname  TEXT NOT NULL,
         -- (service, shortname): a service's members come out in shortname
         -- order, which is what a keyset-paged LDAP listing reads.
-        PRIMARY KEY (service, shortname)
+        PRIMARY KEY (service, shortname),
+        CONSTRAINT user_services_shortname_fkey FOREIGN KEY (shortname)
+            REFERENCES users(shortname) DEFERRABLE INITIALLY DEFERRED
     );
     CREATE INDEX IF NOT EXISTS idx_user_services_shortname ON user_services (shortname);
 
