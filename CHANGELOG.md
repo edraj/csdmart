@@ -16,6 +16,13 @@
   sidebar's groups each take a hue from one palette, in both themes. The
   hero's accent runs a slow spectrum, and "How it works" is a numbered
   timeline. The measured figures keep their signal colour.
+- **An experimental, read-only LDAP face over the users table** (`LDAP_PORT`,
+  off by default). It lets Postfix, Dovecot, Gitea and Dex search and bind
+  against dmart instead of a separate directory. Binds go through the same
+  password, lockout and deactivation checks as `/user/login`, and every
+  write is refused. There is no TLS yet, so keep it on loopback or a private
+  interface. `bench/REPORT-ldap-face.md` has the interop and 1M-user
+  measurements, and the known gap: `mailAlias` lookups are not indexed yet.
 
 ### Fixed
 

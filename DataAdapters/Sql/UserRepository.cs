@@ -1595,6 +1595,42 @@ public sealed class UserRepository(
         EvictAuth(shortname);
     }
 
+    // ----- directory support (used by Ldap/LdapDirectory) -----
+
+    // One page of live users for the LDAP face's unanchored searches, in
+    // shortname order. Keyset rather than OFFSET: a scan resumes after the last
+    // shortname it saw, so page N costs the same as page 1 instead of re-reading
+    // every row before it — the difference between linear and quadratic over a
+    // multi-million-row table.
+    public async Task<List<User>> ListForDirectoryAsync(string? after, int limit, CancellationToken ct = default)
+    {
+        await using var conn = await db.OpenAsync(ct);
+        await using var cmd = conn.Command(after is null
+            ? $"{SelectAllColumns} WHERE is_deleted = false ORDER BY shortname LIMIT $1"
+            : $"{SelectAllColumns} WHERE is_deleted = false AND shortname > $2 ORDER BY shortname LIMIT $1");
+        DbParams.Add(cmd, limit);
+        if (after is not null) DbParams.Add(cmd, after);
+        await using var reader = await cmd.ExecuteReaderAsync(ct);
+        var list = new List<User>();
+        while (await reader.ReadAsync(ct)) list.Add(Hydrate(reader));
+        return list;
+    }
+
+    // Shortnames of the live users whose `groups` array holds `group` — the
+    // `member` values of a group entry in the LDAP face.
+    public async Task<List<string>> ListShortnamesInGroupAsync(string group, CancellationToken ct = default)
+    {
+        await using var conn = await db.OpenAsync(ct);
+        await using var cmd = conn.CreateCommand();
+        var contains = QueryHelper.DialectFor(db)
+            .JsonArrayContainsAny("groups", [group], (v, k) => DbParams.Add(cmd, v, k));
+        cmd.CommandText = $"SELECT shortname FROM users WHERE is_deleted = false AND {contains} ORDER BY shortname";
+        await using var reader = await cmd.ExecuteReaderAsync(ct);
+        var list = new List<string>();
+        while (await reader.ReadAsync(ct)) list.Add(reader.GetString(0));
+        return list;
+    }
+
     // ----- query support (used by QueryService for management/users) -----
 
     public Task<List<User>> QueryAsync(Models.Api.Query q, CancellationToken ct = default)

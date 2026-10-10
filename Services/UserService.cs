@@ -1111,6 +1111,46 @@ public sealed class UserService(
         return await hasher.VerifyAsync(password, user.Password, ct);
     }
 
+    // An LDAP simple bind (Ldap/LdapServer): the credential half of LoginAsync
+    // with none of its session half. Same lockout counter, same deactivation
+    // gate, same opportunistic rehash — but no session row, no JWT and no
+    // device or contact-verification checks, because a bind is a yes/no answer
+    // to a mail server or an IdP, not a login by a client app.
+    //
+    // Returns the user on success, null on any failure. The caller answers every
+    // null with the same invalidCredentials, so unlike LoginAsync this path can
+    // close the timing side of enumeration completely: every failure, including
+    // locked and deactivated accounts, pays for a hash.
+    public async Task<User?> VerifyDirectoryBindAsync(string shortname, string password, CancellationToken ct = default)
+    {
+        var user = await users.GetByShortnameAsync(shortname, ct);
+        if (user is null)
+        {
+            _ = await hasher.VerifyAsync(password, DecoyHash, ct);
+            return null;
+        }
+
+        var (attemptLocked, unlockedUser) = await RejectIfAttemptLockedAsync(user, ct);
+        user = unlockedUser;
+        if (attemptLocked is not null || !user.IsUsable || string.IsNullOrEmpty(user.Password))
+        {
+            _ = await hasher.VerifyAsync(password, DecoyHash, ct);
+            return null;
+        }
+
+        if (!await hasher.VerifyAsync(password, user.Password, ct))
+        {
+            await HandleFailedLoginAttemptAsync(user, ct);
+            return null;
+        }
+
+        await RehashIfNeededAsync(user, password, ct);
+        // A correct bind clears earlier failures exactly as a correct login
+        // does; otherwise occasional typos accumulate into a lock.
+        if (user.AttemptCount is > 0) await users.ResetAttemptsAsync(user.Shortname, ct);
+        return user;
+    }
+
     public async Task<Result<User>> UpdateProfileAsync(
         string shortname, Dictionary<string, object> patch,
         string? sessionToken = null, CancellationToken ct = default)

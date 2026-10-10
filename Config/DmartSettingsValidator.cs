@@ -16,6 +16,23 @@ internal sealed class DmartSettingsValidator : IValidateOptions<DmartSettings>
         if (s.ListeningPort is < 1 or > 65535)
             failures.Add($"ListeningPort must be 1-65535 (got {s.ListeningPort})");
 
+        // The LDAP face is off at port 0; once on, every knob it reads must be
+        // usable, because it binds a socket at startup and has nobody to report
+        // a bad value to afterwards.
+        if (s.LdapPort is < 0 or > 65535)
+            failures.Add($"LdapPort must be 0 (off) or 1-65535 (got {s.LdapPort})");
+        if (s.LdapPort > 0)
+        {
+            if (!System.Net.IPAddress.TryParse(s.LdapHost, out _))
+                failures.Add($"LdapHost must be an IP address (got '{s.LdapHost}')");
+            if (Dmart.Ldap.LdapDn.Normalize(s.LdapBaseDn) is not { Length: > 0 })
+                failures.Add($"LdapBaseDn is not a usable DN (got '{s.LdapBaseDn}')");
+            if (s.LdapSizeLimit <= 0)
+                failures.Add($"LdapSizeLimit must be > 0 (got {s.LdapSizeLimit})");
+            if (s.LdapMaxScan <= 0)
+                failures.Add($"LdapMaxScan must be > 0 (got {s.LdapMaxScan})");
+        }
+
         // Fail on an unrecognized driver rather than defaulting. A typo'd
         // DATABASE_DRIVER that silently ran on PostgreSQL would only surface
         // as "why is my SQLite file empty" long after deployment.

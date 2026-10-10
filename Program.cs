@@ -3021,6 +3021,12 @@ builder.Services.AddSingleton<FolderContentValidator>();
 builder.Services.AddSingleton<EntryService>();
 builder.Services.AddSingleton<QueryService>();
 builder.Services.AddSingleton<UserService>();
+// The LDAP directory face. Registered unconditionally and off at LDAP_PORT=0:
+// the listener reads the port when it starts, so a test host can turn it on
+// through IOptions without the registration depending on builder-time config.
+builder.Services.AddSingleton<Dmart.Ldap.LdapDirectory>();
+builder.Services.AddSingleton<Dmart.Ldap.LdapServer>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<Dmart.Ldap.LdapServer>());
 builder.Services.AddSingleton<WorkflowEngine>();
 builder.Services.AddSingleton<WorkflowService>();
 // SpaceEventLogger captures inbound request headers (Python parity, minus

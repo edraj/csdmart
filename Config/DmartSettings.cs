@@ -148,6 +148,37 @@ public sealed class DmartSettings
     public string ManagementSpace { get; set; } = "management";
     public int MaxSessionsPerUser { get; set; } = 5;
 
+    // ---- LDAP directory face (Ldap/) ----
+    // A read-only LDAPv3 listener that serves the users table as a directory, so
+    // mail servers, Gitea and Dex can search and bind against dmart directly.
+    // 0 (the default) leaves it off. There is no TLS yet: bind it to loopback or
+    // a private interface (WireGuard), never a public one.
+    public int LdapPort { get; set; }
+    public string LdapHost { get; set; } = "127.0.0.1";
+    // Users are served as uid=<shortname>,ou=people,<base>; groups as
+    // cn=<group>,ou=groups,<base>; service accounts as cn=<name>,ou=services,<base>.
+    public string LdapBaseDn { get; set; } = "dc=dmart";
+    // Comma-separated dmart user shortnames that may bind as
+    // cn=<name>,ou=services,<base> and read the whole directory (Dex, Postfix,
+    // Gitea...). Every other bind sees only its own entry.
+    public string LdapServiceAccounts { get; set; } = "";
+    // Comma-separated objectClass values added to every user entry, for
+    // consumers whose filters name a site schema (e.g. "freexPerson,freexUser").
+    public string LdapExtraUserObjectClasses { get; set; } = "";
+    // Most entries one unpaged search returns (slapd's default is also 500).
+    // Paged searches (RFC 2696) are not capped by it.
+    public int LdapSizeLimit { get; set; } = 500;
+    // Most user rows one search may examine when its filter names no indexed
+    // attribute (uid, mail, mobile). Past it the search ends with
+    // adminLimitExceeded rather than walking a multi-million-row table.
+    public int LdapMaxScan { get; set; } = 100_000;
+
+    public string[] ParseLdapServiceAccounts() => SplitList(LdapServiceAccounts);
+    public string[] ParseLdapExtraUserObjectClasses() => SplitList(LdapExtraUserObjectClasses);
+
+    private static string[] SplitList(string? raw)
+        => (raw ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
     // Bad password/OTP attempts before an account is locked. The lock is the
     // counter alone — it leaves is_active set (that means admin deactivation) and
     // leaves live sessions running, so it blocks new logins and refreshes rather
