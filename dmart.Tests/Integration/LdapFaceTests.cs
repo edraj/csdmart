@@ -14,6 +14,7 @@ using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.DependencyInjection;
 using Shouldly;
 using Xunit;
+using Filter = Dmart.Tests.Infrastructure.TestLdapFilter;
 
 namespace Dmart.Tests.Integration;
 
@@ -121,7 +122,7 @@ public sealed class LdapFaceTests(LdapFaceTests.Fixture fx) : IClassFixture<Ldap
     [FactIfPg]
     public async Task A_User_Binds_With_Their_Dmart_Password()
     {
-        await using var c = await Client.ConnectAsync(fx.Port);
+        await using var c = await TestLdapClient.ConnectAsync(fx.Port);
         (await c.BindAsync(UserDn(fx.Alice), Password)).ShouldBe(LdapResult.Success);
         (await c.BindAsync(UserDn(fx.Alice), "Wrong12345")).ShouldBe(LdapResult.InvalidCredentials);
         (await c.BindAsync(UserDn(fx.Bob), Password)).ShouldBe(LdapResult.InvalidCredentials, customMessage: "deactivated");
@@ -135,10 +136,38 @@ public sealed class LdapFaceTests(LdapFaceTests.Fixture fx) : IClassFixture<Ldap
         // The bind path shares dmart's lockout counter: an LDAP client must not
         // be a way to guess passwords that /user/login would lock out.
         var users = fx.Host.Services.GetRequiredService<UserRepository>();
-        await using var c = await Client.ConnectAsync(fx.Port);
+        await using var c = await TestLdapClient.ConnectAsync(fx.Port);
 
-        (await c.BindAsync(UserDn(fx.Alice), "Wrong12345")).ShouldBe(LdapResult.InvalidCredentials);
+        // A wrong password no other test has used: a repeat would not count.
+        var wrong = "Wrong" + Guid.NewGuid().ToString("N")[..8];
+        (await c.BindAsync(UserDn(fx.Alice), wrong)).ShouldBe(LdapResult.InvalidCredentials);
         (await users.GetAttemptCountAsync(fx.Alice)).ShouldBeGreaterThan(0);
+
+        (await c.BindAsync(UserDn(fx.Alice), Password)).ShouldBe(LdapResult.Success);
+        (await users.GetAttemptCountAsync(fx.Alice)).ShouldBe(0);
+    }
+
+    [FactIfPg]
+    public async Task A_Stale_Password_Retried_By_A_Device_Counts_Once_And_Does_Not_Lock()
+    {
+        // A phone still holding the old password retries it for as long as it
+        // runs. Counting each retry would lock the account within
+        // MaxFailedLoginAttempts tries and keep it locked, since every attempt
+        // refreshes the cool-down. The same wrong password counts once.
+        var users = fx.Host.Services.GetRequiredService<UserRepository>();
+        var max = fx.Host.Services.GetRequiredService<Microsoft.Extensions.Options.IOptions<DmartSettings>>().Value.MaxFailedLoginAttempts;
+        await using var c = await TestLdapClient.ConnectAsync(fx.Port);
+        (await c.BindAsync(UserDn(fx.Alice), Password)).ShouldBe(LdapResult.Success);
+
+        var stale = "Stale" + Guid.NewGuid().ToString("N")[..8];
+        for (var i = 0; i < max + 2; i++)
+            (await c.BindAsync(UserDn(fx.Alice), stale)).ShouldBe(LdapResult.InvalidCredentials);
+        (await users.GetAttemptCountAsync(fx.Alice)).ShouldBe(1);
+
+        // Different wrong passwords are guesses, and each one counts.
+        for (var i = 0; i < 2; i++)
+            (await c.BindAsync(UserDn(fx.Alice), $"Guess{i}{Guid.NewGuid():N}")).ShouldBe(LdapResult.InvalidCredentials);
+        (await users.GetAttemptCountAsync(fx.Alice)).ShouldBe(3);
 
         (await c.BindAsync(UserDn(fx.Alice), Password)).ShouldBe(LdapResult.Success);
         (await users.GetAttemptCountAsync(fx.Alice)).ShouldBe(0);
@@ -147,7 +176,7 @@ public sealed class LdapFaceTests(LdapFaceTests.Fixture fx) : IClassFixture<Ldap
     [FactIfPg]
     public async Task A_Service_Account_Finds_A_User_By_Uid_Mailbox_And_Alias()
     {
-        await using var c = await Client.ConnectAsync(fx.Port);
+        await using var c = await TestLdapClient.ConnectAsync(fx.Port);
         (await c.BindAsync(ServiceDn, Password)).ShouldBe(LdapResult.Success);
 
         var (code, entries) = await c.SearchAsync($"ou=people,{Base}", Filter.And(
@@ -174,7 +203,7 @@ public sealed class LdapFaceTests(LdapFaceTests.Fixture fx) : IClassFixture<Ldap
     [FactIfPg]
     public async Task A_User_Without_A_Mailbox_Is_Found_By_Contact_Email()
     {
-        await using var c = await Client.ConnectAsync(fx.Port);
+        await using var c = await TestLdapClient.ConnectAsync(fx.Port);
         (await c.BindAsync(ServiceDn, Password)).ShouldBe(LdapResult.Success);
         var carol = (await c.SearchAsync($"ou=people,{Base}", Filter.Eq("mail", fx.CarolContact)))
             .Entries.ShouldHaveSingleItem();
@@ -185,7 +214,7 @@ public sealed class LdapFaceTests(LdapFaceTests.Fixture fx) : IClassFixture<Ldap
     [FactIfPg]
     public async Task A_Service_Listing_Reads_The_Services_Index()
     {
-        await using var c = await Client.ConnectAsync(fx.Port);
+        await using var c = await TestLdapClient.ConnectAsync(fx.Port);
         (await c.BindAsync(ServiceDn, Password)).ShouldBe(LdapResult.Success);
 
         // authorizedService reads user_services: two rows examined (alice, bob),
@@ -204,7 +233,7 @@ public sealed class LdapFaceTests(LdapFaceTests.Fixture fx) : IClassFixture<Ldap
         // mail; `unavailable` makes it defer and retry. While the index is not
         // ready, lookups that depend on it must say the second thing.
         var status = fx.Host.Services.GetRequiredService<DirectoryIndexStatus>();
-        await using var c = await Client.ConnectAsync(fx.Port);
+        await using var c = await TestLdapClient.ConnectAsync(fx.Port);
         (await c.BindAsync(ServiceDn, Password)).ShouldBe(LdapResult.Success);
         status.Set(false);
         try
@@ -224,7 +253,7 @@ public sealed class LdapFaceTests(LdapFaceTests.Fixture fx) : IClassFixture<Ldap
     [FactIfPg]
     public async Task An_Unindexed_Search_Stops_At_The_Scan_Budget_Unless_Paged()
     {
-        await using var c = await Client.ConnectAsync(fx.Port);
+        await using var c = await TestLdapClient.ConnectAsync(fx.Port);
         (await c.BindAsync(ServiceDn, Password)).ShouldBe(LdapResult.Success);
         var anyone = Filter.Present("displayName");
 
@@ -245,7 +274,7 @@ public sealed class LdapFaceTests(LdapFaceTests.Fixture fx) : IClassFixture<Ldap
     [FactIfPg]
     public async Task A_Group_Entry_Lists_Its_Members()
     {
-        await using var c = await Client.ConnectAsync(fx.Port);
+        await using var c = await TestLdapClient.ConnectAsync(fx.Port);
         (await c.BindAsync(ServiceDn, Password)).ShouldBe(LdapResult.Success);
 
         // member values come from the JSON-array containment query on users.groups.
@@ -262,7 +291,7 @@ public sealed class LdapFaceTests(LdapFaceTests.Fixture fx) : IClassFixture<Ldap
     [FactIfPg]
     public async Task A_User_Sees_Only_Their_Own_Entry_And_Anonymous_Sees_Nothing()
     {
-        await using var c = await Client.ConnectAsync(fx.Port);
+        await using var c = await TestLdapClient.ConnectAsync(fx.Port);
         (await c.SearchAsync($"ou=people,{Base}", Filter.Present("objectClass")))
             .Code.ShouldBe(LdapResult.InsufficientAccessRights);
 
@@ -270,193 +299,5 @@ public sealed class LdapFaceTests(LdapFaceTests.Fixture fx) : IClassFixture<Ldap
         var (code, entries) = await c.SearchAsync(Base, Filter.Present("objectClass"), "uid");
         code.ShouldBe(LdapResult.Success);
         entries.Select(e => e.Dn).ToArray().ShouldBe(new[] { UserDn(fx.Alice) });
-    }
-
-    // ---------------- a minimal client ----------------
-
-    private static class Filter
-    {
-        private static byte[] Encode(Action<AsnWriter> write)
-        {
-            var w = new AsnWriter(AsnEncodingRules.BER);
-            write(w);
-            return w.Encode();
-        }
-
-        public static byte[] Eq(string attr, string value) => Encode(w =>
-        {
-            using (w.PushSequence(new Asn1Tag(TagClass.ContextSpecific, 3, isConstructed: true)))
-            {
-                w.WriteOctetString(Encoding.UTF8.GetBytes(attr));
-                w.WriteOctetString(Encoding.UTF8.GetBytes(value));
-            }
-        });
-
-        public static byte[] Present(string attr)
-            => Encode(w => w.WriteOctetString(Encoding.UTF8.GetBytes(attr), new Asn1Tag(TagClass.ContextSpecific, 7)));
-
-        public static byte[] And(params byte[][] children) => Encode(w =>
-        {
-            using (w.PushSetOf(new Asn1Tag(TagClass.ContextSpecific, 0, isConstructed: true)))
-                foreach (var c in children) w.WriteEncodedValue(c);
-        });
-    }
-
-    private sealed record Entry(string Dn, Dictionary<string, List<string>> Attrs);
-
-    private sealed class Client : IAsyncDisposable
-    {
-        private readonly TcpClient _tcp;
-        private readonly NetworkStream _stream;
-        private int _nextId = 1;
-
-        private Client(TcpClient tcp) { _tcp = tcp; _stream = tcp.GetStream(); }
-
-        public static async Task<Client> ConnectAsync(int port)
-        {
-            var tcp = new TcpClient();
-            await tcp.ConnectAsync(IPAddress.Loopback, port);
-            return new Client(tcp);
-        }
-
-        private async Task SendAsync(int opTag, Action<AsnWriter> body, byte[]? pagedCookie = null, int pageSize = 0)
-        {
-            var w = new AsnWriter(AsnEncodingRules.BER);
-            using (w.PushSequence())
-            {
-                w.WriteInteger(_nextId++);
-                using (w.PushSequence(new Asn1Tag(TagClass.Application, opTag, isConstructed: true))) body(w);
-                if (pagedCookie is not null)
-                {
-                    using (w.PushSequence(new Asn1Tag(TagClass.ContextSpecific, 0, isConstructed: true)))
-                    using (w.PushSequence())
-                    {
-                        w.WriteOctetString(Encoding.UTF8.GetBytes(LdapOid.PagedResults));
-                        var v = new AsnWriter(AsnEncodingRules.BER);
-                        using (v.PushSequence())
-                        {
-                            v.WriteInteger(pageSize);
-                            v.WriteOctetString(pagedCookie);
-                        }
-                        w.WriteOctetString(v.Encode());
-                    }
-                }
-            }
-            await _stream.WriteAsync(w.Encode());
-        }
-
-        // The op, plus the paged-results cookie when the message carries one.
-        private async Task<(int Tag, AsnReader Op, byte[]? Cookie)> ReceiveAsync()
-        {
-            var frame = await LdapCodec.ReadFrameAsync(_stream, 1 << 20, CancellationToken.None)
-                ?? throw new InvalidOperationException("server closed the connection");
-            var msg = new AsnReader(frame, AsnEncodingRules.BER).ReadSequence();
-            msg.TryReadInt32(out _);
-            var tag = msg.PeekTag();
-            var op = msg.ReadSequence(tag);
-            byte[]? cookie = null;
-            if (msg.HasData)
-            {
-                var controls = msg.ReadSequence(new Asn1Tag(TagClass.ContextSpecific, 0, isConstructed: true));
-                while (controls.HasData)
-                {
-                    var control = controls.ReadSequence();
-                    var oid = Encoding.UTF8.GetString(control.ReadOctetString());
-                    if (control.HasData && control.PeekTag().HasSameClassAndValue(Asn1Tag.Boolean)) control.ReadBoolean();
-                    if (oid != LdapOid.PagedResults || !control.HasData) continue;
-                    var value = new AsnReader(control.ReadOctetString(), AsnEncodingRules.BER).ReadSequence();
-                    value.TryReadInt32(out _);
-                    cookie = value.ReadOctetString();
-                }
-            }
-            return (tag.TagValue, op, cookie);
-        }
-
-        private static int ResultCode(AsnReader op)
-        {
-            var bytes = op.ReadEnumeratedBytes().Span;
-            var code = 0;
-            foreach (var b in bytes) code = (code << 8) | b;
-            return code;
-        }
-
-        public async Task<int> BindAsync(string dn, string password)
-        {
-            await SendAsync(LdapOp.BindRequest, w =>
-            {
-                w.WriteInteger(3);
-                w.WriteOctetString(Encoding.UTF8.GetBytes(dn));
-                w.WriteOctetString(Encoding.UTF8.GetBytes(password), new Asn1Tag(TagClass.ContextSpecific, 0));
-            });
-            var (_, op, _) = await ReceiveAsync();
-            return ResultCode(op);
-        }
-
-        public async Task<(int Code, List<Entry> Entries)> SearchAsync(string baseDn, byte[] filter, params string[] attrs)
-            => await SearchAsync(baseDn, filter, 2, attrs);
-
-        public async Task<(int Code, List<Entry> Entries)> SearchAsync(string baseDn, byte[] filter, int scope, params string[] attrs)
-        {
-            var (code, entries, _) = await SearchPageAsync(baseDn, filter, scope, attrs, null, 0);
-            return (code, entries);
-        }
-
-        public async Task<(int Code, List<Entry> Entries, int Pages)> SearchPagedAsync(
-            string baseDn, byte[] filter, int pageSize, params string[] attrs)
-        {
-            var all = new List<Entry>();
-            byte[] cookie = [];
-            for (var pages = 1; ; pages++)
-            {
-                var (code, entries, next) = await SearchPageAsync(baseDn, filter, 2, attrs, cookie, pageSize);
-                all.AddRange(entries);
-                if (code != LdapResult.Success || next is not { Length: > 0 }) return (code, all, pages);
-                if (pages > 10_000) throw new InvalidOperationException("paged search never ended");
-                cookie = next;
-            }
-        }
-
-        private async Task<(int Code, List<Entry> Entries, byte[]? Cookie)> SearchPageAsync(
-            string baseDn, byte[] filter, int scope, string[] attrs, byte[]? pagedCookie, int pageSize)
-        {
-            await SendAsync(LdapOp.SearchRequest, w =>
-            {
-                w.WriteOctetString(Encoding.UTF8.GetBytes(baseDn));
-                w.WriteEncodedValue([0x0A, 0x01, (byte)scope]);
-                w.WriteEncodedValue([0x0A, 0x01, 0x00]);
-                w.WriteInteger(0);
-                w.WriteInteger(0);
-                w.WriteBoolean(false);
-                w.WriteEncodedValue(filter);
-                using (w.PushSequence())
-                    foreach (var a in attrs) w.WriteOctetString(Encoding.UTF8.GetBytes(a));
-            }, pagedCookie, pageSize);
-
-            var entries = new List<Entry>();
-            while (true)
-            {
-                var (tag, op, cookie) = await ReceiveAsync();
-                if (tag == LdapOp.SearchResultDone) return (ResultCode(op), entries, cookie);
-                var dn = Encoding.UTF8.GetString(op.ReadOctetString());
-                var attrMap = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
-                var list = op.ReadSequence();
-                while (list.HasData)
-                {
-                    var a = list.ReadSequence();
-                    var name = Encoding.UTF8.GetString(a.ReadOctetString());
-                    var values = new List<string>();
-                    var set = a.ReadSetOf();
-                    while (set.HasData) values.Add(Encoding.UTF8.GetString(set.ReadOctetString()));
-                    attrMap[name] = values;
-                }
-                entries.Add(new Entry(dn, attrMap));
-            }
-        }
-
-        public ValueTask DisposeAsync()
-        {
-            _tcp.Dispose();
-            return ValueTask.CompletedTask;
-        }
     }
 }

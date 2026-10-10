@@ -242,4 +242,40 @@ public class SettingsValidatorTests
         s.DatabasePort = -1;
         new DmartSettingsValidator().Validate(null, s).Failed.ShouldBeTrue();
     }
+
+    // ---- LDAP face TLS and trusted peers ----
+
+    [Fact]
+    public void Ldaps_Without_A_Certificate_Fails()
+    {
+        var s = Valid();
+        s.LdapsPort = 6636;
+        var r = new DmartSettingsValidator().Validate(null, s);
+        r.Failed.ShouldBeTrue();
+        r.FailureMessage!.ShouldContain("LdapsPort needs LdapTlsCertFile and LdapTlsKeyFile");
+    }
+
+    [Fact]
+    public void A_Certificate_Without_A_Key_Or_A_Missing_File_Fails()
+    {
+        var s = Valid();
+        s.LdapPort = 3389;
+        s.LdapTlsCertFile = "/nonexistent/fullchain.pem";
+        var r = new DmartSettingsValidator().Validate(null, s);
+        r.Failed.ShouldBeTrue();
+        r.FailureMessage!.ShouldContain("must be set together");
+        r.FailureMessage!.ShouldContain("does not exist");
+    }
+
+    [Fact]
+    public void An_Unparseable_Trusted_Peer_Fails_Rather_Than_Being_Dropped()
+    {
+        var s = Valid();
+        s.LdapPort = 3389;
+        s.LdapTrustedPeers = "127.0.0.1, 10.77.0.0/16, ldap.example.com";
+        var r = new DmartSettingsValidator().Validate(null, s);
+        r.Failed.ShouldBeTrue();
+        r.FailureMessage!.ShouldContain("ldap.example.com");
+        r.FailureMessage!.ShouldNotContain("10.77.0.0/16");
+    }
 }

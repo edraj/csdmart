@@ -1121,7 +1121,12 @@ public sealed class UserService(
     // null with the same invalidCredentials, so unlike LoginAsync this path can
     // close the timing side of enumeration completely: every failure, including
     // locked and deactivated accounts, pays for a hash.
-    public async Task<User?> VerifyDirectoryBindAsync(string shortname, string password, CancellationToken ct = default)
+    //
+    // countFailure false leaves a wrong password off the lockout counter. The
+    // LDAP face passes it for a password the account already failed with
+    // recently (a stale saved password retried by a device; see LdapBindGuard).
+    public async Task<User?> VerifyDirectoryBindAsync(string shortname, string password,
+        bool countFailure = true, CancellationToken ct = default)
     {
         var user = await users.GetByShortnameAsync(shortname, ct);
         if (user is null)
@@ -1140,7 +1145,7 @@ public sealed class UserService(
 
         if (!await hasher.VerifyAsync(password, user.Password, ct))
         {
-            await HandleFailedLoginAttemptAsync(user, ct);
+            if (countFailure) await HandleFailedLoginAttemptAsync(user, ct);
             return null;
         }
 

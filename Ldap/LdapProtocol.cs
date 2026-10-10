@@ -8,10 +8,12 @@ internal static class LdapResult
     public const int Success = 0;
     public const int OperationsError = 1;
     public const int ProtocolError = 2;
+    public const int TimeLimitExceeded = 3;
     public const int SizeLimitExceeded = 4;
     public const int AuthMethodNotSupported = 7;
     public const int AdminLimitExceeded = 11;
     public const int UnavailableCriticalExtension = 12;
+    public const int ConfidentialityRequired = 13;
     public const int NoSuchObject = 32;
     public const int InvalidDnSyntax = 34;
     public const int InappropriateAuthentication = 48;

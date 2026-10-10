@@ -3029,6 +3029,8 @@ builder.Services.AddSingleton<DirectoryFieldsValidator>();
 // the listener reads the port when it starts, so a test host can turn it on
 // through IOptions without the registration depending on builder-time config.
 builder.Services.AddSingleton<Dmart.Ldap.LdapDirectory>();
+builder.Services.AddSingleton<Dmart.Ldap.LdapTls>();
+builder.Services.AddSingleton<Dmart.Ldap.LdapBindGuard>();
 builder.Services.AddSingleton<Dmart.Ldap.LdapServer>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<Dmart.Ldap.LdapServer>());
 builder.Services.AddSingleton<WorkflowEngine>();

@@ -21,7 +21,9 @@ internal sealed class DmartSettingsValidator : IValidateOptions<DmartSettings>
         // a bad value to afterwards.
         if (s.LdapPort is < 0 or > 65535)
             failures.Add($"LdapPort must be 0 (off) or 1-65535 (got {s.LdapPort})");
-        if (s.LdapPort > 0)
+        if (s.LdapsPort is < 0 or > 65535)
+            failures.Add($"LdapsPort must be 0 (off) or 1-65535 (got {s.LdapsPort})");
+        if (s.LdapPort > 0 || s.LdapsPort > 0)
         {
             if (!System.Net.IPAddress.TryParse(s.LdapHost, out _))
                 failures.Add($"LdapHost must be an IP address (got '{s.LdapHost}')");
@@ -31,6 +33,18 @@ internal sealed class DmartSettingsValidator : IValidateOptions<DmartSettings>
                 failures.Add($"LdapSizeLimit must be > 0 (got {s.LdapSizeLimit})");
             if (s.LdapMaxScan <= 0)
                 failures.Add($"LdapMaxScan must be > 0 (got {s.LdapMaxScan})");
+            if (s.LdapsPort > 0 && s.LdapsPort == s.LdapPort)
+                failures.Add($"LdapsPort and LdapPort must differ (both {s.LdapPort})");
+            if (s.LdapsPort > 0 && !s.LdapTlsConfigured)
+                failures.Add("LdapsPort needs LdapTlsCertFile and LdapTlsKeyFile");
+            if ((s.LdapTlsCertFile.Length > 0) != (s.LdapTlsKeyFile.Length > 0))
+                failures.Add("LdapTlsCertFile and LdapTlsKeyFile must be set together");
+            foreach (var (setting, path) in new[] { ("LdapTlsCertFile", s.LdapTlsCertFile), ("LdapTlsKeyFile", s.LdapTlsKeyFile) })
+                if (path.Length > 0 && !File.Exists(path))
+                    failures.Add($"{setting} '{path}' does not exist");
+            s.ParseLdapTrustedPeers(out var badPeers);
+            if (badPeers.Length > 0)
+                failures.Add($"LdapTrustedPeers has entries that are not an address or CIDR range: {string.Join(", ", badPeers)}");
         }
 
         // Fail on an unrecognized driver rather than defaulting. A typo'd

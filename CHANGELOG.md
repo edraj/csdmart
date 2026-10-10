@@ -38,7 +38,16 @@
   - `mail`, `mailAlias` and `authorizedService` come from the directory
     fields above, and lookups on them are indexed.
   - Paged searches read a page at a time.
-  - There is no TLS yet, so keep it on loopback or a private interface.
+  - TLS: with `LDAP_TLS_CERT_FILE` and `LDAP_TLS_KEY_FILE` the port offers
+    StartTLS, `LDAPS_PORT` adds implicit TLS, and renewed certificate files
+    are picked up without a restart. A password bind over cleartext is then
+    refused, except from `LDAP_TRUSTED_PEERS` (loopback by default).
+  - Failed binds are limited per client address to
+    `AUTH_RATE_LIMIT_PER_MINUTE` a minute, the HTTP login endpoints' number.
+    Trusted peers, which bind for every user from one address, are exempt.
+  - A wrong password the account failed with recently is not counted toward
+    the lockout again, so a device retrying a stale password cannot keep
+    the account locked.
 
   `bench/REPORT-ldap-face.md` has the interop and scale measurements.
 

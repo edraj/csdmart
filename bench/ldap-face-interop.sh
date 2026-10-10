@@ -8,6 +8,8 @@
 #   ldapsearch / ldapwhoami / ldapmodify   (openldap-clients, i.e. libldap)
 #   Postfix   postmap -q against the three ldap:*.cf maps   (postfix-ldap)
 #   Dovecot   doveadm auth test through `passdb ldap { bind = yes }`
+#   TLS       LDAPS and StartTLS from libldap, Postfix and Dovecot, against a
+#             throwaway CA
 #   Dex       the LDAP connector, driven by an OAuth password grant
 #   Gitea     a BindDN LDAP auth source, driven by API basic auth
 #
@@ -28,6 +30,7 @@ WORK="$(cd "$WORK" && pwd)"
 
 HTTP_PORT="${HTTP_PORT:-18282}"
 LDAP_PORT="${LDAP_PORT:-13389}"
+LDAPS_PORT="${LDAPS_PORT:-13636}"
 DEX_PORT="${DEX_PORT:-15556}"
 GITEA_PORT="${GITEA_PORT:-13000}"
 BASE="dc=imx,dc=sh"
@@ -53,6 +56,25 @@ fail() { printf '  FAIL  %s\n' "$1"; [ -n "${2:-}" ] && printf '        %s\n' "$
 check() { if grep -qF -- "$2" <<<"$3"; then pass "$1"; else fail "$1" "expected '$2', got: $(head -c 400 <<<"$3")"; fi; }
 check_not() { if grep -qF -- "$2" <<<"$3"; then fail "$1" "did not expect '$2'"; else pass "$1"; fi; }
 
+# ------------------------------------------------------------ a throwaway CA
+# One CA signs the server certificate. The second signs nothing; it is for the
+# client that must refuse.
+mkdir -p "$WORK/tls"
+(
+  cd "$WORK/tls" || exit 100
+  for ca in ca other-ca; do
+    openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 2 -subj "/CN=interop $ca" \
+      -addext basicConstraints=critical,CA:TRUE -addext keyUsage=critical,keyCertSign \
+      -keyout "$ca.key" -out "$ca.pem" 2>/dev/null || exit 100
+  done
+  openssl req -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -subj "/CN=127.0.0.1" \
+    -keyout privkey.pem -out server.csr 2>/dev/null || exit 100
+  printf 'subjectAltName=IP:127.0.0.1,DNS:localhost\nextendedKeyUsage=serverAuth\n' > server.ext
+  openssl x509 -req -in server.csr -CA ca.pem -CAkey ca.key -CAcreateserial -days 2 \
+    -extfile server.ext -out server.pem 2>/dev/null || exit 100
+  cat server.pem ca.pem > fullchain.pem
+) || { echo "could not make the test CA"; exit 100; }
+
 # ---------------------------------------------------------------- the server
 cat > "$WORK/config.env" <<EOF
 DATABASE_DRIVER="sqlite"
@@ -62,6 +84,9 @@ LISTENING_PORT=$HTTP_PORT
 JWT_SECRET="$(head -c 48 /dev/urandom | base64 | tr -d '/+=' | head -c 48)"
 ADMIN_PASSWORD="$ADMIN_PW"
 LDAP_PORT=$LDAP_PORT
+LDAPS_PORT=$LDAPS_PORT
+LDAP_TLS_CERT_FILE="$WORK/tls/fullchain.pem"
+LDAP_TLS_KEY_FILE="$WORK/tls/privkey.pem"
 LDAP_HOST="127.0.0.1"
 LDAP_BASE_DN="$BASE"
 LDAP_SERVICE_ACCOUNTS="dex,mail,gitea"
@@ -82,7 +107,8 @@ stop_server() {
 trap stop_server EXIT
 
 for _ in $(seq 120); do
-  curl -sf "$API/" >/dev/null 2>&1 && (exec 3<>"/dev/tcp/127.0.0.1/$LDAP_PORT") 2>/dev/null && break
+  curl -sf "$API/" >/dev/null 2>&1 && (exec 3<>"/dev/tcp/127.0.0.1/$LDAP_PORT") 2>/dev/null \
+    && (exec 3<>"/dev/tcp/127.0.0.1/$LDAPS_PORT") 2>/dev/null && break
   kill -0 "$SERVER_PID" 2>/dev/null || { echo "server exited:"; tail -20 "$WORK/server.log"; exit 100; }
   sleep 0.5
 done
@@ -256,7 +282,37 @@ out=$(dove carol@imx.sh Carol12345)
 check "no mail service for carol" "auth failed" "$out"
 
 echo
-echo "== Dex $DEX_IMAGE (LDAP connector, password grant)"
+echo "== TLS (LDAPS on $LDAPS_PORT, StartTLS on $LDAP_PORT)"
+TLS_URI="ldaps://127.0.0.1:$LDAPS_PORT"
+tls_box() { in_box "export LDAPTLS_CACERT=/work/tls/ca.pem LDAPTLS_REQCERT=demand; $1"; }
+out=$(tls_box "ldapsearch -LLL -x -H $URI -b '' -s base '(objectClass=*)' supportedExtension")
+check "root DSE advertises StartTLS" "supportedExtension: 1.3.6.1.4.1.1466.20037" "$out"
+out=$(tls_box "ldapwhoami -x -H $TLS_URI -D uid=alice,ou=people,$BASE -w Alice12345")
+check "LDAPS: user bind + Who Am I" "dn:uid=alice,ou=people,$BASE" "$out"
+out=$(tls_box "ldapwhoami -x -ZZ -H $URI -D uid=alice,ou=people,$BASE -w Alice12345")
+check "StartTLS (-ZZ): user bind + Who Am I" "dn:uid=alice,ou=people,$BASE" "$out"
+out=$(tls_box "ldapsearch -LLL -x -ZZ -H $URI -D $DEX_DN -w $SVC_PW -b ou=people,$BASE -E pr=1/noprompt '(objectClass=person)' uid")
+check "StartTLS: paged listing as a service account" "uid: carol" "$out"
+out=$(in_box "LDAPTLS_CACERT=/work/tls/other-ca.pem LDAPTLS_REQCERT=demand ldapwhoami -x -H $TLS_URI -D uid=alice,ou=people,$BASE -w Alice12345; echo rc=\$?")
+check "a client that does not trust the CA refuses to connect" "rc=255" "$out"
+
+sed -e "s|^server_host = .*|server_host = $TLS_URI\ntls_ca_cert_file = /work/tls/ca.pem\ntls_require_cert = yes|" \
+  "$WORK/ldap-mailboxes.cf" > "$WORK/ldap-mailboxes-tls.cf"
+out=$(in_box "postmap -q alice@imx.sh ldap:/work/ldap-mailboxes-tls.cf")
+check "Postfix over LDAPS: mailbox lookup" "alice@imx.sh/" "$out"
+
+sed -e "s|^  ldap_uris = .*|  ldap_uris = $URI\n  ldap_starttls = yes|" \
+    -e "s|^auth_mechanisms = plain|auth_mechanisms = plain\nssl_client_ca_file = /work/tls/ca.pem|" \
+  "$WORK/dovecot.conf" > "$WORK/dovecot-tls.conf"
+out=$(in_box "dovecot -c /work/dovecot-tls.conf && sleep 1 && doveadm -c /work/dovecot-tls.conf auth test alice@imx.sh Alice12345; echo rc=\$?")
+check "Dovecot over StartTLS: IMAP login for alice" "auth succeeded" "$out"
+# Proof that the line above went over TLS: trusting the wrong CA must fail it.
+sed -e "s|/work/tls/ca.pem|/work/tls/other-ca.pem|" "$WORK/dovecot-tls.conf" > "$WORK/dovecot-tls-wrong-ca.conf"
+out=$(in_box "dovecot -c /work/dovecot-tls-wrong-ca.conf && sleep 1 && doveadm -c /work/dovecot-tls-wrong-ca.conf auth test alice@imx.sh Alice12345; echo rc=\$?")
+check "  ...and fails when Dovecot trusts the wrong CA" "ldap_start_tls_s() failed" "$out"
+
+echo
+echo "== Dex $DEX_IMAGE (LDAP connector over LDAPS, password grant)"
 cat > "$WORK/dex.yaml" <<EOF
 issuer: http://127.0.0.1:$DEX_PORT/dex
 storage:
@@ -271,8 +327,10 @@ connectors:
     id: ldap
     name: LDAP
     config:
-      host: 127.0.0.1:$LDAP_PORT
-      insecureNoSSL: true
+      # LDAPS, verified against the test CA: Go's TLS stack, where the other
+      # clients here all use OpenSSL through libldap.
+      host: 127.0.0.1:$LDAPS_PORT
+      rootCA: /etc/dex/ca.pem
       bindDN: "$DEX_DN"
       bindPW: "$SVC_PW"
       usernamePrompt: Username
@@ -292,6 +350,7 @@ staticClients:
 EOF
 podman rm -f dmart-ldap-dex >/dev/null 2>&1
 podman run -d --name dmart-ldap-dex --network host -v "$WORK/dex.yaml:/etc/dex/config.yaml:ro,Z" \
+  -v "$WORK/tls/ca.pem:/etc/dex/ca.pem:ro,Z" \
   "$DEX_IMAGE" dex serve /etc/dex/config.yaml >/dev/null
 for _ in $(seq 60); do curl -sf "http://127.0.0.1:$DEX_PORT/dex/.well-known/openid-configuration" >/dev/null && break; sleep 0.5; done
 grant() {

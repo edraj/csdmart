@@ -40,12 +40,14 @@ the AOT binary.
 
 | Supported | Behaviour |
 |---|---|
-| Simple bind | `UserService.VerifyDirectoryBindAsync`, the credential half of `/user/login`: the same Argon2 memory budget, lockout counter, deactivation gate, rehash-on-login and decoy timing, but no session or JWT |
+| Simple bind | `UserService.VerifyDirectoryBindAsync`, the credential half of `/user/login`: the same Argon2 memory budget, lockout counter, deactivation gate, rehash-on-login and decoy timing, but no session or JWT. A wrong password the account failed with recently is not counted again (see below) |
+| Failed-bind limit | `AUTH_RATE_LIMIT_PER_MINUTE` failed binds a minute per client address, the number the HTTP login endpoints allow; then `busy` (51) before any password is checked. `LDAP_TRUSTED_PEERS` (loopback by default) are exempt |
 | Search | All scopes and the full RFC 4511 filter grammar: three-valued logic, attribute aliases, case-insensitive, DN-valued, boolean and telephone matching, and `*` / `+` / `1.1` attribute selection |
 | Paged results (RFC 2696) | **Streamed**: each page reads only the rows it needs, and the scan budget applies per request, so a full listing continues across pages |
 | Who Am I (RFC 4532), root DSE | Yes |
 | Add, modify, delete, modify-DN, compare, password modify | `unwillingToPerform` (53). Users change through dmart |
-| StartTLS / LDAPS, SASL | **Not yet**: `unavailable` (52) and `authMethodNotSupported` (7) |
+| StartTLS, LDAPS | With `LDAP_TLS_CERT_FILE`/`LDAP_TLS_KEY_FILE`; `LDAPS_PORT` for implicit TLS. The files are re-read when they change. A cleartext password bind from outside `LDAP_TRUSTED_PEERS` is then refused with `confidentialityRequired` (13) |
+| SASL | `authMethodNotSupported` (7) |
 
 The tree:
 
@@ -73,6 +75,24 @@ A user entry has:
 `userPassword` is never served. Service accounts read everything; any other
 bind reads only its own entry; anonymous gets only the root DSE.
 
+### Stale passwords and the lockout
+
+Binds share `/user/login`'s lockout counter: `MAX_FAILED_LOGIN_ATTEMPTS`
+wrong passwords lock the account, and every attempt while locked refreshes
+the cool-down. Testing Dovecot's auth cache against the face showed what that
+does to a mail user. A phone still holding the old password after a change
+retries it every time it reconnects, so it locks the account within five
+retries, and keeps it locked, web login included, for as long as the phone
+keeps trying.
+
+So a failed bind whose password matches one of the account's last two failed
+passwords is not counted again. A guesser gains nothing: a repeated wrong
+guess is still wrong, and distinct guesses count as before. Only an HMAC of
+each failed password is kept, in memory, under a key that dies with the
+process (`Ldap/LdapBindGuard.cs`). Dovecot's negative cache already limits
+such a client to one bind per `auth_cache_negative_ttl`. This makes those
+binds harmless as well as rare.
+
 ### The directory fields
 
 See `docs/user-directory-fields.md`.
@@ -89,7 +109,7 @@ See `docs/user-directory-fields.md`.
   ready, lookups that need it answer `unavailable` rather than "no such
   user", which makes Postfix defer mail instead of bouncing it.
 
-## Interop: 34 of 34, on both the JIT and the AOT binary
+## Interop: 42 of 42, on both the JIT and the AOT binary
 
 Every client ran in a container from the packages matrix-deploy deploys,
 pointed at dmart with **the filters in matrix-deploy's own templates,
@@ -100,7 +120,8 @@ unchanged**:
 | libldap (`ldapsearch`, `ldapwhoami`, `ldapmodify`) | openldap-clients 2.6.14 | root DSE, bind outcomes (49 / 53), the Dex filter, self-only visibility, anonymous refusal (50), paged search, `member=` group lookup, `memberOf`, noSuchObject (32), write refusal (53) |
 | Postfix `postmap -q` | postfix-ldap 3.10, Fedora 43 | the mailbox map (`result_format = %s/`) and the alias map (`mailAlias=%s`); a contact email is not a local mailbox |
 | Dovecot `doveadm auth test` | 2.4, Fedora 43 | `passdb ldap { bind = yes }` with i7's filter |
-| Dex | v2.45.1 (i1's pin) | the LDAP connector from `roles/dex`, via a password grant; the ID token carries the **hosted mailbox** |
+| TLS | the same clients | LDAPS and StartTLS (`-ZZ`) from libldap, a paged listing over StartTLS, Postfix's map over LDAPS, Dovecot over StartTLS (and failing in `ldap_start_tls_s()` when it trusts the wrong CA, which proves the passing run was encrypted), and a client that does not trust the CA refusing to connect. The CA is a throwaway one made per run |
+| Dex | v2.45.1 (i1's pin) | the LDAP connector from `roles/dex` **over LDAPS** (Go's TLS stack, where the others use OpenSSL), via a password grant; the ID token carries the **hosted mailbox** |
 | Gitea | 1.27.3 (i1's pin) | `gitea admin auth add-ldap` with `roles/gitea`'s flags, then API basic auth; the account gets the hosted mailbox |
 
 libldap 2.6 sends minimal BER lengths; `LdapCodecTests` pins its actual
@@ -263,15 +284,15 @@ run's details are in this file's git history.
   ran during the soak.
 - **Duration and size.** Ten minutes, not days. 3M users, not 10M.
 - **The network.** Clients connected over loopback. A real deployment adds a
-  network hop per lookup, and TLS once it exists.
+  network hop per lookup, and a TLS handshake per connection.
 - **Repeatability.** One run per engine for each configuration (the SQLite one
   twice, with matching results).
 
 ## Still open
 
-1. **TLS.** LDAPS and StartTLS. Until then, loopback or WireGuard only.
-2. **Per-IP bind rate limiting.** The account lockout applies, but the HTTP
-   side's `auth-by-ip` limiter has no LDAP equivalent yet.
+1. ~~**TLS.**~~ Done: LDAPS and StartTLS, checked with libldap, Postfix,
+   Dovecot and Dex (Go's TLS) in the interop run.
+2. ~~**Per-IP bind rate limiting.**~~ Done, with the stale-password rule below.
 3. **Replication.** i7 authenticates mail against a *local* replica so mail
    survives i1 or the home link being down.
    - dmart cannot feed syncrepl.

@@ -1,6 +1,8 @@
 using System.Collections.Concurrent;
 using System.Net;
+using System.Net.Security;
 using System.Net.Sockets;
+using System.Security.Authentication;
 using System.Security.Cryptography;
 using System.Text;
 using Dmart.Auth;
@@ -20,12 +22,16 @@ namespace Dmart.Ldap;
 // Listen() to Kestrel makes it ignore the URLs the HTTP side is configured
 // with, and LDAP needs nothing from the HTTP pipeline anyway.
 //
-// No TLS yet. LdapHost defaults to loopback and the settings say why.
+// TLS (LdapTls): LDAP_PORT offers StartTLS and LDAPS_PORT is TLS from the
+// first byte, both once a certificate is configured. Brute-force limits beyond
+// the account lockout are LdapBindGuard's.
 internal sealed class LdapServer(
     IOptions<DmartSettings> settings,
     LdapDirectory directory,
     UserService userService,
     PasswordHasher hasher,
+    LdapTls tls,
+    LdapBindGuard guard,
     ILogger<LdapServer> log) : BackgroundService
 {
     // Bind and search requests are a few hundred bytes. Anything near this is
@@ -40,17 +46,60 @@ internal sealed class LdapServer(
     private readonly ConcurrentDictionary<Guid, Task> _connections = new();
 
     public IPEndPoint? BoundEndpoint { get; private set; }
+    public IPEndPoint? BoundTlsEndpoint { get; private set; }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         var s = settings.Value;
-        if (s.LdapPort <= 0) return;
+        if (s.LdapPort <= 0 && s.LdapsPort <= 0) return;
 
-        var listener = new TcpListener(IPAddress.Parse(s.LdapHost), s.LdapPort);
+        // A certificate that does not load should stop startup here, not
+        // fail every handshake after it.
+        tls.EnsureLoaded();
+        var host = IPAddress.Parse(s.LdapHost);
+        if (!tls.Configured && !IPAddress.IsLoopback(host))
+            log.LogWarning("LDAP directory face on {Host} without TLS: passwords cross the network in the clear "
+                + "unless that network is private (WireGuard). Set LDAP_TLS_CERT_FILE and LDAP_TLS_KEY_FILE.", host);
+
+        var listeners = new List<TcpListener>();
+        try
+        {
+            var loops = new List<Task>();
+            if (s.LdapPort > 0)
+            {
+                var plain = Listen(host, s.LdapPort, listeners);
+                BoundEndpoint = (IPEndPoint)plain.LocalEndpoint;
+                log.LogInformation("LDAP directory face listening on {Endpoint}{StartTls}, base {Base}",
+                    BoundEndpoint, tls.Configured ? " (StartTLS)" : "", directory.BaseDn);
+                loops.Add(AcceptAsync(plain, implicitTls: false, stoppingToken));
+            }
+            if (s.LdapsPort > 0)
+            {
+                var secure = Listen(host, s.LdapsPort, listeners);
+                BoundTlsEndpoint = (IPEndPoint)secure.LocalEndpoint;
+                log.LogInformation("LDAPS directory face listening on {Endpoint}, base {Base}", BoundTlsEndpoint, directory.BaseDn);
+                loops.Add(AcceptAsync(secure, implicitTls: true, stoppingToken));
+            }
+            await Task.WhenAll(loops);
+        }
+        finally
+        {
+            foreach (var l in listeners) l.Stop();
+            await Task.WhenAny(Task.WhenAll(_connections.Values), Task.Delay(TimeSpan.FromSeconds(5), CancellationToken.None));
+        }
+    }
+
+    private static TcpListener Listen(IPAddress host, int port, List<TcpListener> started)
+    {
+        var listener = new TcpListener(host, port);
         listener.Start(backlog: 128);
-        BoundEndpoint = (IPEndPoint)listener.LocalEndpoint;
-        log.LogInformation("LDAP directory face listening on {Endpoint}, base {Base}", BoundEndpoint, directory.BaseDn);
+        started.Add(listener);
+        return listener;
+    }
 
+    // Both listeners share the connection slots.
+    private async Task AcceptAsync(TcpListener listener, bool implicitTls, CancellationToken stoppingToken)
+    {
         try
         {
             while (!stoppingToken.IsCancellationRequested)
@@ -66,7 +115,7 @@ internal sealed class LdapServer(
                 var id = Guid.NewGuid();
                 _connections[id] = Task.Run(async () =>
                 {
-                    try { await ServeAsync(client, stoppingToken); }
+                    try { await ServeAsync(client, implicitTls, stoppingToken); }
                     finally
                     {
                         _slots.Release();
@@ -77,11 +126,6 @@ internal sealed class LdapServer(
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
         {
-        }
-        finally
-        {
-            listener.Stop();
-            await Task.WhenAny(Task.WhenAll(_connections.Values), Task.Delay(TimeSpan.FromSeconds(5), CancellationToken.None));
         }
     }
 
@@ -108,23 +152,33 @@ internal sealed class LdapServer(
     // replaces it, which is what every client does anyway.
     private sealed record PagedSearch(byte[] Cookie, LdapDirectory.Search Search, IAsyncEnumerator<LdapEntry?> Results);
 
-    private async Task ServeAsync(TcpClient client, CancellationToken stop)
+    // One client connection. The stream is replaced when StartTLS upgrades it.
+    private sealed class Connection(string peer, IPAddress? address, Stream stream)
+    {
+        public string Peer { get; } = peer;
+        public IPAddress? Address { get; } = address;
+        public Stream Stream { get; set; } = stream;
+        public bool Secure => Stream is SslStream;
+    }
+
+    private async Task ServeAsync(TcpClient client, bool implicitTls, CancellationToken stop)
     {
         using var _ = client;
         client.NoDelay = true;
-        var peer = client.Client.RemoteEndPoint?.ToString() ?? "?";
-        var stream = client.GetStream();
+        var endpoint = client.Client.RemoteEndPoint as IPEndPoint;
+        var conn = new Connection(endpoint?.ToString() ?? "?", endpoint?.Address, client.GetStream());
         await using var session = new Session();
 
         try
         {
+            if (implicitTls) conn.Stream = await tls.AuthenticateAsync(conn.Stream, stop);
             while (!stop.IsCancellationRequested)
             {
                 byte[]? frame;
                 using (var idle = CancellationTokenSource.CreateLinkedTokenSource(stop))
                 {
                     idle.CancelAfter(IdleTimeout);
-                    frame = await LdapCodec.ReadFrameAsync(stream, MaxMessageBytes, idle.Token);
+                    frame = await LdapCodec.ReadFrameAsync(conn.Stream, MaxMessageBytes, idle.Token);
                 }
                 if (frame is null) return;
 
@@ -135,25 +189,72 @@ internal sealed class LdapServer(
                 }
                 catch (LdapProtocolException ex)
                 {
-                    log.LogInformation("LDAP protocol error from {Peer}: {Error}", peer, ex.Message);
-                    await stream.WriteAsync(LdapCodec.NoticeOfDisconnection(LdapResult.ProtocolError, ex.Message), stop);
+                    log.LogInformation("LDAP protocol error from {Peer}: {Error}", conn.Peer, ex.Message);
+                    await conn.Stream.WriteAsync(LdapCodec.NoticeOfDisconnection(LdapResult.ProtocolError, ex.Message), stop);
                     return;
                 }
 
                 if (req is LdapUnbindRequest) return;
-                await DispatchAsync(req, session, stream, peer, stop);
+                if (req is LdapExtendedRequest { Name: LdapOid.StartTls } startTls)
+                {
+                    if (!await StartTlsAsync(startTls, conn, session, stop)) return;
+                    continue;
+                }
+                await DispatchAsync(req, session, conn, stop);
             }
         }
-        catch (Exception ex) when (ex is IOException or OperationCanceledException or LdapProtocolException or SocketException)
+        catch (Exception ex) when (ex is IOException or OperationCanceledException or LdapProtocolException
+                                       or SocketException or AuthenticationException)
         {
-            // Client went away, idled out, or sent an unframeable message:
-            // nothing useful left to say to it.
+            // Client went away, idled out, sent an unframeable message or
+            // failed the TLS handshake: nothing useful left to say to it.
+        }
+        finally
+        {
+            if (conn.Stream is SslStream ssl) await ssl.DisposeAsync();
         }
     }
 
-    private async Task DispatchAsync(LdapRequest req, Session session, Stream stream, string peer, CancellationToken ct)
+    // RFC 4511 §4.14 / RFC 4513 §3: answer, then hand the socket to TLS. The
+    // next bytes on the wire are the client's handshake. False means the
+    // connection is finished.
+    private async Task<bool> StartTlsAsync(LdapExtendedRequest e, Connection conn, Session session, CancellationToken ct)
     {
-        Task Send(byte[] message) => stream.WriteAsync(message, ct).AsTask();
+        async Task Reply(int code, string message)
+            => await conn.Stream.WriteAsync(LdapCodec.Extended(e.MessageId, code, message, LdapOid.StartTls), ct);
+
+        if (!tls.Configured)
+        {
+            await Reply(LdapResult.Unavailable, "TLS is not configured on this listener");
+            return true;
+        }
+        if (conn.Secure)
+        {
+            await Reply(LdapResult.OperationsError, "TLS is already established");
+            return true;
+        }
+
+        await Reply(LdapResult.Success, "");
+        // Whatever was bound before was bound in the clear; start over anonymous,
+        // and drop any paged search begun before the upgrade.
+        session.Principal = LdapPrincipal.Anonymous;
+        await session.SetPagedAsync(null);
+        try
+        {
+            conn.Stream = await tls.AuthenticateAsync(conn.Stream, ct);
+            return true;
+        }
+        catch (Exception ex) when (ex is AuthenticationException or IOException or OperationCanceledException)
+        {
+            log.LogInformation("LDAP StartTLS from {Peer} failed: {Error}", conn.Peer, ex.Message);
+            return false;
+        }
+    }
+
+    private async Task DispatchAsync(LdapRequest req, Session session, Connection conn, CancellationToken ct)
+    {
+        var peer = conn.Peer;
+        Task Send(byte[] message) => conn.Stream.WriteAsync(message, ct).AsTask();
 
         // A critical control the face does not implement must fail the
         // operation (RFC 4511 §4.1.11). Paged results is the one it does.
@@ -166,7 +267,7 @@ internal sealed class LdapServer(
             {
                 case LdapBindRequest b:
                     if (unknownCritical is not null) { await Send(Unsupported(b.MessageId, LdapOp.BindResponse, unknownCritical)); return; }
-                    await Send(await BindAsync(b, session, peer, ct));
+                    await Send(await BindAsync(b, session, conn, ct));
                     return;
 
                 case LdapSearchRequest s:
@@ -208,8 +309,9 @@ internal sealed class LdapServer(
 
     // ----- bind -----
 
-    private async Task<byte[]> BindAsync(LdapBindRequest b, Session session, string peer, CancellationToken ct)
+    private async Task<byte[]> BindAsync(LdapBindRequest b, Session session, Connection conn, CancellationToken ct)
     {
+        var peer = conn.Peer;
         session.Principal = LdapPrincipal.Anonymous;
         await session.SetPagedAsync(null);
         byte[] Reply(int code, string message = "") => LdapCodec.Result(b.MessageId, LdapOp.BindResponse, code, message);
@@ -236,6 +338,18 @@ internal sealed class LdapServer(
             return Reply(LdapResult.UnwillingToPerform, "unauthenticated bind (DN without a password) is not allowed");
         }
 
+        // With TLS available, a password over a cleartext connection is
+        // refused unless it comes from one of the deployment's own clients.
+        // It has already crossed the wire by now; refusing it is what stops a
+        // misconfigured client from quietly depending on that.
+        if (tls.Configured && !conn.Secure && !guard.IsTrusted(conn.Address))
+            return Reply(LdapResult.ConfidentialityRequired, "use StartTLS or LDAPS to bind with a password");
+        if (guard.IsThrottled(conn.Address))
+        {
+            log.LogInformation("LDAP bind from {Peer} as {Dn} refused: too many failed binds from this address", peer, b.Name);
+            return Reply(LdapResult.Busy, "too many failed binds from this address; try again in a minute");
+        }
+
         var principal = directory.ClassifyBindDn(b.Name);
         try
         {
@@ -243,16 +357,23 @@ internal sealed class LdapServer(
             {
                 // A DN that names nobody costs what a wrong password costs.
                 _ = await hasher.VerifyAsync(password, hasher.DecoyHash, ct);
+                guard.RecordFailure(conn.Address);
                 log.LogInformation("LDAP bind from {Peer} as {Dn} failed: no such account", peer, b.Name);
                 return Reply(LdapResult.InvalidCredentials);
             }
 
-            var user = await userService.VerifyDirectoryBindAsync(principal.Shortname!, password, ct);
+            var shortname = principal.Shortname!;
+            var repeated = guard.IsRepeatedFailure(shortname, password);
+            var user = await userService.VerifyDirectoryBindAsync(shortname, password, countFailure: !repeated, ct);
             if (user is null)
             {
-                log.LogInformation("LDAP bind from {Peer} as {Dn} failed", peer, b.Name);
+                guard.RecordFailure(conn.Address);
+                guard.RememberFailure(shortname, password);
+                log.LogInformation("LDAP bind from {Peer} as {Dn} failed{Repeat}", peer, b.Name,
+                    repeated ? " (the same password as a recent failure; not counted toward the lockout again)" : "");
                 return Reply(LdapResult.InvalidCredentials);
             }
+            guard.Forget(shortname);
         }
         catch (PasswordHashingCapacityException ex)
         {
@@ -375,8 +496,6 @@ internal sealed class LdapServer(
         LdapOid.WhoAmI => LdapCodec.Extended(e.MessageId, LdapResult.Success, "", responseValue:
             Encoding.UTF8.GetBytes(session.Principal.Kind == PrincipalKind.Anonymous
                 ? "" : "dn:" + directory.DnOf(session.Principal))),
-        LdapOid.StartTls => LdapCodec.Extended(e.MessageId, LdapResult.Unavailable,
-            "TLS is not configured on this listener"),
         LdapOid.PasswordModify => LdapCodec.Extended(e.MessageId, LdapResult.UnwillingToPerform,
             "change passwords through dmart"),
         _ => LdapCodec.Extended(e.MessageId, LdapResult.ProtocolError, $"unsupported extended operation {e.Name}"),

@@ -162,10 +162,27 @@ public sealed class DmartSettings
     // ---- LDAP directory face (Ldap/) ----
     // A read-only LDAPv3 listener that serves the users table as a directory, so
     // mail servers, Gitea and Dex can search and bind against dmart directly.
-    // 0 (the default) leaves it off. There is no TLS yet: bind it to loopback or
-    // a private interface (WireGuard), never a public one.
+    // 0 (the default) leaves it off. Plain LDAP, with StartTLS once a
+    // certificate is configured; LdapsPort adds an implicit-TLS listener.
     public int LdapPort { get; set; }
     public string LdapHost { get; set; } = "127.0.0.1";
+    // LDAPS (TLS from the first byte, conventionally 636) on LdapHost. 0 = off.
+    // Needs LdapTlsCertFile and LdapTlsKeyFile.
+    public int LdapsPort { get; set; }
+    // PEM certificate (the full chain, leaf first) and its PEM private key. With
+    // them set, the plain port also offers StartTLS, and a password bind over a
+    // connection that is still cleartext is refused unless the peer is in
+    // LdapTrustedPeers. Both files are re-read when they change on disk, so an
+    // ACME renewal needs no restart.
+    public string LdapTlsCertFile { get; set; } = "";
+    public string LdapTlsKeyFile { get; set; } = "";
+    // Addresses or CIDR ranges of this deployment's own directory clients:
+    // Dovecot, Postfix, Gitea, Dex. They bind on behalf of every user from one
+    // address, so they are exempt from the per-address failed-bind limit (which
+    // would otherwise be a global one), and once TLS is configured they may still
+    // bind over cleartext (loopback, or a WireGuard link that encrypts already).
+    // Empty trusts nobody.
+    public string LdapTrustedPeers { get; set; } = "127.0.0.0/8,::1";
     // Users are served as uid=<shortname>,ou=people,<base>; groups as
     // cn=<group>,ou=groups,<base>; service accounts as cn=<name>,ou=services,<base>.
     public string LdapBaseDn { get; set; } = "dc=dmart";
@@ -187,6 +204,32 @@ public sealed class DmartSettings
 
     public string[] ParseLdapServiceAccounts() => SplitList(LdapServiceAccounts);
     public string[] ParseLdapExtraUserObjectClasses() => SplitList(LdapExtraUserObjectClasses);
+    public bool LdapTlsConfigured => LdapTlsCertFile.Length > 0 && LdapTlsKeyFile.Length > 0;
+
+    // LdapTrustedPeers as networks; a bare address is its own /32 or /128.
+    // Entries that do not parse are returned in `invalid` for the validator,
+    // which refuses to start rather than silently trusting less than was meant.
+    public System.Net.IPNetwork[] ParseLdapTrustedPeers(out string[] invalid)
+    {
+        var networks = new List<System.Net.IPNetwork>();
+        var bad = new List<string>();
+        foreach (var raw in SplitList(LdapTrustedPeers))
+        {
+            if (raw.Contains('/') ? System.Net.IPNetwork.TryParse(raw, out var net)
+                : System.Net.IPAddress.TryParse(raw, out var ip) && TryHost(ip, out net))
+                networks.Add(net);
+            else
+                bad.Add(raw);
+        }
+        invalid = bad.ToArray();
+        return networks.ToArray();
+
+        static bool TryHost(System.Net.IPAddress ip, out System.Net.IPNetwork net)
+        {
+            net = new System.Net.IPNetwork(ip, ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork ? 32 : 128);
+            return true;
+        }
+    }
 
     private static string[] SplitList(string? raw)
         => (raw ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
@@ -317,7 +360,8 @@ public sealed class DmartSettings
     // window. Complements MaxFailedLoginAttempts (per-account) by stopping
     // username enumeration across many shortnames from one host. Bump for
     // legitimate batch clients; lower for stricter posture. Overshoot rejects
-    // immediately with HTTP 429 (no queue).
+    // immediately with HTTP 429 (no queue). The LDAP face allows the same
+    // number of FAILED binds per address (Ldap/LdapBindGuard).
     public int AuthRateLimitPerMinute { get; set; } = 10;
 
     // Per-IP cap on ALL /public calls in a 60-second window. 0 disables it.

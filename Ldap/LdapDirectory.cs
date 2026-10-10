@@ -444,7 +444,8 @@ internal sealed class LdapDirectory(
         .Add("namingContexts", L.Base)
         .Add("supportedLDAPVersion", "3")
         .Add("supportedControl", LdapOid.PagedResults)
-        .Add("supportedExtension", LdapOid.WhoAmI)
+        .AddRange("supportedExtension", settings.Value.LdapTlsConfigured
+            ? [LdapOid.WhoAmI, LdapOid.StartTls] : [LdapOid.WhoAmI])
         .Add("vendorName", "dmart");
 
     private LdapEntry BaseEntry()
