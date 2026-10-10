@@ -1,12 +1,12 @@
 <script lang="ts">
     import { TabItem, Tabs } from "flowbite-svelte";
-    import LoadingState from "@/components/ui/LoadingState.svelte";
-    import { renderMarkdown } from "@/utils/markdown";
+    import MarkdownView from "@/components/management/renderers/MarkdownView.svelte";
     import { _ } from "@/i18n";
 
     // Markdown source with a preview tab. `marked` and DOMPurify are loaded by
     // renderMarkdown() the first time the preview is shown, and configured once
-    // for the whole session there (not per editor instance).
+    // for the whole session there (not per editor instance); mermaid only when
+    // the preview has a diagram to draw.
     let {
         content = $bindable(""),
     }: {
@@ -145,21 +145,13 @@
                 onselect={handleSelect}
                 onkeydown={handleKeyDown}
                 rows="22"
-                maxlength="4096"
                 dir="auto"
                 class="w-full font-mono text-sm bg-surface-2 text-text border border-border rounded-control p-2.5 focus:ring-primary focus:border-primary"
                 bind:value={content}
             ></textarea>
         </TabItem>
         <TabItem title={$_("preview")} activeClass={tabActive} inactiveClass={tabInactive}>
-            {#await renderMarkdown(content)}
-                <LoadingState variant="skeleton" rows={5} />
-            {:then html}
-                <article class="prose dark:prose-invert max-w-none">
-                    <!-- eslint-disable-next-line svelte/no-at-html-tags -- sanitised by renderMarkdown -->
-                    {@html html}
-                </article>
-            {/await}
+            <MarkdownView source={content} />
         </TabItem>
     </Tabs>
 </div>

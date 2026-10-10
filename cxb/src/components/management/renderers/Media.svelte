@@ -1,8 +1,7 @@
 <script lang="ts">
     import { ResourceType } from "@edraj/tsdmart";
     import Prism from "@/components/Prism.svelte";
-    import LoadingState from "@/components/ui/LoadingState.svelte";
-    import { renderMarkdown } from "@/utils/markdown";
+    import MarkdownView from "@/components/management/renderers/MarkdownView.svelte";
     import { limitJsonForDisplay } from "@/utils/displayJson";
     import { isRecord } from "@/utils/compare";
     import { _ } from "@/i18n";
@@ -78,14 +77,7 @@
     <iframe title={displayname} class="pdf-viewer" src={url}></iframe>
 {:else if ["markdown", "html", "text"].includes(contentType)}
     <div class="w-full">
-        {#await renderMarkdown(typeof body === "string" ? body : "")}
-            <LoadingState variant="skeleton" rows={4} />
-        {:then html}
-            <article class="prose dark:prose-invert max-w-none">
-                <!-- eslint-disable-next-line svelte/no-at-html-tags -- sanitised by renderMarkdown -->
-                {@html html}
-            </article>
-        {/await}
+        <MarkdownView source={typeof body === "string" ? body : ""} rows={4} />
     </div>
 {:else}
     <a href={url} title={displayname} target="_blank" rel="noopener noreferrer" download class="text-primary hover:underline">

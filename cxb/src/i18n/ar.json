@@ -452,6 +452,7 @@
   "destination_space": "الفضاء الوجهة",
   "destination_subpath": "المسار الفرعي الوجهة",
   "diagram": "المخطط",
+  "diagram_error": "تعذّر رسم هذا المخطط",
   "download_all": "تنزيل الكل",
   "download_diagram": "تنزيل المخطط",
   "download_file": "تنزيل {name}",
