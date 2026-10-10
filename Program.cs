@@ -3403,6 +3403,15 @@ app.Use(async (ctx, next) =>
                 $"Database error. Reference: {cid}");
         }
     }
+    catch (Dmart.QueryGrammar.InvalidSearchException ex)
+    {
+        // A query.search the parser cannot turn into a condition (unknown
+        // field shape, unsupported comparison, a timestamp that is not a
+        // date). The caller's mistake, named in the message; never a 500,
+        // and never a silently dropped condition (see the exception's docs).
+        await WriteRequestFailureAsync(ctx, StatusCodes.Status400BadRequest,
+            Dmart.Models.Api.InternalErrorCode.INVALID_DATA, ex.Message);
+    }
     catch (Npgsql.NpgsqlException ex)
     {
         // Transport/connection-level Npgsql failure (pool exhaustion, socket

@@ -221,11 +221,13 @@ public sealed class SqliteSqlDialect : ISqlDialect
 
     public string ColumnAsNumber(string column) => $"CAST({column} AS REAL)";
 
-    // SQLite's CAST never raises — a non-numeric element yields 0.0 — so the
-    // guard PostgreSQL needs would only change results, not prevent an error.
-    // Left as the plain cast so this dialect's emitted SQL is unchanged.
+    // SQLite's CAST never raises: a non-numeric value yields 0.0, so a bare
+    // cast made `<5` match every word ("red" < 5) where PostgreSQL's guard
+    // skips them. Same guard here: compare only text that is a number (digits
+    // with an optional sign, point and exponent), as PostgreSQL's regex does.
     public string SafeNumberCompare(string textExpr, string sqlOp, string numParam)
-        => $"CAST({textExpr} AS REAL) {sqlOp} {numParam}";
+        => $"CASE WHEN {textExpr} GLOB '*[0-9]*' AND {textExpr} NOT GLOB '*[^0-9.eE+-]*' "
+         + $"THEN CAST({textExpr} AS REAL) {sqlOp} {numParam} ELSE 0 END";
 
     // A stored column is already 0/1, so it compares directly.
     public string ColumnAsBoolean(string column) => column;

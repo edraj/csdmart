@@ -281,7 +281,16 @@ public static class SearchExpressionParser
 
     private static readonly Regex ComparisonRegex = new(@"^(>=|<=|>|<|!)(.+)$",
         RegexOptions.Compiled, matchTimeout: TimeSpan.FromMilliseconds(RegexTimeoutMs));
-    private static readonly Regex NumericRegex = new(@"^-?\d+(?:\.\d+)?$",
+    // ASCII digits only: .NET's \d also matches Arabic-Indic (٥) and other
+    // decimal digits, which double.Parse then rejects. Comparison and range
+    // operands are passed through NormalizeDigits first, so `>٥` still works.
+    private static readonly Regex NumericRegex = new(@"^-?[0-9]+(?:\.[0-9]+)?$",
+        RegexOptions.Compiled, matchTimeout: TimeSpan.FromMilliseconds(RegexTimeoutMs));
+
+    // An ISO 8601 date, optionally with a time and an offset:
+    // 2026-01-01, 2026-01-01T10:00, 2026-01-01T10:00:00.5Z, …+03:00.
+    private static readonly Regex IsoDateRegex = new(
+        @"^[0-9]{4}-[0-9]{2}-[0-9]{2}(?:T[0-9]{2}:[0-9]{2}(?::[0-9]{2}(?:\.[0-9]+)?)?(?:Z|[+-][0-9]{2}:?[0-9]{2})?)?$",
         RegexOptions.Compiled, matchTimeout: TimeSpan.FromMilliseconds(RegexTimeoutMs));
     private static readonly Regex RangeRegex = new(@"^\[(.+?)[\s,](.+?)\]$",
         RegexOptions.Compiled, matchTimeout: TimeSpan.FromMilliseconds(RegexTimeoutMs));
@@ -328,7 +337,13 @@ public static class SearchExpressionParser
 
     private sealed class SearchGroup
     {
-        public Dictionary<string, SearchField> Fields { get; } = new(StringComparer.Ordinal);
+        // One entry per `@field:value` token, in order. Two selectors on the
+        // same field are two conditions, AND'd like any others in the run:
+        // `@tags:a @tags:b|c` is a AND (b OR c), and `@shortname:x -@shortname:y`
+        // keeps both. (They used to be merged per field, which flipped the
+        // whole merge to OR when one token had `|`, and kept only the last
+        // token when the signs differed.)
+        public List<(string Field, SearchField Data)> Fields { get; } = new();
         public List<string> TextTerms { get; } = new();
     }
 
@@ -550,7 +565,7 @@ public static class SearchExpressionParser
         {
             ts.Advance();
             if (cur.Kind == TokenKind.And) continue;
-            if (cur.Text.StartsWith('@') || cur.Text.StartsWith("-@"))
+            if (IsFieldToken(cur.Text))
                 fieldTokens.Add(cur.Text);
             else
                 textTerms.Add(cur.Text);
@@ -560,6 +575,15 @@ public static class SearchExpressionParser
         ParseSearchString(fieldTokens, group.Fields);
         group.TextTerms.AddRange(textTerms);
         return new LeafNode { Group = group };
+    }
+
+    // `@name:…` or `-@name:…`. A bare `@alice` (no colon) is a word to look
+    // for, not a selector: it used to be dropped without a trace.
+    private static bool IsFieldToken(string token)
+    {
+        var start = token.StartsWith("-@", StringComparison.Ordinal) ? 2
+            : token.StartsWith('@') ? 1 : -1;
+        return start > 0 && token.IndexOf(':', start) > start;
     }
 
     // ── AST → SQL ──────────────────────────────────────────────────────────
@@ -609,7 +633,7 @@ public static class SearchExpressionParser
         return "(" + string.Join(" AND ", conditions) + ")";
     }
 
-    private static void ParseSearchString(List<string> tokens, Dictionary<string, SearchField> result)
+    private static void ParseSearchString(List<string> tokens, List<(string Field, SearchField Data)> result)
     {
         foreach (var token in tokens)
         {
@@ -624,33 +648,44 @@ public static class SearchExpressionParser
             var field = raw[1..colonIdx];
             var value = raw[(colonIdx + 1)..].Trim('"');
 
+            // A comparison takes a number or a date; `!` takes anything.
+            // Anything else after > or < is left as a literal value, as before.
             string? compOp = null;
             var compMatch = ComparisonRegex.Match(value);
             if (compMatch.Success)
             {
                 var potOp = compMatch.Groups[1].Value;
                 var potVal = compMatch.Groups[2].Value;
-                if (potOp == "!" || NumericRegex.IsMatch(potVal))
+                if (potOp == "!")
                 {
                     compOp = potOp;
                     value = potVal;
+                }
+                else
+                {
+                    var operand = NormalizeDigits(potVal);
+                    if (NumericRegex.IsMatch(operand) || IsoDateRegex.IsMatch(operand))
+                    {
+                        compOp = potOp;
+                        value = operand;
+                    }
                 }
             }
 
             var rangeMatch = RangeRegex.Match(value);
             if (rangeMatch.Success)
             {
-                var v1 = rangeMatch.Groups[1].Value.Trim();
-                var v2 = rangeMatch.Groups[2].Value.Trim();
+                var v1 = NormalizeDigits(rangeMatch.Groups[1].Value.Trim());
+                var v2 = NormalizeDigits(rangeMatch.Groups[2].Value.Trim());
                 bool allNum = NumericRegex.IsMatch(v1) && NumericRegex.IsMatch(v2);
-                result[field] = new SearchField
+                result.Add((field, new SearchField
                 {
                     Values = new() { v1, v2 },
                     Operation = "RANGE",
                     Negative = negative,
                     ValueType = allNum ? "numeric" : "string",
                     IsRange = true,
-                };
+                }));
                 continue;
             }
 
@@ -665,32 +700,28 @@ public static class SearchExpressionParser
             bool allNumeric = values.All(v => NumericRegex.IsMatch(v));
             if (allBool) valueType = "boolean";
             else if (allNumeric) valueType = "numeric";
+            else if (compOp is not null && compOp != "!" && values.All(v => IsoDateRegex.IsMatch(v)))
+                valueType = "date";
 
-            if (result.TryGetValue(field, out var existing))
+            result.Add((field, new SearchField
             {
-                if (existing.Negative != negative)
-                {
-                    result[field] = new SearchField
-                    {
-                        Values = values, Operation = operation, Negative = negative,
-                        ValueType = valueType, ComparisonOperator = compOp,
-                    };
-                }
-                else
-                {
-                    existing.Values.AddRange(values);
-                    if (operation == "OR") existing.Operation = "OR";
-                }
-            }
-            else
-            {
-                result[field] = new SearchField
-                {
-                    Values = values, Operation = operation, Negative = negative,
-                    ValueType = valueType, ComparisonOperator = compOp,
-                };
-            }
+                Values = values, Operation = operation, Negative = negative,
+                ValueType = valueType, ComparisonOperator = compOp,
+            }));
         }
+    }
+
+    // Any Unicode decimal digit (Arabic-Indic ٠-٩, Persian ۰-۹, …) as its
+    // ASCII digit, so a number typed on an Arabic keyboard compares as one.
+    // Applied to comparison and range operands only: an equality value is
+    // matched as stored, whichever digits it uses.
+    private static string NormalizeDigits(string s)
+    {
+        if (s.All(c => c < 128)) return s;
+        var sb = new StringBuilder(s.Length);
+        foreach (var c in s)
+            sb.Append(c >= 128 && char.IsDigit(c) ? (char)('0' + (int)char.GetNumericValue(c)) : c);
+        return sb.ToString();
     }
 
     // ── Phase 2: SQL generation ───────────────────────────────────────────
@@ -710,7 +741,7 @@ public static class SearchExpressionParser
                 var parts = field["payload.".Length..].Split('.');
                 return $"{ctx.Dialect.JsonValue("payload", parts)} {nullCheck}";
             }
-            if (!SafeColumnIdent.IsMatch(field)) return null;
+            if (!SafeColumnIdent.IsMatch(field)) throw UnknownField(field);
             if (TextArrayColumns.Contains(field))
             {
                 var lengthExpr = ctx.Dialect.ArrayLength(field);
@@ -750,7 +781,7 @@ public static class SearchExpressionParser
             var dot = field.IndexOf('.');
             var col = field[..dot];
             var sub = field[(dot + 1)..];
-            if (!SafeColumnIdent.IsMatch(col)) return null;
+            if (!SafeColumnIdent.IsMatch(col)) throw UnknownField(field);
             if (sub == "*") return BuildWildcardTextSql(col, data, ctx);
             var expr = BuildJsonbPath(col, sub, ctx.Dialect);
             return BuildScalarSql(expr, data, ctx);
@@ -762,9 +793,15 @@ public static class SearchExpressionParser
         if (TimestampColumns.Contains(field))
             return BuildTimestampColumnSql(field, data, ctx);
 
-        if (!SafeColumnIdent.IsMatch(field)) return null;
+        if (!SafeColumnIdent.IsMatch(field)) throw UnknownField(field);
         return BuildScalarSql(ctx.Dialect.AsText(field), data, ctx);
     }
+
+    // Same wording as the server's undefined-column answer for a lowercase
+    // name the database rejects, so both kinds of unknown field read alike.
+    private static InvalidSearchException UnknownField(string field) =>
+        new($"Unknown search field '{field}'. To search a custom payload field, use "
+            + $"'@payload.body.{field}:<value>' instead of '@{field}:<value>'.");
 
     // — User-meta join (extension over csdmart) ———————————————————————————
 
@@ -773,7 +810,9 @@ public static class SearchExpressionParser
         // Don't bother with ranges/comparisons here — msisdn/email are
         // simple identifier strings. If you need richer semantics, query
         // the users table directly via a future UserRepository.
-        if (data.IsRange || data.ComparisonOperator is { } op && op != "!") return null;
+        if (data.IsRange || data.ComparisonOperator is { } op && op != "!")
+            throw new InvalidSearchException(
+                $"'@{column}' matches whole values only; ranges and comparisons are not supported on it.");
 
         var conditions = new List<string>();
         foreach (var value in data.Values)
@@ -820,7 +859,9 @@ public static class SearchExpressionParser
             var v2 = data.Values[1];
             if (data.ValueType == "numeric")
             {
-                if (double.TryParse(v1, out var d1) && double.TryParse(v2, out var d2) && d1 > d2) (v1, v2) = (v2, v1);
+                if (double.TryParse(v1, NumberStyles.Float, CultureInfo.InvariantCulture, out var d1)
+                    && double.TryParse(v2, NumberStyles.Float, CultureInfo.InvariantCulture, out var d2)
+                    && d1 > d2) (v1, v2) = (v2, v1);
                 var p1 = ctx.Add(v1);
                 var p2 = ctx.Add(v2);
                 return $"({ctx.Dialect.JsonTypeIs(jsonExpr, JsonKind.Number)} AND {ctx.Dialect.AsNumber(jsonExpr)} {(data.Negative ? "NOT " : "")}BETWEEN {ctx.Dialect.NumberParam(p1)} AND {ctx.Dialect.NumberParam(p2)})";
@@ -871,7 +912,9 @@ public static class SearchExpressionParser
             var v2 = data.Values[1];
             if (data.ValueType == "numeric")
             {
-                if (double.TryParse(v1, out var d1) && double.TryParse(v2, out var d2) && d1 > d2) (v1, v2) = (v2, v1);
+                if (double.TryParse(v1, NumberStyles.Float, CultureInfo.InvariantCulture, out var d1)
+                    && double.TryParse(v2, NumberStyles.Float, CultureInfo.InvariantCulture, out var d2)
+                    && d1 > d2) (v1, v2) = (v2, v1);
                 var p1 = ctx.Add(v1);
                 var p2 = ctx.Add(v2);
                 // Same hazard as the scalar predicates below: without a
@@ -1102,8 +1145,21 @@ public static class SearchExpressionParser
             {
                 var sqlOp = compOp switch { "!" => "!=", ">" => ">", ">=" => ">=", "<" => "<", "<=" => "<=", _ => "=" };
                 var pNum = ctx.Add(double.Parse(value, CultureInfo.InvariantCulture));
-                conditions.Add(
-                    $"({ctx.Dialect.JsonTypeIs(jsonExpr, JsonKind.Number)} AND {ctx.Dialect.AsNumber(textExtract)} {sqlOp} {ctx.Dialect.NumberParam(pNum)})");
+                var predicate =
+                    $"({ctx.Dialect.JsonTypeIs(jsonExpr, JsonKind.Number)} AND {ctx.Dialect.AsNumber(textExtract)} {sqlOp} {ctx.Dialect.NumberParam(pNum)})";
+                // `-@payload.x:>5` used to emit the positive form: the minus
+                // was ignored. Negated, it is every row the positive form does
+                // not match, missing fields included, like the other negations.
+                conditions.Add(data.Negative && compOp != "!" ? NotTrue(predicate) : predicate);
+            }
+            else if (data.ValueType == "date" && compOp is not null && compOp != "!")
+            {
+                // A date against a string field compares as text, which
+                // orders ISO 8601 correctly when the stored values use it.
+                var pDate = ctx.Add(value);
+                var predicate =
+                    $"({ctx.Dialect.JsonTypeIs(jsonExpr, JsonKind.String)} AND {textExtract} {compOp} {pDate})";
+                conditions.Add(data.Negative ? NotTrue(predicate) : predicate);
             }
             else if (data.Negative || compOp == "!")
             {
@@ -1326,6 +1382,17 @@ public static class SearchExpressionParser
 
     private static string? BuildTimestampColumnSql(string column, SearchField data, ParamCtx ctx)
     {
+        // Anything else reached the database as a cast and failed there: a
+        // 500 on PostgreSQL, and on SQLite a text comparison that matched
+        // nothing. `@updated_at:>yesterday` is a caller's mistake; say so.
+        foreach (var v in data.Values)
+        {
+            if (!NumericRegex.IsMatch(v) && !IsoDateRegex.IsMatch(v))
+                throw new InvalidSearchException(
+                    $"'@{column}' takes a date (YYYY-MM-DD, optionally with a time such as "
+                    + $"2026-01-01T10:00) or epoch milliseconds, not '{v}'.");
+        }
+
         string ParamExpr(string v)
         {
             var p = ctx.Add(v);
@@ -1380,7 +1447,9 @@ public static class SearchExpressionParser
             var v2 = data.Values[1];
             if (data.ValueType == "numeric")
             {
-                if (double.TryParse(v1, out var d1) && double.TryParse(v2, out var d2) && d1 > d2) (v1, v2) = (v2, v1);
+                if (double.TryParse(v1, NumberStyles.Float, CultureInfo.InvariantCulture, out var d1)
+                    && double.TryParse(v2, NumberStyles.Float, CultureInfo.InvariantCulture, out var d2)
+                    && d1 > d2) (v1, v2) = (v2, v1);
                 var p1 = ctx.Add(v1);
                 var p2 = ctx.Add(v2);
                 return $"({ctx.Dialect.ColumnAsNumber(fieldExpr)} {(data.Negative ? "NOT " : "")}BETWEEN {ctx.Dialect.NumberParam(p1)} AND {ctx.Dialect.NumberParam(p2)})";
@@ -1395,11 +1464,18 @@ public static class SearchExpressionParser
         {
             if (compOp is not null && compOp != "!")
             {
+                // A number compares numerically, skipping values that are not
+                // numbers (the dialect guards the cast: PostgreSQL would abort
+                // on the first one). A date compares as text, which orders ISO
+                // 8601 correctly. This used to append PostgreSQL's `::numeric`
+                // to both sides: a syntax error on SQLite, a cast error on
+                // PostgreSQL for any non-numeric row, and on a JSON path it
+                // cast the key ('en'::numeric) rather than the value.
                 var p = ctx.Add(value);
-                var cast = "::numeric";
-                conditions.Add(data.Negative
-                    ? $"NOT ({fieldExpr}{cast} {compOp} {p}{cast})"
-                    : $"{fieldExpr}{cast} {compOp} {p}{cast}");
+                var predicate = NumericRegex.IsMatch(value)
+                    ? ctx.Dialect.SafeNumberCompare($"({fieldExpr})", compOp, ctx.Dialect.NumberParam(p))
+                    : $"({fieldExpr}) {compOp} {p}";
+                conditions.Add(data.Negative ? NotTrue(predicate) : predicate);
             }
             else if (data.Negative || compOp == "!")
             {
@@ -1422,6 +1498,10 @@ public static class SearchExpressionParser
         }
         return JoinConditions(conditions, data.Operation, data.Negative);
     }
+
+    // Every row the predicate does not hold for, including the rows where it
+    // is NULL (a missing field): a bare NOT(NULL) is NULL and WHERE drops it.
+    private static string NotTrue(string predicate) => $"NOT COALESCE({predicate}, FALSE)";
 
     // — JSON literal helpers ——————————————————————————————————————————————
 

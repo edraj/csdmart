@@ -73,4 +73,52 @@ public sealed class QueryErrorClassificationTests : IClassFixture<DmartFactory>
             await user.Cleanup();
         }
     }
+
+    // Selectors the parser cannot turn into a condition are a 400 naming the
+    // problem. They used to be dropped (every row came back) or reach the
+    // database as a broken cast (a 500): `@BadName:x`, `@updated_at:>yesterday`. And `@shortname:>5` emitted PostgreSQL's
+    // `::numeric` on SQLite, which was a 500 there; it now answers on both.
+    [FactIfPg]
+    public async Task Unusable_Selectors_Are_Request_Errors_And_Comparisons_Answer_On_Both_Engines()
+    {
+        var user = await _factory.CreateLoggedInUserAsync();
+        try
+        {
+            async Task<(HttpStatusCode Status, Response? Body)> Query(string search)
+            {
+                var json = System.Text.Json.JsonSerializer.Serialize(new Dictionary<string, object>
+                {
+                    ["type"] = "search", ["space_name"] = "management", ["subpath"] = "/users",
+                    ["search"] = search, ["limit"] = 10,
+                });
+                var resp = await user.Client.PostAsync("/managed/query",
+                    new StringContent(json, Encoding.UTF8, "application/json"));
+                return (resp.StatusCode, await resp.Content.ReadFromJsonAsync(DmartJsonContext.Default.Response));
+            }
+
+            foreach (var (search, expected) in new[]
+            {
+                ("@BadName:x", "Unknown search field 'BadName'"),
+                ("@updated_at:>yesterday", "takes a date"),
+            })
+            {
+                var (status, body) = await Query(search);
+                status.ShouldBe(HttpStatusCode.BadRequest, search);
+                body!.Error!.Type.ShouldBe(ErrorTypes.Request, search);
+                body.Error.Code.ShouldBe(InternalErrorCode.INVALID_DATA, search);
+                body.Error.Message.ShouldContain(expected, Case.Sensitive, search);
+            }
+
+            foreach (var search in new[] { "@shortname:>5", "@shortname:<٥", "@updated_at:>2000-01-01" })
+            {
+                var (status, body) = await Query(search);
+                status.ShouldBe(HttpStatusCode.OK, search);
+                body!.Status.ShouldBe(Status.Success, search);
+            }
+        }
+        finally
+        {
+            await user.Cleanup();
+        }
+    }
 }
