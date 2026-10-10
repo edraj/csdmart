@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.6.1 — 2026-10-10
+
+### Fixed
+
+- **Outbound HTTP clients no longer log every request at Information.**
+  Each request wrote four lines from `System.Net.Http.HttpClient`. A
+  directory replica polls its primary every 30 s, which made about 11,000
+  journal lines a day on a mail host. Failures are still logged, as warnings
+  and errors (#368).
+
 ## v1.6.0 — 2026-10-10
 
 ### Added
