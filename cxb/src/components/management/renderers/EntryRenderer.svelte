@@ -94,9 +94,6 @@
     let jeContent = $state<EntryEditorContent>({ json: structuredClone(entry) });
     let entryRelationships = $state<Relationship[]>(entry.relationships || []);
     let originalJeContent = $state<EditableEntry>({});
-    let _initTimer = setTimeout(() => {
-        originalJeContent = jsonEditorContentParser<EditableEntry>($state.snapshot(jeContent));
-    }, EDITOR_INIT_DELAY);
     let isJEDirty = $state(false);
     // Set by a real input/change event inside the tabs (or the JSON editor).
     // Mounting the Form tab writes normalised defaults (empty slug, empty
@@ -104,6 +101,24 @@
     // otherwise report as unsaved changes the user never made.
     let userEdited = $state(false);
     const markEdited = () => { userEdited = true; };
+
+    // The baseline the dirty check compares against, taken once the editors
+    // have settled so their normalising writes are part of it. Unless the
+    // user has already typed by then: the settled content then includes their
+    // edits, and taking it as the baseline left Save disabled for whoever
+    // filled a field within EDITOR_INIT_DELAY of the page appearing (as the
+    // e2e suite does). In that case the content as loaded is the baseline.
+    let _initTimer: ReturnType<typeof setTimeout> | undefined;
+    function scheduleBaseline(loaded: EntryEditorContent) {
+        clearTimeout(_initTimer);
+        _initTimer = setTimeout(() => {
+            originalJeContent = jsonEditorContentParser<EditableEntry>(
+                userEdited ? loaded : $state.snapshot(jeContent),
+            );
+        }, EDITOR_INIT_DELAY);
+    }
+    // svelte-ignore state_referenced_locally
+    scheduleBaseline($state.snapshot(jeContent));
 
     let errorMessage: unknown = $state(null);
     const errorPreview = $derived(errorMessage ? limitJsonForDisplay(errorMessage) : null);
@@ -461,12 +476,7 @@
         jeContent = { json: $state.snapshot(entry) };
         userEdited = false;
         entryRelationships = entry.relationships || [];
-        clearTimeout(_initTimer);
-        _initTimer = setTimeout(() => {
-            originalJeContent = jsonEditorContentParser<EditableEntry>(
-                $state.snapshot(jeContent),
-            );
-        }, EDITOR_INIT_DELAY);
+        scheduleBaseline($state.snapshot(jeContent));
         currentEntry.set({
             entry,
             refreshEntry,

@@ -113,6 +113,19 @@ test.describe("cxb", () => {
       });
     });
 
+    test("an edit made before the editor settles still enables Save", async ({ page }) => {
+      // The editor takes its baseline for the unsaved-changes check a moment
+      // after mounting. An edit typed before then used to become part of the
+      // baseline, leaving Save disabled; CI's runner hit exactly that. The
+      // page clock is held so the edit always lands first.
+      await page.clock.install();
+      await page.goto("/cxb/management/content/management/users/dmart/user");
+      await page.getByRole("tab", { name: /Form/ }).click();
+      await page.getByLabel("Preferred language").fill("arabic");
+      await page.clock.runFor(2000);
+      await expect(page.getByRole("button", { name: "Save" })).toBeEnabled();
+    });
+
     test("spaces page at phone width has no horizontal overflow @phone", async ({ page }) => {
       await page.goto("/cxb/management/content");
       await expect(page.getByRole("heading", { level: 1, name: "Spaces" })).toBeVisible();
