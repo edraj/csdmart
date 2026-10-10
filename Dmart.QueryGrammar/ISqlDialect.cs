@@ -178,13 +178,23 @@ public interface ISqlDialect
     /// reads an FTS5 trigram index instead, so there the index being in sync IS
     /// the correctness condition — see the triggers in SqliteSchema.
     /// </remarks>
-    /// <param name="patternLiteral">
-    /// The pattern's literal text, so a dialect can decline when its index
-    /// cannot serve that particular pattern. Returning null omits the conjunct
-    /// entirely, leaving only the precise per-path check — slower, still exact.
+    /// <param name="coreLiteral">
+    /// The value with its outer <c>*</c> trimmed, unescaped; an inner <c>*</c>
+    /// still separates literal segments (<c>foo*bar</c>). A dialect declines
+    /// (returns null) when its index cannot serve the pattern, or when the
+    /// indexed text cannot contain it as typed; null omits the conjunct,
+    /// leaving only the precise per-path check: slower, still exact.
+    /// </param>
+    /// <param name="likePattern">
+    /// The same pattern as a contains-form LIKE pattern (<c>%…%</c>, with
+    /// <c>\ % _</c> escaped), for a dialect whose prefilter is a LIKE.
+    /// </param>
+    /// <param name="bind">
+    /// Binds the prefilter's own parameter. The dialect binds nothing when it
+    /// declines, so no unreferenced parameter is left on the command.
     /// </param>
     string? WildcardPrefilter(
-        string column, string patternPlaceholder, string? targetTable, string patternLiteral);
+        string column, string? targetTable, string coreLiteral, string likePattern, SqlBinder bind);
 
     /// <summary>Case-INSENSITIVE pattern match (PostgreSQL <c>ILIKE</c>).</summary>
     string ILike(string lhs, string patternPlaceholder, bool negated);

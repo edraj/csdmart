@@ -1091,9 +1091,8 @@ public static class SearchExpressionParser
                         .Replace("%", "\\%")
                         .Replace("_", "\\_")
                         .Replace('*', '%') + "%";
-                    var pPre = ctx.Add(corePattern);
                     conditions.Add(
-                        BuildPositiveWildcard(pathExpr, textExtract, pPre, pPath, core, ctx));
+                        BuildPositiveWildcard(pathExpr, textExtract, corePattern, pPath, core, ctx));
                 }
                 continue;
             }
@@ -1187,10 +1186,11 @@ public static class SearchExpressionParser
     // serves; SQLite has no such index, so it is simply a second comparison and
     // the result set is identical, just slower.
     private static string BuildPositiveWildcard(
-        string pathExpr, string textExtract, string pPre, string pPath,
+        string pathExpr, string textExtract, string corePattern, string pPath,
         string coreLiteral, ParamCtx ctx)
     {
-        var prefilter = ctx.Dialect.WildcardPrefilter("payload", pPre, ctx.TargetTable, coreLiteral);
+        var prefilter = ctx.Dialect.WildcardPrefilter(
+            "payload", ctx.TargetTable, coreLiteral, corePattern, ctx.Binder);
         var isString = ctx.Dialect.JsonTypeIs(pathExpr, JsonKind.String);
         var precise = ctx.Dialect.ILike(textExtract, pPath, negated: false);
         // A dialect that cannot serve the prefilter for this pattern omits it;

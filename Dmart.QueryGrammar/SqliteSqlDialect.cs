@@ -172,27 +172,40 @@ public sealed class SqliteSqlDialect : ISqlDialect
     // is also declared on entries alone; any other table falls back to the plain
     // comparison, which is correct and merely slower.
     //
-    // LIKE inside the subquery is deliberately NOT lowered on both sides the way
-    // ILike does it: the trigram tokenizer is case-insensitive by default, and
-    // wrapping the column in lower() would make the expression unindexable and
-    // silently turn this back into a scan.
+    // MATCH, not LIKE. A LIKE with an ESCAPE clause is never handed to FTS5's
+    // index (the plan read `INDEX 0:`, a scan of every row), and under
+    // case_sensitive_like it was case-sensitive while the precise check folds
+    // case: `@payload.body.t:*Hello*` found nothing on SQLite for "hello world".
+    // A trigram MATCH of a quoted phrase is a substring test, served by the
+    // index (`INDEX 0:M1`) and case-insensitive (the tokenizer's default).
+    //
+    // `rowid`, not `entries.rowid`: inside a pushed-down join the right side
+    // is `FROM entries r`, and the qualified name bound to the OUTER row.
+    //
+    // Declined, leaving the precise check alone, when:
+    // - no segment of the value has 3 characters: a trigram phrase shorter
+    //   than that matches nothing;
+    // - the value holds a character JsonbHelpers' encoder stores escaped
+    //   (< > & ' + ` " \ and control characters): the indexed text has
+    //   \u0026 where the value has &, so "R&D" could never match. Non-ASCII
+    //   is stored literally, so Arabic is served (ba4fc52).
     public string? WildcardPrefilter(
-        string column, string patternPlaceholder, string? targetTable, string patternLiteral)
+        string column, string? targetTable, string coreLiteral, string likePattern, SqlBinder bind)
     {
-        // Non-ASCII is served too, because JsonbHelpers writes JSON columns with
-        // an encoder that emits literal UTF-8 rather than \uXXXX escapes. That
-        // is load-bearing here: with escaped storage the indexed text would
-        // contain "\u0645\u0631..." and a wildcard for Arabic could never
-        // match, silently ANDing the query down to nothing. If that encoder is
-        // ever reverted, this must go back to declining non-ASCII patterns.
-        _ = patternLiteral;
-
         // Only entries carries the index, matching PostgreSQL, where the
         // pg_trgm GIN is likewise declared on entries alone.
-        return string.Equals(targetTable, "entries", StringComparison.Ordinal)
-            ? $"entries.rowid IN (SELECT rowid FROM entries_fts WHERE {column} LIKE {patternPlaceholder} ESCAPE '\\')"
-            : ILike(column, patternPlaceholder, negated: false);
+        if (!string.Equals(targetTable, "entries", StringComparison.Ordinal)) return null;
+        if (coreLiteral.Any(c => StoredEscaped.Contains(c) || char.IsControl(c))) return null;
+        var phrases = coreLiteral.Split('*', StringSplitOptions.RemoveEmptyEntries)
+            .Where(segment => segment.EnumerateRunes().Count() >= 3)
+            .Select(segment => "\"" + segment.Replace("\"", "\"\"") + "\"")
+            .ToList();
+        if (phrases.Count == 0) return null;
+        var match = bind(string.Join(" AND ", phrases), SqlValueKind.Inferred);
+        return $"rowid IN (SELECT rowid FROM entries_fts WHERE entries_fts MATCH {match})";
     }
+
+    private const string StoredEscaped = "<>&'+`\"\\";
 
     // PRAGMA case_sensitive_like=ON makes plain LIKE case-sensitive, so an
     // ILIKE site must fold both sides itself. lower() is ASCII-only in stock

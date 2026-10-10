@@ -276,12 +276,19 @@ public sealed class PostgresSqlDialect : ISqlDialect
          + $"'user_shortname', {userPlaceholder}, "
          + $"'allowed_actions', jsonb_build_array('{Escape(action)}')))";
 
-    // Unchanged from the pre-seam emission: a plain ILIKE over the serialized
-    // document, which idx_entries_payload_trgm accelerates when present and
-    // which is still correct when it is not.
+    // A plain ILIKE over the serialized document, which idx_entries_payload_trgm
+    // accelerates when present and which is still correct when it is not.
+    //
+    // Declined for a value holding a character jsonb's text form escapes (a
+    // double quote, a backslash, a control character): the document reads \"
+    // there, so the ILIKE could never match and the prefilter would hide rows
+    // the precise check accepts.
     public string? WildcardPrefilter(
-        string column, string patternPlaceholder, string? targetTable, string patternLiteral)
-        => ILike(AsText(column), patternPlaceholder, negated: false);
+        string column, string? targetTable, string coreLiteral, string likePattern, SqlBinder bind)
+    {
+        if (coreLiteral.Any(c => c is '"' or '\\' || char.IsControl(c))) return null;
+        return ILike(AsText(column), bind(likePattern, SqlValueKind.Inferred), negated: false);
+    }
 
     public string ILike(string lhs, string patternPlaceholder, bool negated)
         => $"{lhs} {(negated ? "NOT ILIKE" : "ILIKE")} {patternPlaceholder}";
