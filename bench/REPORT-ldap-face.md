@@ -110,7 +110,7 @@ See `docs/user-directory-fields.md`.
   ready, lookups that need it answer `unavailable` rather than "no such
   user", which makes Postfix defer mail instead of bouncing it.
 
-## Interop: 42 of 42, on both the JIT and the AOT binary
+## Interop: 43 of 43, on both the JIT and the AOT binary
 
 Every client ran in a container from the packages matrix-deploy deploys,
 pointed at dmart with **the filters in matrix-deploy's own templates,
