@@ -1,7 +1,7 @@
 <script lang="ts">
     import { Avatar, Dropdown, DropdownDivider, DropdownItem } from "flowbite-svelte";
     import { CheckOutline, HomeSolid, LanguageOutline, OpenDoorOutline, ToggleHeaderRowOutline, UserSolid } from "flowbite-svelte-icons";
-    import { goto, url } from "@roxi/routify";
+    import { url } from "@roxi/routify";
     import { signout, user } from "@/stores/user";
     import { getAvatar } from "@/lib/dmart_services";
     import { _, enabledLocales, locale, switchLocale } from "@/i18n";
@@ -22,12 +22,6 @@
                 .catch(() => { avatarUrl = null; });
         }
     });
-
-    function goToProfile(e: Event) {
-        e.preventDefault();
-        e.stopPropagation();
-        $goto("/management/profile");
-    }
 
     function logout(e: Event) {
         e.preventDefault();
@@ -95,7 +89,7 @@
                         <ToggleHeaderRowOutline size="sm" aria-hidden="true" /> {$_("dashboard")}
                     </span>
                 </DropdownItem>
-                <DropdownItem onclick={goToProfile}>
+                <DropdownItem href={$url("/management/profile")}>
                     <span class="flex items-center gap-2">
                         <UserSolid size="sm" aria-hidden="true" /> {$_("profile")}
                     </span>
