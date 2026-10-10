@@ -1,3 +1,4 @@
+import { andSearch } from "@shared/search-compose";
 import {
     type ActionRequest,
     type ActionResponse,
@@ -27,7 +28,7 @@ export async function getAllUsers(
 ): Promise<ApiQueryResponse> {
     try {
         const searchQuery = search.trim()
-            ? `@resource_type:user ${search.trim()}`
+            ? andSearch("@resource_type:user", search)
             : "@resource_type:user";
         return (await Dmart.query({
             type: QueryType.search,
@@ -57,7 +58,7 @@ export async function filterUserByRole(
 ): Promise<ApiQueryResponse> {
     try {
         const searchQuery = search.trim()
-            ? `@resource_type:user @roles:${role} ${search.trim()}`
+            ? andSearch(`@resource_type:user @roles:${role}`, search)
             : `@resource_type:user @roles:${role}`;
         return (await Dmart.query({
             type: QueryType.search,

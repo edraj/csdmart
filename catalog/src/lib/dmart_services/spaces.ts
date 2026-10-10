@@ -1,3 +1,4 @@
+import { andSearch } from "@shared/search-compose";
 import {
     type ApiQueryResponse,
     ContentType,
@@ -93,13 +94,12 @@ export function buildHideFoldersSearch(hideFolders: string[] | null | undefined)
 }
 
 /**
- * Joins non-empty search fragments with a single space (DMart ANDs them).
+ * Joins search fragments so each holds for every result: `(a) (b)`. A plain
+ * space-join let an `or` in the typed text escape the fragments after it
+ * (see andSearch).
  */
 export function mergeSearch(...parts: Array<string | undefined | null>): string {
-    return parts
-        .filter((p): p is string => !!p && p.trim().length > 0)
-        .map((p) => p.trim())
-        .join(" ");
+    return andSearch(...parts);
 }
 
 export async function getSpaceContents(
@@ -116,10 +116,11 @@ export async function getSpaceContents(
     sortBy = "shortname",
     sortType: SortType = SortType.ascending
 ): Promise<ApiQueryResponse> {
-    let searchQuery = search;
-    if (!searchQuery && scope === DmartScope.public) {
-        searchQuery = "-@shortname:schema";
-    }
+    // Public listings hide the folder's schema entry, with or without a
+    // search: it used to be hidden only while the search box was empty.
+    const searchQuery = scope === DmartScope.public
+        ? andSearch(search, "-@shortname:schema")
+        : search;
     return (await Dmart.query(
         {
             type: queryType,

@@ -1182,15 +1182,7 @@ public sealed class QueryService(
                 string? combinedSearch;
                 if (canNarrow && searchTerms.Count > 0)
                 {
-                    var injectedSearch = string.Join(' ', searchTerms);
-                    // Concatenating with a user-supplied Search only AND's
-                    // when the user search has no top-level parens — paren'd
-                    // groups OR with the injected term (see ParseSearchExpression).
-                    // Callers using paren'd sub-query filters need to express
-                    // their own narrowing.
-                    combinedSearch = string.IsNullOrEmpty(subQuery.Search)
-                        ? injectedSearch
-                        : $"{subQuery.Search} {injectedSearch}";
+                    combinedSearch = NarrowJoinSearch(subQuery.Search, string.Join(' ', searchTerms));
                 }
                 else
                 {
@@ -1795,6 +1787,16 @@ public sealed class QueryService(
 
         return DedupeSearchTokens(q with { Search = newSearch });
     }
+
+    // A join sub-query's own search plus the narrowing to the base page's keys.
+    // The search is bracketed before the narrowing is appended, as
+    // MergeFilterFieldsValuesAsync does for a permission clause. Appended raw,
+    // an `or` in it left the narrowing on its last branch only (AND binds
+    // tighter than OR): the other branches pulled right rows for keys the base
+    // page does not have, up to MaxQueryLimit, past which real matches lost
+    // their join.
+    internal static string NarrowJoinSearch(string? search, string narrowing)
+        => string.IsNullOrEmpty(search) ? narrowing : $"({BalanceParens(search)}) {narrowing}";
 
     // Makes a caller's search safe to wrap in parentheses.
     //

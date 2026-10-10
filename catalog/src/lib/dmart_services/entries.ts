@@ -1,3 +1,4 @@
+import { andSearch } from "@shared/search-compose";
 import {
     type ActionRequest,
     type ActionResponse,
@@ -247,7 +248,7 @@ export async function searchInSpace(
         exact_subpath: false,
         sort_by: sortBy,
         sort_type: sortType,
-        search: `${search} -@shortname:schema -@resource_type:folder|schema`,
+        search: andSearch(search, "-@shortname:schema -@resource_type:folder|schema"),
         limit,
         offset: 0,
         retrieve_json_payload: true,
