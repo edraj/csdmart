@@ -42,12 +42,16 @@ OIDC_CLIENTS_FILE="$WORK/oidc-clients.json"
 AUTH_RATE_LIMIT_PER_MINUTE=120
 CFG
 chmod 600 "$WORK/config.env"
-cat > "$WORK/oidc-clients.json" <<'JSON'
+# The suite drives only the browser half of the flow, so the secret is never
+# used; a random one keeps a literal out of the repository.
+RP_SECRET=$(head -c 24 /dev/urandom | base64 | tr -d '/+=')
+cat > "$WORK/oidc-clients.json" <<JSON
 {"clients": [
-  {"client_id": "e2e-rp", "client_secret": "e2e-rp-secret-0123456789", "name": "E2E relying party",
+  {"client_id": "e2e-rp", "client_secret": "$RP_SECRET", "name": "E2E relying party",
    "redirect_uris": ["http://127.0.0.1:5398/cb"]}
 ]}
 JSON
+chmod 600 "$WORK/oidc-clients.json"
 
 # Bundled sample spaces → flat files → database.
 BACKEND_ENV="$WORK/config.env" "$BIN" seed > "$WORK/seed.log" 2>&1
