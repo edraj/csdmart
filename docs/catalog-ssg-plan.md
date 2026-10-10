@@ -6,7 +6,7 @@ dmart, with **dmart.cc as the reference migration**.
 **Status: built, then removed.** The Node prototype (`catalog/ssg/generate.mjs`)
 proved the approach and was replaced by `dmart website build` in the binary
 (1.5.22). That generator and the server's `/website` mount were removed in
-1.7.0: dmart.cc moved to its own repository (edraj/website), which builds the
+1.6.3: dmart.cc moved to its own repository (edraj/website), which builds the
 site from dmart's public API and has a web server serve the files, so dmart is
 needed only at build time. This note keeps the design record.
 
