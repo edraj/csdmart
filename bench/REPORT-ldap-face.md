@@ -5,9 +5,11 @@ Matrix, Gitea and Dex, and serve it to them over a thin, read-only LDAP layer,
 so that OpenLDAP is no longer needed?
 
 Short answer: **the protocol layer really is thin, and every real client
-worked against it unchanged.** One scaling gap stands between it and a
-multi-million-user directory: the mail-alias lookup, which has a known fix.
-Several product gaps are listed at the end; none of them is a protocol problem.
+worked against it unchanged.** It is not yet shown to serve a multi-million
+directory on modest hardware. The scale run below was too generous to show
+that, and it found gaps: the mail-alias lookup and full listings are
+unindexed. Those and the product gaps are listed at the end; none of them is
+a protocol problem.
 
 Reproduce with the two scripts beside this file. Re-run them rather than
 trusting these numbers on other hardware.
@@ -113,6 +115,16 @@ Users were cloned from one API-created template in about 6 s on SQLite and
 27 s on PostgreSQL. Each has an email, two groups and one mail alias. Every
 search is the exact filter of the client named.
 
+**What this run does not establish.** It shows the LDAP layer is not the
+bottleneck for indexed lookups at 1M users. It does **not** show that
+dmart serves millions of users on modest hardware. The conditions were
+generous:
+- The machine has 62 GB of RAM, so both databases were fully cached.
+- The SQLite file sat on tmpfs, i.e. in memory.
+- Each workload ran alone for 10 seconds, with no ordinary dmart traffic
+  alongside and no soak.
+- 1M users, not several million.
+
 | Workload (client) | Connections | SQLite | PostgreSQL |
 |---|---|---|---|
 | `uid=` lookup (Dex / Gitea) | 1 | 6,386/s · p50 0.13 ms · p99 0.44 ms | 4,748/s · p50 0.17 ms · p99 0.79 ms |
@@ -135,7 +147,7 @@ How to read it:
   budget at OWASP parameters (19 MiB, t=2), not LDAP overhead. It is the same
   ceiling `/user/login` has on this hardware. slapd with `{ARGON2}` hashes
   would pay the same per bind, without dmart's memory budget.
-- **The alias map is the one real gap.** `mailAlias` lives in
+- **The alias map is the clearest gap.** `mailAlias` lives in
   `payload.body`, which no index covers. Every unindexed search walks the
   users table in keyset pages, and `LDAP_MAX_SCAN` (100,000) stops it.
   Postfix consults `virtual_alias_maps` for **every recipient**, so at this
@@ -180,8 +192,17 @@ How to read it:
    side's per-IP `auth-by-ip` limiter has no LDAP equivalent yet.
 4. **Replication.** i7 authenticates mail against a *local* OpenLDAP replica
    so mail survives i1 or the home link being down. dmart cannot feed
-   syncrepl. Either i7 depends on i1 over WireGuard, or this waits for
-   dmart-to-dmart sync.
+   syncrepl, and the federated-sync design (PR #331) does **not** cover this.
+   That design is for offline writes and deliberately never syncs
+   credentials, while a directory replica exists to verify passwords
+   locally. This needs its own read-only, credential-carrying mechanism. The
+   likeliest shape is a dmart replica that pulls changed identity rows
+   (users, services, addresses) from the primary over WireGuard, keeps them in
+   local SQLite and serves LDAP and binds. The building blocks exist
+   (`updated_at`, `deleted_at`, the Parquet tombstones), with two catches:
+   - a soft delete sets `deleted_at` but not `updated_at`
+   - rehash-on-login deliberately leaves `updated_at` alone; that one is
+     harmless, because the old hash verifies the same password
 5. **Password self-service.** SSP changes passwords over LDAP, which the
    face refuses by design. dmart's own reset flow (`/user/otp-request`,
    `/user/password-reset-confirm`) would replace SSP.
@@ -190,8 +211,16 @@ How to read it:
    - `mailAlias` = `payload.body.mail_aliases`
    - service accounts named in config rather than by role
    - anonymous bind allowed but powerless
-7. **Smaller items:**
-   - Paged searches materialize the result set, bounded by `LDAP_MAX_SCAN`.
+7. **Full listings are untested at scale.** Gitea's `--synchronize-users`
+   (which matrix-deploy enables) sends its user filter with `%s` replaced by
+   `*`: an unindexed listing of every Gitea user. At 1M users that hits the
+   500-entry size limit unpaged, or `LDAP_MAX_SCAN` paged. Paged searches
+   also materialize the whole result set rather than reading a page at a time.
+8. **`mail` conflates two addresses.** The face serves dmart's `email` (the
+   verified contact address used for one-time codes and resets) as LDAP
+   `mail`. A suite that hosts mail needs the hosted mailbox there, which is a
+   different address for anyone whose contact address is elsewhere.
+9. **Smaller items:**
    - There is no subschema entry, which some GUI browsers want.
    - Time limits are ignored.
    - Group `member` lists cost one query per group.
