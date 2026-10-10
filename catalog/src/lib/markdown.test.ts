@@ -24,7 +24,7 @@ describe("renderMarkdown", () => {
 
   it("renders a mermaid fence as a labelled source block", () => {
     const html = renderMarkdown("```mermaid\ngraph TD; A-->B;\n```", { diagramLabel: "Diagram <source>" });
-    expect(html).toContain('<figure class="md-diagram" data-lang="mermaid">');
+    expect(html).toContain('<figure class="md-diagram" data-diagram="mermaid">');
     expect(html).toContain('<code class="language-mermaid">graph TD; A--&gt;B;');
     expect(html).toContain("<figcaption>Diagram &lt;source&gt;</figcaption>");
   });

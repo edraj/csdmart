@@ -10,9 +10,10 @@
 //   import { renderMarkdown } from "@/lib/markdown";
 //   {@html renderMarkdown(body, { diagramLabel: $_("post_detail.markdown.diagram_source") })}
 //
-// Fenced ```mermaid blocks render as a labelled code block — the source in a
-// <pre>, a <figcaption> underneath — rather than pulling a diagram library
-// into the bundle for a block most posts never contain.
+// A fenced ```mermaid block renders as a labelled code block (the source in a
+// <pre>, a <figcaption> underneath) marked data-diagram; the `diagrams` action
+// (lib/diagrams.ts) then draws it, loading mermaid only when a page has one.
+// Until then, and when it cannot be drawn, the source is what shows.
 
 import { Marked, type Tokens } from "marked";
 import { gfmHeadingId } from "marked-gfm-heading-id";
@@ -53,7 +54,7 @@ const instance = new Marked(mangle(), gfmHeadingId({ prefix: "md-" }), {
       if (!DIAGRAM_LANGUAGES.has(lang)) return false; // default renderer
       const source = (token.escaped ? token.text : escapeHtml(token.text)).replace(/\n$/, "");
       return (
-        `<figure class="md-diagram" data-lang="${lang}">` +
+        `<figure class="md-diagram" data-diagram="${lang}">` +
         `<pre><code class="language-${lang}">${source}\n</code></pre>` +
         `<figcaption>${escapeHtml(diagramLabel)}</figcaption>` +
         `</figure>\n`

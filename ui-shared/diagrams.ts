@@ -1,12 +1,12 @@
 /**
- * Draws the diagrams in rendered markdown.
+ * Draws the diagrams in rendered markdown, for cxb and the catalog.
  *
- * renderMarkdown() turns a ```mermaid fence into
- * `<figure class="md-diagram" data-diagram="mermaid"><pre><code>…</code></pre></figure>`
+ * Each app's renderMarkdown() turns a ```mermaid fence into
+ * `<figure class="md-diagram" data-diagram="mermaid"><pre><code>…</code></pre>…</figure>`
  * and this replaces the figure's contents with the SVG mermaid draws. Mermaid
- * is bundled, not taken from a CDN, because the CSP allows scripts from 'self'
- * only; it is imported on first use, so a page without a diagram never
- * downloads it.
+ * is bundled into each app, not taken from a CDN, because the CSP allows
+ * scripts from 'self' only; it is imported on first use, so a page without a
+ * diagram never downloads it.
  *
  * Only the figure's children are replaced, never the figure itself: the figure
  * is one of the nodes Svelte's {@html} inserted, and it removes exactly those
@@ -49,8 +49,11 @@ async function draw(root: ParentNode, { dark, errorLabel }: DiagramOptions): Pro
         return;
     }
     engine.initialize({ startOnLoad: false, securityLevel: "strict", theme: dark ? "dark" : "default" });
+    const drawnAs = dark ? "dark" : "light";
 
     for (const figure of figures) {
+        // Already drawn in this theme: a re-render of the same markup.
+        if (figure.dataset.rendered === drawnAs) continue;
         const source = sourceOf(figure);
         const id = `md-diagram-${++sequence}`;
         try {
@@ -60,7 +63,7 @@ async function draw(root: ParentNode, { dark, errorLabel }: DiagramOptions): Pro
             const { svg } = await engine.render(id, source);
             if (!figure.isConnected) continue;
             figure.innerHTML = svg;
-            figure.dataset.rendered = "";
+            figure.dataset.rendered = drawnAs;
         } catch (error) {
             if (figure.isConnected) showSource(figure, source, errorLabel, error);
         } finally {
@@ -80,13 +83,13 @@ function sourceOf(figure: HTMLElement): string {
 }
 
 function showSource(figure: HTMLElement, source: string, label: string, error: unknown): void {
-    const caption = document.createElement("figcaption");
-    caption.className = "md-diagram-error";
-    caption.textContent = `${label}: ${error instanceof Error ? error.message : String(error)}`;
     const code = document.createElement("code");
     code.textContent = source;
     const pre = document.createElement("pre");
     pre.append(code);
-    figure.replaceChildren(caption, pre);
+    const caption = document.createElement("figcaption");
+    caption.className = "md-diagram-error";
+    caption.textContent = `${label}: ${error instanceof Error ? error.message : String(error)}`;
+    figure.replaceChildren(pre, caption);
     delete figure.dataset.rendered;
 }

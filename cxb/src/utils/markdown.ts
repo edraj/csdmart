@@ -8,7 +8,7 @@
  * chunk merely links an editor does not download them.
  *
  * A ```mermaid fence becomes a placeholder figure holding its escaped source;
- * renderDiagrams() (utils/diagrams.ts) draws it once the HTML is in the page.
+ * renderDiagrams() (ui-shared/diagrams.ts) draws it once the HTML is in the page.
  */
 type Renderer = (source: string) => Promise<string>;
 

@@ -1459,7 +1459,8 @@
       "label": "القالب: {name}"
     },
     "markdown": {
-      "diagram_source": "مصدر المخطط (Mermaid)"
+      "diagram_source": "مصدر المخطط (Mermaid)",
+      "diagram_error": "تعذّر رسم هذا المخطط"
     }
   },
   "previous": "السابق",

@@ -1501,7 +1501,8 @@
       "label": "Template: {name}"
     },
     "markdown": {
-      "diagram_source": "Diagram source (Mermaid)"
+      "diagram_source": "Diagram source (Mermaid)",
+      "diagram_error": "This diagram could not be drawn"
     }
   },
   "previous": "Previous",
