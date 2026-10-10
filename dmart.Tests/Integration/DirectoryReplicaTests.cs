@@ -140,6 +140,10 @@ public sealed class DirectoryReplicaTests(DirectoryReplicaTests.Fixture fx) : IC
     public async Task The_First_Sync_Copies_Users_With_Their_Hashes_Fields_And_Groups()
     {
         var alice = (await ReplicaUsers.GetByShortnameAsync(fx.Alice)).ShouldNotBeNull();
+        // The uuid came across too, and finds the user on either engine.
+        (await PrimaryUsers.GetShortnameByUuidAsync(alice.Uuid)).ShouldBe(fx.Alice);
+        (await ReplicaUsers.GetShortnameByUuidAsync(alice.Uuid)).ShouldBe(fx.Alice);
+        (await PrimaryUsers.GetShortnameByUuidAsync("not-a-uuid")).ShouldBeNull();
         alice.Mailbox.ShouldBe(fx.AliceMailbox);
         alice.Services.ShouldBe(new[] { "mail" });
         alice.Groups.ShouldBe(new[] { fx.Group });

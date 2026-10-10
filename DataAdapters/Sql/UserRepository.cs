@@ -1924,9 +1924,12 @@ public sealed class UserRepository(
 
     public async Task<string?> GetShortnameByUuidAsync(string uuid, CancellationToken ct = default)
     {
+        // A Guid, not the string: PostgreSQL's column is uuid and has no
+        // uuid = text operator; DbParams writes SQLite's canonical text form.
+        if (!Guid.TryParse(uuid, out var id)) return null;
         await using var conn = await db.OpenAsync(ct);
         await using var cmd = conn.Command("SELECT shortname FROM users WHERE uuid = $1");
-        DbParams.Add(cmd, uuid);
+        DbParams.Add(cmd, id);
         return await cmd.ExecuteScalarAsync(ct) as string;
     }
 

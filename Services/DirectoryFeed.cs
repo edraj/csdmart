@@ -19,24 +19,24 @@ public sealed record DirectoryFeedUser(User User, string? PasswordHash);
 // primary's clock when that first page was read: the replica's next
 // watermark.
 //
-// The lists are nullable on purpose: dmart strips empty arrays from every JSON
-// response, so a quiet page arrives without `users` or `deleted`, and the
-// source-generated reader leaves a missing list null whatever its initializer
-// says. Typing them nullable makes every reader say what empty means.
+// `set`, not `init`: dmart strips empty arrays from every JSON response, so a
+// quiet page arrives without `users` or `deleted`, and on meeting init-only
+// properties the source-generated reader stops running the initializers
+// (ModelDefaultsTests has the details). With `set` an absent list reads as [].
 public sealed record DirectoryFeedPage
 {
-    public List<DirectoryFeedUser>? Users { get; init; }
-    public bool More { get; init; }
-    public string? After { get; init; }
-    public DateTime? AfterTime { get; init; }
-    public List<string>? Deleted { get; init; }
-    public List<Group>? Groups { get; init; }
-    public DateTime? ServerTime { get; init; }
+    public List<DirectoryFeedUser> Users { get; set; } = [];
+    public bool More { get; set; }
+    public string? After { get; set; }
+    public DateTime? AfterTime { get; set; }
+    public List<string> Deleted { get; set; } = [];
+    public List<Group>? Groups { get; set; }
+    public DateTime? ServerTime { get; set; }
     // The instant from which the primary's tombstones are complete (first page
     // only). A replica whose watermark is older cannot learn every deletion
     // from a changes walk and must walk in full. The replica compares it with
     // its real watermark, not with `since`, which it backs off by an overlap.
-    public DateTime? RetentionFloor { get; init; }
+    public DateTime? RetentionFloor { get; set; }
 }
 
 public sealed class DirectoryFeedService(

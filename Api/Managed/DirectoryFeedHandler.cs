@@ -43,7 +43,7 @@ public static class DirectoryFeedHandler
                         "mode=full, or mode=changes with since", ErrorTypes.Request),
                         DmartJsonContext.Default.Response, statusCode: 400);
             }
-            log.LogInformation("directory feed: {Count} user(s) to {Actor}", page.Users?.Count ?? 0, actor);
+            log.LogInformation("directory feed: {Count} user(s) to {Actor}", page.Users.Count, actor);
             return Results.Json(page, DmartJsonContext.Default.DirectoryFeedPage);
         });
     }

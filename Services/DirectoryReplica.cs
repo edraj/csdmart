@@ -123,11 +123,11 @@ public sealed class DirectoryReplica(
                 serverTime = page.ServerTime;
                 await ApplyGroupsAsync(page.Groups, ct);
             }
-            foreach (var u in page.Users ?? [])
+            foreach (var u in page.Users)
                 if (await ApplyAsync(u, ct)) applied++;
             // Every local name the primary skipped between the previous page
             // and the end of this one is a user it no longer has.
-            var kept = (page.Users ?? []).Select(u => u.User.Shortname).ToHashSet(StringComparer.Ordinal);
+            var kept = page.Users.Select(u => u.User.Shortname).ToHashSet(StringComparer.Ordinal);
             var upTo = page.More ? page.After : null;
             foreach (var local in await users.ListShortnamesBetweenAsync(reconciledTo, upTo, ct))
                 if (!kept.Contains(local)) await RemoveLocalAsync(local, ct);
@@ -162,10 +162,10 @@ public sealed class DirectoryReplica(
                 await ApplyGroupsAsync(page.Groups, ct);
                 // Deletions first: a name deleted and then taken again is in
                 // both lists, and the row that exists now must win.
-                foreach (var gone in page.Deleted ?? [])
+                foreach (var gone in page.Deleted)
                     await RemoveLocalAsync(gone, ct);
             }
-            foreach (var u in page.Users ?? [])
+            foreach (var u in page.Users)
                 if (await ApplyAsync(u, ct)) applied++;
             afterTime = page.AfterTime;
             after = page.After;

@@ -11,15 +11,12 @@ namespace Dmart.Tests.Unit.Services;
 public class DirectoryFeedPageJsonTests
 {
     [Fact]
-    public void A_Page_Whose_Empty_Lists_Were_Stripped_Reads_Them_As_Null_With_Exact_Times()
+    public void A_Page_Whose_Empty_Lists_Were_Stripped_Reads_Them_As_Empty_With_Exact_Times()
     {
-        // Pinned as null, not empty: the source-generated reader ignores the
-        // initializers, which is why DirectoryFeedPage types them nullable and
-        // the replica reads them through `?? []`.
         var page = JsonSerializer.Deserialize("""{"more":false,"server_time":"2026-10-10T08:00:00.1234567"}""",
             DmartJsonContext.Default.DirectoryFeedPage)!;
-        page.Users.ShouldBeNull();
-        page.Deleted.ShouldBeNull();
+        page.Users.ShouldBeEmpty();
+        page.Deleted.ShouldBeEmpty();
         // Cursors round-trip to the tick, or a keyset walk could stall.
         page.ServerTime.ShouldBe(new DateTime(2026, 10, 10, 8, 0, 0).AddTicks(1234567));
     }
@@ -49,7 +46,7 @@ public class DirectoryFeedPageJsonTests
             {"users":[{"user":{"uuid":"u1","shortname":"alice","space_name":"management","subpath":"/users",
              "owner_shortname":"alice","is_active":true},"password_hash":"h"}]}
             """, DmartJsonContext.Default.DirectoryFeedPage)!;
-        var user = page.Users!.ShouldHaveSingleItem().User;
+        var user = page.Users.ShouldHaveSingleItem().User;
         user.Roles.ShouldNotBeNull();
         user.Groups.ShouldNotBeNull();
         user.MailAliases.ShouldNotBeNull();
