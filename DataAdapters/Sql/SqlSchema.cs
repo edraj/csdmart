@@ -600,6 +600,12 @@ public static class SqlSchema
         ON users USING GIN (roles jsonb_path_ops);
     CREATE INDEX IF NOT EXISTS idx_users_groups_gin
         ON users USING GIN (groups jsonb_path_ops);
+    -- @services: and @mail_aliases: in the search grammar. The LDAP face and
+    -- the uniqueness rules use user_services / user_addresses instead.
+    CREATE INDEX IF NOT EXISTS idx_users_services_gin
+        ON users USING GIN (services jsonb_path_ops);
+    CREATE INDEX IF NOT EXISTS idx_users_mail_aliases_gin
+        ON users USING GIN (mail_aliases jsonb_path_ops);
     CREATE INDEX IF NOT EXISTS idx_roles_permissions_gin
         ON roles USING GIN (permissions jsonb_path_ops);
     CREATE INDEX IF NOT EXISTS idx_entries_schema_shortname

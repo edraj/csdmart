@@ -31,7 +31,14 @@
   `USER_MAIL_DOMAINS` optionally restrict the values.
   `USER_SERVICE_GRANTERS` (`service:role` pairs) says which roles may grant
   which service. Anyone who is not a global admin may change only those
-  services. See `docs/user-directory-fields.md`.
+  services.
+  - Search them with `@mailbox:`, `@mail_aliases:` and `@services:`.
+  - cxb's user form edits them under "Mail and services".
+  - An update checks them only when they change, so an admin UI that sends
+    the whole record back is not blocked by a value set before a rule
+    tightened.
+
+  See `docs/user-directory-fields.md`.
 - **An experimental, read-only LDAP face over the users table** (`LDAP_PORT`,
   off by default). It lets Postfix, Dovecot, Gitea and Dex search and bind
   against dmart instead of a separate directory.

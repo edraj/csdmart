@@ -67,6 +67,83 @@ public sealed class UserDirectoryFieldsTests(DmartFactory factory) : IClassFixtu
     }
 
     [FactIfPg]
+    public async Task Users_Are_Found_By_Service_Alias_And_Mailbox_Through_The_Query_Api()
+    {
+        var admin = await factory.CreateLoggedInUserAsync();
+        var sn = Unique("dfq");
+        var other = Unique("dfr");
+        var service = ("q" + Guid.NewGuid().ToString("N"))[..12];
+        try
+        {
+            (await ManagedAsync(admin.Client, "create", sn, $$"""
+                {"is_active":true,"mailbox":"{{sn}}@example.org","mail_aliases":["help-{{sn}}@example.org"],
+                 "services":["{{service}}"]}
+                """)).Ok.ShouldBeTrue();
+            (await ManagedAsync(admin.Client, "create", other, $$"""{"is_active":true,"services":["mail"]}""")).Ok.ShouldBeTrue();
+
+            async Task<string[]> Find(string search)
+            {
+                var body = $$"""
+                    {"space_name":"management","type":"search","subpath":"users","filter_types":["user"],
+                     "search":{{JsonSerializer.Serialize(search, DmartJsonContext.Default.String)}},"limit":50}
+                    """;
+                var resp = await admin.Client.PostAsync("/managed/query", new StringContent(body, Encoding.UTF8, "application/json"));
+                var raw = await resp.Content.ReadAsStringAsync();
+                var parsed = JsonSerializer.Deserialize(raw, DmartJsonContext.Default.Response)!;
+                parsed.Status.ShouldBe(Status.Success, raw);
+                return (parsed.Records ?? new()).Select(r => r.Shortname).ToArray();
+            }
+
+            (await Find($"@services:{service}")).ShouldBe(new[] { sn });
+            // Stored folded, found whatever the case of the search.
+            (await Find($"@mail_aliases:HELP-{sn.ToUpperInvariant()}@Example.org")).ShouldBe(new[] { sn });
+            (await Find($"@mailbox:{sn.ToUpperInvariant()}@EXAMPLE.ORG")).ShouldBe(new[] { sn });
+            (await Find($"@services:{service} -@shortname:{sn}")).ShouldBeEmpty();
+        }
+        finally
+        {
+            await TestUserCleanup.DeleteUserAndOwnedAsync(factory.Services, sn);
+            await TestUserCleanup.DeleteUserAndOwnedAsync(factory.Services, other);
+            await admin.Cleanup();
+        }
+    }
+
+    [FactIfPg]
+    public async Task A_Stored_Value_A_Later_Rule_Rejects_Does_Not_Block_An_Unrelated_Edit()
+    {
+        // Admin UIs send the whole record back on every save. A mailbox that
+        // was valid when set must not fail validation forever after the
+        // deployment narrows USER_MAIL_DOMAINS; only a change is checked.
+        var settings = factory.Services.GetRequiredService<Microsoft.Extensions.Options.IOptions<DmartSettings>>().Value;
+        var admin = await factory.CreateLoggedInUserAsync();
+        var sn = Unique("dfn");
+        var before = settings.UserMailDomains;
+        try
+        {
+            (await ManagedAsync(admin.Client, "create", sn, $$"""
+                {"is_active":true,"mailbox":"{{sn}}@old.example","services":["mail"]}
+                """)).Ok.ShouldBeTrue();
+            settings.UserMailDomains = "new.example";
+
+            var (ok, raw) = await ManagedAsync(admin.Client, "update", sn, $$"""
+                {"displayname":{"en":"Renamed"},"mailbox":"{{sn}}@old.example","mail_aliases":[],"services":["mail"]}
+                """);
+            ok.ShouldBeTrue(raw);
+
+            // Changing it is checked against the rule as it stands now.
+            (ok, raw) = await ManagedAsync(admin.Client, "update", sn, $$"""{"mailbox":"other-{{sn}}@old.example"}""");
+            ok.ShouldBeFalse(raw);
+            raw.ShouldContain("not in a mail domain this deployment hosts");
+        }
+        finally
+        {
+            settings.UserMailDomains = before;
+            await TestUserCleanup.DeleteUserAndOwnedAsync(factory.Services, sn);
+            await admin.Cleanup();
+        }
+    }
+
+    [FactIfPg]
     public async Task An_Address_Another_User_Holds_Is_Refused_Case_Insensitively()
     {
         var admin = await factory.CreateLoggedInUserAsync();

@@ -191,8 +191,18 @@ paged full listing continues across pages instead of failing.
 - Either way the index tables are rebuilt from the restored rows by the write
   path itself.
 
-## Not in scope here
+## Clients
 
-- Editing these fields in cxb
-- SDK models (dmart.Client, tsdmart)
-- Query-grammar support for `@services:`
+- **Search.** `@services:gitea`, `@mail_aliases:help@example.org` and
+  `@mailbox:alice@example.org` work in the query grammar, on the users table.
+  Values are folded to lowercase like the stored ones. On PostgreSQL the two
+  array columns have GIN indexes, as `roles` and `groups` do.
+- **cxb.** The user form has a "Mail and services" section: the mailbox,
+  aliases one per line, and services comma-separated.
+- **Updates check only what changes.** An admin UI sends the whole record
+  back on every save, so the rules above run only when a field's value
+  differs from the stored one, as for `email` and `msisdn`. A mailbox that
+  was valid when it was set does not block unrelated edits after
+  `USER_MAIL_DOMAINS` narrows.
+- **SDKs.** `dmart.Client` shares `Dmart.Models`, so `User` has the fields.
+  tsdmart has a `UserDirectoryFields` type on the profile and on user records.

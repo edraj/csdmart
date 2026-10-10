@@ -1213,6 +1213,8 @@ public class SearchExpressionParserTests
     [InlineData("tags")]
     [InlineData("roles")]
     [InlineData("groups")]
+    [InlineData("services")]
+    [InlineData("mail_aliases")]
     public void Jsonb_Array_Column_Uses_Bare_Containment(string column)
     {
         // Positive selectors emit ONE bare @> per value so the
@@ -1238,9 +1240,26 @@ public class SearchExpressionParserTests
     [InlineData("tags")]
     [InlineData("roles")]
     [InlineData("groups")]
+    [InlineData("services")]
+    [InlineData("mail_aliases")]
     public void Jsonb_Array_Column_Negated_Emits_NOT_Containment(string column)
     {
         Sql($"-@{column}:admin").ShouldContain($"NOT ({column} @> CAST(@s_1 AS jsonb))");
+    }
+
+    [Fact]
+    public void Directory_Fields_Fold_Their_Values_Like_The_Stored_Ones()
+    {
+        // Addresses and services are stored lowercased; a search that kept
+        // the caller's case could never match them.
+        var aliases = SearchExpressionParser.Parse("@mail_aliases:PostMaster@Example.ORG", 0, PlaceholderStyle.Positional, "users");
+        aliases.Parameters[0].Value.ShouldBe("[\"postmaster@example.org\"]");
+
+        var mailbox = SearchExpressionParser.Parse("@mailbox:Alice@Example.ORG", 0, PlaceholderStyle.Positional, "users");
+        mailbox.Parameters.Select(p => p.Value).ShouldContain("alice@example.org");
+
+        // Other columns keep the case they were given.
+        SearchExpressionParser.Parse("@roles:Admin", 0).Parameters[0].Value.ShouldBe("[\"Admin\"]");
     }
 
     [Fact]

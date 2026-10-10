@@ -1014,7 +1014,14 @@ public static class RequestHandler
                 // Directory fields: an absent attribute keeps the stored value, so
                 // the rules run only when the request names one of them.
                 var (dirMailbox, dirAliases, dirServices) = ParseDirectoryFields(attrs, existing);
-                if (attrs.ContainsKey("mailbox") || attrs.ContainsKey("mail_aliases") || attrs.ContainsKey("services"))
+                // Checked only when they CHANGE, like email and msisdn above:
+                // admin UIs send the whole record back on every save, and a
+                // stored value that predates a rule (USER_MAIL_DOMAINS narrowed
+                // later, say) must not block an unrelated edit.
+                var directoryChanged = !string.Equals(dirMailbox, existing.Mailbox, StringComparison.Ordinal)
+                    || !dirAliases.SequenceEqual(existing.MailAliases, StringComparer.Ordinal)
+                    || !dirServices.SequenceEqual(existing.Services, StringComparer.Ordinal);
+                if (directoryChanged)
                 {
                     if (await directoryFields.ValidateAsync(existing.Shortname, dirMailbox, dirAliases, dirServices, ct) is { } dirError)
                         return (Response.Fail(InternalErrorCode.INVALID_DATA, dirError, ErrorTypes.Request), rec, null);
