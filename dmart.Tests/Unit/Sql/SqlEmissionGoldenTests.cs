@@ -263,6 +263,9 @@ public class SqlEmissionGoldenTests
         ("payload-wildcard-suffix", "@payload.body.title:*foo"),
         ("payload-wildcard-negated", "-@payload.body.title:*foo*"),
         ("payload-wildcard-metachars", @"@payload.body.title:*a%b_c\d*"),
+        // Without a backslash or a double quote the prefilter is emitted;
+        // with one (above) it is declined: jsonb's text form escapes both.
+        ("payload-wildcard-prefilter", @"@payload.body.title:*a%b_c*"),
         // Array iteration (BuildPayloadArraySql). The two engines need
         // different set-returning functions and element dereferencing here, so
         // these pin the PostgreSQL side of that.

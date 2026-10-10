@@ -378,14 +378,22 @@ SQL: ((payload::jsonb->'body'->'title' IS NULL OR jsonb_typeof(payload::jsonb->'
   P1: name=@s_0 type=<inferred> value="%foo%"
 
 ## search: payload-wildcard-metachars[Positional]
-SQL: ((payload::text ILIKE $2 AND jsonb_typeof(payload::jsonb->'body'->'title') = 'string' AND payload::jsonb->'body'->>'title' ILIKE $1))
+SQL: ((jsonb_typeof(payload::jsonb->'body'->'title') = 'string' AND payload::jsonb->'body'->>'title' ILIKE $1))
   P1: name=<positional> type=<inferred> value="%a\%b\_c\\d%"
-  P2: name=<positional> type=<inferred> value="%a\%b\_c\\d%"
 
 ## search: payload-wildcard-metachars[Named]
-SQL: ((payload::text ILIKE @s_1 AND jsonb_typeof(payload::jsonb->'body'->'title') = 'string' AND payload::jsonb->'body'->>'title' ILIKE @s_0))
+SQL: ((jsonb_typeof(payload::jsonb->'body'->'title') = 'string' AND payload::jsonb->'body'->>'title' ILIKE @s_0))
   P1: name=@s_0 type=<inferred> value="%a\%b\_c\\d%"
-  P2: name=@s_1 type=<inferred> value="%a\%b\_c\\d%"
+
+## search: payload-wildcard-prefilter[Positional]
+SQL: ((payload::text ILIKE $2 AND jsonb_typeof(payload::jsonb->'body'->'title') = 'string' AND payload::jsonb->'body'->>'title' ILIKE $1))
+  P1: name=<positional> type=<inferred> value="%a\%b\_c%"
+  P2: name=<positional> type=<inferred> value="%a\%b\_c%"
+
+## search: payload-wildcard-prefilter[Named]
+SQL: ((payload::text ILIKE @s_1 AND jsonb_typeof(payload::jsonb->'body'->'title') = 'string' AND payload::jsonb->'body'->>'title' ILIKE @s_0))
+  P1: name=@s_0 type=<inferred> value="%a\%b\_c%"
+  P2: name=@s_1 type=<inferred> value="%a\%b\_c%"
 
 ## search: payload-array-scalar[Positional]
 SQL: ((jsonb_typeof(payload::jsonb->'tags') = 'array' AND EXISTS (SELECT 1 FROM jsonb_array_elements_text(payload::jsonb->'tags') AS e WHERE e = $1)))
