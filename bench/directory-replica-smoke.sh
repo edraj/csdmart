@@ -87,7 +87,7 @@ curl -sf "http://127.0.0.1:$PRIMARY_PORT/managed/request" -H 'Content-Type: appl
   | jq -e '.status == "success"' >/dev/null || { echo "seeding the primary failed"; exit 100; }
 
 start replica
-for _ in $(seq 120); do grep -q "first sync complete" "$WORK/replica.log" && break; sleep 0.5; done
+for _ in $(seq 120); do grep -q "in sync with the primary" "$WORK/replica.log" && break; sleep 0.5; done
 
 cat > "$WORK/dovecot.conf" <<EOF
 dovecot_config_version = 2.4.0
@@ -129,7 +129,7 @@ dove() { in_box "dovecot -c /work/dovecot.conf && sleep 1 && doveadm -c /work/do
 
 echo
 echo "== 1. first sync, then IMAP through the replica"
-check "the replica completed its first sync" "first sync complete" "$(cat "$WORK/replica.log")"
+check "the replica completed its first sync" "in sync with the primary" "$(cat "$WORK/replica.log")"
 check "Dovecot login for alice against the replica" "auth succeeded" "$(dove alice@imx.sh Alice12345)"
 check "Postfix alias map against the replica" "alice@imx.sh" "$(in_box "postmap -q postmaster@imx.sh ldap:/work/aliases.cf")"
 
