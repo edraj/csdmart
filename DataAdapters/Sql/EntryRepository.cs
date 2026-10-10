@@ -224,9 +224,7 @@ public sealed class EntryRepository(IDbConnectionFactory db)
         DbParams.Add(cmd, (object?)e.LastChecksumHistory ?? DBNull.Value);
         DbParams.Add(cmd, JsonbHelpers.EnumMember(e.ResourceType));
         DbParams.Add(cmd, (object?)e.State ?? DBNull.Value);
-#pragma warning disable CA1508 // Analyzer limitation: bool? boxed via (object?) cast IS null when source is null; the ?? is load-bearing.
-        DbParams.Add(cmd, (object?)e.IsOpen ?? DBNull.Value);
-#pragma warning restore CA1508
+        DbParams.Add(cmd, e.IsOpen);
         AddJsonb(cmd, JsonbHelpers.ToJsonb(e.Reporter));
         DbParams.Add(cmd, (object?)e.WorkflowShortname ?? DBNull.Value);
         AddJsonb(cmd, JsonbHelpers.ToJsonb(e.Collaborators));
@@ -347,9 +345,7 @@ public sealed class EntryRepository(IDbConnectionFactory db)
         DbParams.Add(cmd, (object?)e.LastChecksumHistory ?? DBNull.Value);
         DbParams.Add(cmd, JsonbHelpers.EnumMember(e.ResourceType));
         DbParams.Add(cmd, (object?)e.State ?? DBNull.Value);
-#pragma warning disable CA1508 // Analyzer limitation: bool? boxed via (object?) cast IS null when source is null; the ?? is load-bearing.
-        DbParams.Add(cmd, (object?)e.IsOpen ?? DBNull.Value);
-#pragma warning restore CA1508
+        DbParams.Add(cmd, e.IsOpen);
         AddJsonb(cmd, JsonbHelpers.ToJsonb(e.Reporter));
         DbParams.Add(cmd, (object?)e.WorkflowShortname ?? DBNull.Value);
         AddJsonb(cmd, JsonbHelpers.ToJsonb(e.Collaborators));

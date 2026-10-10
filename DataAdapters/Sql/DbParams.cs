@@ -86,7 +86,9 @@ public static class DbParams
     /// <summary>
     /// Appends a parameter and returns the <c>$N</c> placeholder that refers to
     /// it. N is derived from the command's current parameter count, so callers
-    /// bind in the same order the SQL reads.
+    /// bind in the same order the SQL reads. Null binds as SQL NULL on both
+    /// engines; a nullable value type with no value boxes to null, so it is
+    /// passed as it is.
     /// </summary>
     public static string Add(DbCommand cmd, object? value, SqlValueKind kind = SqlValueKind.Inferred)
     {
