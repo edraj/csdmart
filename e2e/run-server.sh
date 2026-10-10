@@ -32,11 +32,26 @@ SQLITE_PATH="$WORK/dmart.db"
 SPACES_FOLDER="$WORK/spaces"
 JWT_SECRET="e2e-test-secret-e2e-test-secret-32-bytes"
 ADMIN_PASSWORD="${E2E_PASSWORD:-dmart}"
-ENABLE_MCP=false
+# On for tests/handoff.spec.ts: the MCP authorization form and the OIDC
+# provider's sign-in form both end in a redirect to another site.
+ENABLE_MCP=true
+OIDC_ISSUER="http://127.0.0.1:$PORT"
+OIDC_SIGNING_KEY_FILE="$WORK/oidc-signing.pem"
+OIDC_CLIENTS_FILE="$WORK/oidc-clients.json"
 # The suite signs in once per SPA, but retries and local re-runs add up.
 AUTH_RATE_LIMIT_PER_MINUTE=120
 CFG
 chmod 600 "$WORK/config.env"
+# The suite drives only the browser half of the flow, so the secret is never
+# used; a random one keeps a literal out of the repository.
+RP_SECRET=$(head -c 24 /dev/urandom | base64 | tr -d '/+=')
+cat > "$WORK/oidc-clients.json" <<JSON
+{"clients": [
+  {"client_id": "e2e-rp", "client_secret": "$RP_SECRET", "name": "E2E relying party",
+   "redirect_uris": ["http://127.0.0.1:5398/cb"]}
+]}
+JSON
+chmod 600 "$WORK/oidc-clients.json"
 
 # Bundled sample spaces → flat files → database.
 BACKEND_ENV="$WORK/config.env" "$BIN" seed > "$WORK/seed.log" 2>&1

@@ -32,6 +32,9 @@ public static class SettingsSerializer
         nameof(DmartSettings.FacebookClientSecret),
         // SMTP credentials — same risk profile as SmppAuthKey.
         nameof(DmartSettings.MailPassword),
+        // The directory replica's credential on its primary: it reads every
+        // user's password hash.
+        nameof(DmartSettings.DirectoryReplicaPassword),
         // Apple Sign-In ES256 signing key. AppleProvider.MintClientSecret feeds
         // this PEM to ECDsa.ImportFromPem; with it (plus the team/key/client ids
         // in this same response) a caller can forge Apple client_secret

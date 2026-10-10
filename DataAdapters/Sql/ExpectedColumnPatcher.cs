@@ -21,6 +21,9 @@ internal static class ExpectedColumnPatcher
             ("locked_to_device", "BOOLEAN NOT NULL DEFAULT FALSE"),
             ("last_checksum_history", "TEXT"),
             ("query_policies", "TEXT[] NOT NULL DEFAULT '{}'"),
+            ("mailbox", "TEXT"),
+            ("mail_aliases", "JSONB NOT NULL DEFAULT '[]'::jsonb"),
+            ("services", "JSONB NOT NULL DEFAULT '[]'::jsonb"),
         ],
         ["roles"] =
         [

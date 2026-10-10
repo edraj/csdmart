@@ -137,6 +137,18 @@ public sealed class AccessRepository(IDbConnectionFactory db, ISqlDialect dialec
         return true;
     }
 
+    // Every group, for the LDAP face's ou=groups. Unpaged: a deployment's groups
+    // are an administrative list, not user data, and number in the dozens.
+    public async Task<List<Group>> ListGroupsForDirectoryAsync(CancellationToken ct = default)
+    {
+        await using var conn = await db.OpenAsync(ct);
+        await using var cmd = conn.Command($"{SelectGroupColumns} ORDER BY shortname");
+        await using var r = await cmd.ExecuteReaderAsync(ct);
+        var results = new List<Group>();
+        while (await r.ReadAsync(ct)) results.Add(HydrateGroup(r));
+        return results;
+    }
+
     public Task<List<Group>> QueryGroupsAsync(Models.Api.Query q, CancellationToken ct = default)
         => QueryHelper.RunQueryAsync(db, SelectGroupColumns, q, HydrateGroup, ct, tableName: "groups");
 

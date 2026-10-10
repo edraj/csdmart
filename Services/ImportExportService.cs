@@ -1255,7 +1255,7 @@ public sealed class ImportExportService(
             {
                 foreach (var ze in entries.Where(IsUserMeta))
                 {
-                    await TryImportUserAsync(ze, allByPath, results, preserveExisting, headConn, ct);
+                    await TryImportUserAsync(ze, allByPath, results, preserveExisting, headSession, ct);
                     // Register the user as known so the per-entry owner
                     // validator can later check incoming owner_shortname
                     // refs without a PG round-trip. The shortname is the
@@ -2232,7 +2232,7 @@ public sealed class ImportExportService(
         }
     }
 
-    private async Task TryImportUserAsync(ImportEntryRef ze, IReadOnlyDictionary<string, ImportEntryRef> allByPath, ImportStats st, bool preserveExisting, NpgsqlConnection? conn, CancellationToken ct)
+    private async Task TryImportUserAsync(ImportEntryRef ze, IReadOnlyDictionary<string, ImportEntryRef> allByPath, ImportStats st, bool preserveExisting, Db.FastImportSession? session, CancellationToken ct)
     {
         try
         {
@@ -2245,13 +2245,16 @@ public sealed class ImportExportService(
             StripNullChars(node);   // PG jsonb can't store \0 (22P05)
             var user = node.Deserialize(DmartJsonContext.Default.User);
             if (user is null) { st.AddFailure(new() { ["path"] = ze.FullName, ["error"] = "empty user meta" }); return; }
-            if (preserveExisting && await (conn is null ? users.GetByShortnameAsync(user.Shortname, ct) : users.GetByShortnameAsync(user.Shortname, conn, ct)) is not null)
+            if (preserveExisting && await (session is null ? users.GetByShortnameAsync(user.Shortname, ct) : users.GetByShortnameAsync(user.Shortname, session.Connection, ct)) is not null)
             {
                 st.IncSkipped();
                 return;
             }
-            if (conn is null) await users.UpsertAsync(user, ct);
-            else              await users.UpsertAsync(user, conn, ct);
+            // --fast: the session's open transaction carries the write, and a
+            // savepoint keeps one bad row (an address another user holds) from
+            // aborting it for every row after.
+            if (session is null) await users.UpsertAsync(user, ct);
+            else await session.RunInSavepointAsync((c, t) => users.UpsertInOpenTransactionAsync(user, c, t), ct);
             st.IncUsers();
         }
         catch (Exception ex) when (ex is not OperationCanceledException)

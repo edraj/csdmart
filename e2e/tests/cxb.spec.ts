@@ -70,6 +70,62 @@ test.describe("cxb", () => {
       await expect(page.locator("html")).toHaveAttribute("dir", "ltr");
     });
 
+    test("a user's mailbox, aliases and services are edited in the user form", async ({ page }) => {
+      // Cookie-authenticated API calls need the CSRF signal a browser fetch sends.
+      const api = (path: string, data: object) =>
+        page.request.post(path, { headers: { "X-Requested-With": "XMLHttpRequest" }, data });
+      const sn = `mailuser${Date.now() % 100000}`;
+      const created = await api("/managed/request", {
+        space_name: "management", request_type: "create",
+        records: [{ resource_type: "user", subpath: "users", shortname: sn, attributes: { is_active: true } }],
+      });
+      expect(created.ok()).toBeTruthy();
+
+      await page.goto(`/cxb/management/content/management/users/${sn}/user`);
+      await page.getByRole("tab", { name: /Form/ }).click();
+      await page.getByRole("button", { name: "Mail and services" }).click();
+      await page.getByLabel("Hosted mailbox").fill(`${sn}@Example.ORG`);
+      await page.getByLabel("Mail aliases").fill(`help-${sn}@example.org\n\npostmaster-${sn}@Example.org`);
+      await page.getByLabel("Services").fill("mail, Matrix");
+      await page.getByRole("button", { name: "Save" }).click();
+
+      // Stored as the server normalizes them: folded, blank lines dropped.
+      await expect(async () => {
+        const res = await api("/managed/query", {
+          space_name: "management", type: "search", subpath: "users", filter_types: ["user"], filter_shortnames: [sn],
+        });
+        const attrs = (await res.json()).records?.[0]?.attributes ?? {};
+        expect(attrs.mailbox).toBe(`${sn}@example.org`);
+        expect(attrs.mail_aliases).toEqual([`help-${sn}@example.org`, `postmaster-${sn}@example.org`]);
+        expect(attrs.services).toEqual(["mail", "matrix"]);
+      }).toPass({ timeout: 10_000 });
+
+      // The form shows them again after a reload.
+      await page.reload();
+      await page.getByRole("tab", { name: /Form/ }).click();
+      await page.getByRole("button", { name: "Mail and services" }).click();
+      await expect(page.getByLabel("Hosted mailbox")).toHaveValue(`${sn}@example.org`);
+      await expect(page.getByLabel("Services")).toHaveValue("mail, matrix");
+
+      await api("/managed/request", {
+        space_name: "management", request_type: "delete",
+        records: [{ resource_type: "user", subpath: "users", shortname: sn, attributes: {} }],
+      });
+    });
+
+    test("an edit made before the editor settles still enables Save", async ({ page }) => {
+      // The editor takes its baseline for the unsaved-changes check a moment
+      // after mounting. An edit typed before then used to become part of the
+      // baseline, leaving Save disabled; CI's runner hit exactly that. The
+      // page clock is held so the edit always lands first.
+      await page.clock.install();
+      await page.goto("/cxb/management/content/management/users/dmart/user");
+      await page.getByRole("tab", { name: /Form/ }).click();
+      await page.getByLabel("Preferred language").fill("arabic");
+      await page.clock.runFor(2000);
+      await expect(page.getByRole("button", { name: "Save" })).toBeEnabled();
+    });
+
     test("spaces page at phone width has no horizontal overflow @phone", async ({ page }) => {
       await page.goto("/cxb/management/content");
       await expect(page.getByRole("heading", { level: 1, name: "Spaces" })).toBeVisible();

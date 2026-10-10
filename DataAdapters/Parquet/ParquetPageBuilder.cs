@@ -120,6 +120,11 @@ internal static class Pq
         t.Column(name).StringValues
         ?? throw new InvalidDataException($"column '{name}' is not a string column");
 
+    // A column a newer build added, read from an archive that may predate it:
+    // absent means every row is null, so an older backup still restores.
+    public static string?[] StringsIfPresent(ParquetFileReader.ParquetTable t, string name) =>
+        t.Columns.Any(c => c.Spec.Name == name) ? Strings(t, name) : new string?[t.RowCount];
+
     public static bool?[] Bools(ParquetFileReader.ParquetTable t, string name) =>
         t.Column(name).BooleanValues
         ?? throw new InvalidDataException($"column '{name}' is not a boolean column");

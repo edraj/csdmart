@@ -289,6 +289,9 @@ public sealed class SqliteSqlDialect : ISqlDialect
         => $"COALESCE(CASE WHEN json_valid({column}) AND json_type({column}) = 'array' "
          + $"THEN json_array_length({column}) END, 0)";
 
+    // A JSON array in TEXT here too, so the same expression.
+    public string JsonArrayLength(string column) => ArrayLength(column);
+
     // Timestamps are stored as fixed-width local wall-clock text (SqliteValues),
     // so a date string compares directly. An epoch-millis value is converted to
     // that same format so the comparison stays lexicographic.

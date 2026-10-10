@@ -796,6 +796,14 @@ switch (subcommand)
                                            into the database
                              --force     → overwrite existing files / upsert
                                            existing rows (default: skip both)
+              import-ldif    Move an LDAP directory (slapcat output) into the
+                             users, keeping {SSHA}/{SHA*}/{ARGON2} password
+                             hashes until each owner's first sign-in.
+                             Usage: dmart import-ldif <file.ldif> [--apply]
+                                      [--update]
+                             (no flag)   → dry run: print what it would do
+                             --apply     → write
+                             --update    → also update accounts that exist
               website        Build the static site from the "website" space,
                              reading only what an anonymous visitor may see.
                              The server serves the result under WEBSITE_URL.
@@ -930,9 +938,12 @@ switch (subcommand)
         var hashed = hasher.Hash(password);
         await using var conn = await dbInst.OpenAsync();
         await using var cmd = conn.Command(
-            "UPDATE users SET password = $1, is_active = true, attempt_count = 0 WHERE shortname = $2");
+            "UPDATE users SET password = $1, is_active = true, attempt_count = 0, updated_at = $3 WHERE shortname = $2");
         DbParams.Add(cmd, hashed);
         DbParams.Add(cmd, username);
+        // A change like any other: a directory replica learns of it through
+        // updated_at (docs/directory-replica.md).
+        DbParams.Add(cmd, Dmart.Utils.TimeUtils.Now());
         var rows = await cmd.ExecuteNonQueryAsync();
         if (rows > 0)
         {
@@ -1933,6 +1944,14 @@ switch (subcommand)
         {
             Environment.ExitCode = await SeedCommand.SeedDbAsync(spacesFolder, dotenvPath, dotenvValues, force);
         }
+        return;
+    }
+
+    case "import-ldif":
+    {
+        // Move an LDAP directory (slapcat output) into dmart's users, with
+        // their password hashes — see Cli/ImportLdifCommand.cs.
+        Environment.ExitCode = await Dmart.Cli.ImportLdifCommand.RunAsync(serverArgs, dotenvPath, dotenvValues);
         return;
     }
 
@@ -2945,6 +2964,17 @@ builder.Services.AddHostedService<AdminBootstrap>();
 // the schema initializers for the obvious reason (the users table has to exist)
 // and a no-op on every boot after the first — see LegacyLockoutBackfill.
 builder.Services.AddHostedService<LegacyLockoutRepair>();
+// Same ordering requirement: the index tables come from the schema initializers.
+builder.Services.AddSingleton<DirectoryIndexStatus>();
+builder.Services.AddHostedService<DirectoryIndexRepair>();
+// Directory replication (docs/directory-replica.md). The feed is the primary's
+// half; the replica's half is registered unconditionally and idles unless
+// DIRECTORY_REPLICA_OF is set. It starts before the LDAP listener, so an
+// unsynced replica never answers a lookup it cannot know.
+builder.Services.AddSingleton<DirectoryFeedService>();
+builder.Services.AddHttpClient(DirectoryReplica.HttpClientName);
+builder.Services.AddSingleton<DirectoryReplica>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<DirectoryReplica>());
 
 // IP-based rate limiter for authentication endpoints. Account lockout (on the
 // user row) limits attempts per-account; this limits attempts per-IP so an
@@ -3021,6 +3051,15 @@ builder.Services.AddSingleton<FolderContentValidator>();
 builder.Services.AddSingleton<EntryService>();
 builder.Services.AddSingleton<QueryService>();
 builder.Services.AddSingleton<UserService>();
+builder.Services.AddSingleton<DirectoryFieldsValidator>();
+// The LDAP directory face. Registered unconditionally and off at LDAP_PORT=0:
+// the listener reads the port when it starts, so a test host can turn it on
+// through IOptions without the registration depending on builder-time config.
+builder.Services.AddSingleton<Dmart.Ldap.LdapDirectory>();
+builder.Services.AddSingleton<Dmart.Ldap.LdapTls>();
+builder.Services.AddSingleton<Dmart.Ldap.LdapBindGuard>();
+builder.Services.AddSingleton<Dmart.Ldap.LdapServer>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<Dmart.Ldap.LdapServer>());
 builder.Services.AddSingleton<WorkflowEngine>();
 builder.Services.AddSingleton<WorkflowService>();
 // SpaceEventLogger captures inbound request headers (Python parity, minus
@@ -3064,6 +3103,11 @@ builder.Services.AddSingleton<Dmart.Auth.OAuth.OAuthUserResolver>();
 // bound DmartSettings); OAuthStoreSweeper stands down against the same
 // binding. The stores themselves are inert when nothing can reach them.
 builder.Services.AddSingleton<Dmart.Auth.OAuthCodeStore>();
+// The OIDC provider (docs/oidc-provider.md). Registered whether or not it is
+// on: only its routes depend on OidcIssuer, never what their handlers need.
+builder.Services.AddSingleton<Dmart.Auth.Oidc.OidcSigningKey>();
+builder.Services.AddSingleton<Dmart.Auth.Oidc.OidcClients>();
+builder.Services.AddSingleton<Dmart.Auth.Oidc.OidcCodeStore>();
 builder.Services.AddSingleton<Dmart.Auth.OAuthClientStore>();
 builder.Services.AddHostedService<Dmart.Auth.OAuthStoreSweeper>();
 builder.Services.AddHostedService<Dmart.Services.OtpHistorySweeper>();
@@ -3648,6 +3692,18 @@ else
 {
     app.Logger.LogInformation(
         "MCP surface disabled (ENABLE_MCP=false): /mcp and /oauth/* are not mapped; set ENABLE_MCP=true to expose them");
+}
+
+// OpenID Connect provider, off unless OIDC_ISSUER is set. The key and the
+// client list are loaded now, so a key that cannot be read or created, or a
+// clients file that does not validate, stops startup instead of the first
+// sign-in.
+if (appSettings.OidcEnabled)
+{
+    app.Services.GetRequiredService<Dmart.Auth.Oidc.OidcSigningKey>().EnsureLoaded();
+    app.Services.GetRequiredService<Dmart.Auth.Oidc.OidcClients>().EnsureLoaded();
+    Dmart.Api.Oidc.OidcEndpoints.MapOidc(app);
+    app.Logger.LogInformation("OpenID Connect provider: issuer {Issuer}", appSettings.OidcIssuer);
 }
 
 // WebSocket server — port of dmart/websocket.py.

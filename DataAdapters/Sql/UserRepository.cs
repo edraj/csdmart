@@ -26,7 +26,7 @@ public sealed class UserRepository(
                is_email_verified, is_msisdn_verified, force_password_change,
                device_id, google_id, facebook_id, apple_id, social_avatar_url,
                attempt_count, last_login, notes, query_policies, last_failed_login,
-               is_deleted, deleted_at
+               is_deleted, deleted_at, mailbox, mail_aliases, services
         FROM users
         """;
 
@@ -70,6 +70,22 @@ public sealed class UserRepository(
         DbParams.Add(cmd, shortname);
         await using var reader = await cmd.ExecuteReaderAsync(ct);
         return await reader.ReadAsync(ct) ? Hydrate(reader) : null;
+    }
+
+    // The one user whose shortname matches `shortname` ignoring case, or null
+    // when none does or several do ('Bob' and 'bob' both existing): LDAP's uid
+    // is case-insensitive, dmart's shortname is not. idx_users_shortname_lower
+    // serves it. lower() folds ASCII only on SQLite, and Unicode on PostgreSQL;
+    // shortnames outside ASCII are in scripts without case.
+    public async Task<User?> GetByShortnameIgnoringCaseAsync(string shortname, CancellationToken ct = default)
+    {
+        await using var conn = await db.OpenAsync(ct);
+        await using var cmd = conn.Command($"{SelectAllColumns} WHERE lower(shortname) = lower($1) LIMIT 2");
+        DbParams.Add(cmd, shortname);
+        await using var reader = await cmd.ExecuteReaderAsync(ct);
+        if (!await reader.ReadAsync(ct)) return null;
+        var user = Hydrate(reader);
+        return await reader.ReadAsync(ct) ? null : user;
     }
 
     // WHERE fragments for the identifier lookups below, named so
@@ -200,7 +216,7 @@ public sealed class UserRepository(
                                is_email_verified, is_msisdn_verified, force_password_change,
                                device_id, google_id, facebook_id, apple_id, social_avatar_url,
                                attempt_count, last_login, notes, query_policies,
-                               is_deleted, deleted_at)
+                               is_deleted, deleted_at, mailbox, mail_aliases, services)
         """;
 
     private const string UserConflictClause = """
@@ -256,7 +272,10 @@ public sealed class UserRepository(
                 -- deleted row deleted rather than resurrecting it as a side
                 -- effect of an unrelated field change.
                 is_deleted = users.is_deleted,
-                deleted_at = users.deleted_at
+                deleted_at = users.deleted_at,
+                mailbox = EXCLUDED.mailbox,
+                mail_aliases = EXCLUDED.mail_aliases,
+                services = EXCLUDED.services
         """;
 
     public async Task UpsertAsync(User u, DbConnection conn, CancellationToken ct = default)
@@ -267,19 +286,80 @@ public sealed class UserRepository(
         // full rationale — same pattern, same invariant.
         u = u with { QueryPolicies = Utils.QueryPolicies.Generate(u) };
 
-        await using var cmd = conn.CreateCommand();
-        var tuple = BindUserRow(cmd, u);
-        cmd.CommandText = $"{UserInsertColumns}\nVALUES {tuple}\n{UserConflictClause}";
-
-        await cmd.ExecuteNonQueryAsync(ct);
+        // One transaction for the row and its directory index rows, so a
+        // clashing address rolls the whole write back rather than leaving a user
+        // whose mailbox is stored but not indexed (docs/user-directory-fields.md).
+        await using var tx = await conn.BeginTransactionAsync(ct);
+        await WriteUserAsync(u, conn, tx, ct);
+        await tx.CommitAsync(ct);
         // user.roles / groups may have changed — evict only THIS user's bundle:
         // a global clear sent every active actor back to the database at once.
         refresher.Evict(u.Shortname);
         EvictAuth(u.Shortname);
     }
 
+    // The same write on a connection whose transaction the caller already
+    // opened: `import --fast` holds one for the whole run, and PostgreSQL has
+    // no nested BEGIN. Npgsql enlists these commands in it. The caller commits,
+    // and wraps the call in a savepoint if a clash must not abort the rest.
+    public async Task UpsertInOpenTransactionAsync(User u, DbConnection conn, CancellationToken ct = default)
+    {
+        u = u with { QueryPolicies = Utils.QueryPolicies.Generate(u) };
+        await WriteUserAsync(u, conn, null, ct);
+        refresher.Evict(u.Shortname);
+        EvictAuth(u.Shortname);
+    }
+
+    private static async Task WriteUserAsync(User u, DbConnection conn, DbTransaction? tx, CancellationToken ct)
+    {
+        await using (var cmd = conn.CreateCommand())
+        {
+            cmd.Transaction = tx;
+            var tuple = BindUserRow(cmd, u);
+            cmd.CommandText = $"{UserInsertColumns}\nVALUES {tuple}\n{UserConflictClause}";
+            await cmd.ExecuteNonQueryAsync(ct);
+        }
+        await SyncDirectoryIndexAsync(conn, tx, [u.Shortname], ct);
+    }
+
+    // A directory replica's write of its primary's row (Services/
+    // DirectoryReplica): the row exactly as the primary has it, which the
+    // ordinary upsert deliberately is not. It keeps the primary's updated_at
+    // (LDAP's modifyTimestamp, and how the replica knows a row is unchanged);
+    // writes the password hash as given, so a password the primary removed is
+    // removed here too instead of surviving the COALESCE; takes the primary's
+    // uuid; and revives a local copy that was soft-deleted, since the primary
+    // says the account is live.
+    public async Task UpsertReplicatedAsync(User u, CancellationToken ct = default)
+    {
+        u = u with { QueryPolicies = Utils.QueryPolicies.Generate(u) };
+        await using var conn = await db.OpenAsync(ct);
+        await using var tx = await conn.BeginTransactionAsync(ct);
+        await using (var cmd = conn.CreateCommand())
+        {
+            cmd.Transaction = tx;
+            var tuple = BindUserRow(cmd, u, keepUpdatedAt: true);
+            cmd.CommandText = $"{UserInsertColumns}\nVALUES {tuple}\n{UserConflictClause}";
+            await cmd.ExecuteNonQueryAsync(ct);
+        }
+        // The uuid too: the conflict clause resolves on shortname and keeps the
+        // local one, and a replica's own bootstrap admin was minted locally.
+        await using (var exact = conn.Command(
+            "UPDATE users SET password = $2, uuid = $3, is_deleted = false, deleted_at = NULL WHERE shortname = $1", tx))
+        {
+            DbParams.Add(exact, u.Shortname);
+            DbParams.Add(exact, (object?)u.Password ?? DBNull.Value);
+            DbParams.Add(exact, Guid.Parse(u.Uuid));   // PostgreSQL's uuid has no = text
+            await exact.ExecuteNonQueryAsync(ct);
+        }
+        await SyncDirectoryIndexAsync(conn, tx, [u.Shortname], ct);
+        await tx.CommitAsync(ct);
+        refresher.Evict(u.Shortname);
+        EvictAuth(u.Shortname);
+    }
+
     /// <summary>
-    /// Binds one user's 38 columns and returns the VALUES tuple that reads them.
+    /// Binds one user's 43 columns and returns the VALUES tuple that reads them.
     /// </summary>
     /// <remarks>
     /// The single-row upsert and the batch restore both call this, so there is
@@ -294,9 +374,9 @@ public sealed class UserRepository(
     /// hardcoded as $1..$38, which is what lets the same binding serve row N of
     /// a multi-row INSERT.
     /// </remarks>
-    private static string BindUserRow(DbCommand cmd, User u)
+    private static string BindUserRow(DbCommand cmd, User u, bool keepUpdatedAt = false)
     {
-        var p = new string[40];
+        var p = new string[43];
         var i = 0;
         p[i++] = DbParams.Add(cmd, Guid.Parse(u.Uuid));
         p[i++] = DbParams.Add(cmd, u.Shortname);
@@ -310,8 +390,10 @@ public sealed class UserRepository(
         p[i++] = DbParams.Add(cmd, u.CreatedAt == default ? TimeUtils.Now() : u.CreatedAt);
         // updated_at is stamped NOW, not carried from the model — existing
         // behaviour, preserved deliberately so the batch path is not a
-        // behavioural change smuggled in alongside a performance one.
-        p[i++] = DbParams.Add(cmd, TimeUtils.Now());
+        // behavioural change smuggled in alongside a performance one. The one
+        // exception is a directory replica mirroring its primary's row
+        // (UpsertReplicatedAsync), whose timestamp IS the data.
+        p[i++] = DbParams.Add(cmd, keepUpdatedAt && u.UpdatedAt != default ? u.UpdatedAt : TimeUtils.Now());
         p[i++] = DbParams.Add(cmd, u.OwnerShortname);
         p[i++] = DbParams.Add(cmd, (object?)u.OwnerGroupShortname ?? DBNull.Value);
         p[i++] = AddJsonb(cmd, JsonbHelpers.ToJsonb(u.Payload));
@@ -347,6 +429,9 @@ public sealed class UserRepository(
         // both to the EXISTING values, so an upsert can never resurrect.
         p[i++] = DbParams.Add(cmd, u.IsDeleted);
         p[i++] = DbParams.Add(cmd, (object?)u.DeletedAt ?? DBNull.Value);
+        p[i++] = DbParams.Add(cmd, (object?)DirectoryFields.NormalizeAddress(u.Mailbox) ?? DBNull.Value);
+        p[i++] = AddJsonbNotNull(cmd, JsonbHelpers.ToJsonbList(DirectoryFields.NormalizeAddresses(u.MailAliases)));
+        p[i++] = AddJsonbNotNull(cmd, JsonbHelpers.ToJsonbList(DirectoryFields.NormalizeServices(u.Services)));
 
         // `type` and `language` are PostgreSQL ENUMs and need the cast; SQLite
         // stores them as TEXT, where the cast is a syntax error. Same rule as
@@ -369,9 +454,9 @@ public sealed class UserRepository(
     /// uses, so the password-preserving COALESCE cannot be lost here — that is
     /// the whole reason this shares rather than restates.
     ///
-    /// Batched at <see cref="RestoreBatchRows"/> because users are 38 columns
+    /// Batched at <see cref="RestoreBatchRows"/> because users are 43 columns
     /// wide and both drivers cap bound parameters: PostgreSQL at 65535, SQLite
-    /// lower. 200 rows is 7,600 parameters, comfortably inside both — and the
+    /// lower. 200 rows is 8,600 parameters, comfortably inside both — and the
     /// limit would otherwise only be hit on a LARGE restore, which is the worst
     /// time to discover it.
     ///
@@ -394,7 +479,9 @@ public sealed class UserRepository(
             ct.ThrowIfCancellationRequested();
             var take = Math.Min(RestoreBatchRows, users.Count - offset);
 
+            await using var tx = await conn.BeginTransactionAsync(ct);
             await using var cmd = conn.CreateCommand();
+            cmd.Transaction = tx;
             var tuples = new string[take];
             for (var i = 0; i < take; i++)
             {
@@ -409,6 +496,10 @@ public sealed class UserRepository(
             cmd.CommandText =
                 $"{UserInsertColumns}\nVALUES {string.Join(",", tuples)}\n{UserConflictClause}";
             affected += await cmd.ExecuteNonQueryAsync(ct);
+            var batch = new string[take];
+            for (var i = 0; i < take; i++) batch[i] = users[offset + i].Shortname;
+            await SyncDirectoryIndexAsync(conn, tx, batch, ct);
+            await tx.CommitAsync(ct);
         }
 
         await refresher.RefreshAsync(ct);
@@ -497,10 +588,10 @@ public sealed class UserRepository(
                                is_email_verified, is_msisdn_verified, force_password_change,
                                device_id, google_id, facebook_id, apple_id, social_avatar_url,
                                attempt_count, last_login, notes, query_policies,
-                               is_deleted, deleted_at)
+                               is_deleted, deleted_at, mailbox, mail_aliases, services)
             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,
                     {ENUM_CASTS},$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,
-                    $39,$40)
+                    $39,$40,$41,$42,$43)
             ON CONFLICT (shortname) DO UPDATE SET
                 space_name = EXCLUDED.space_name,
                 subpath = EXCLUDED.subpath,
@@ -549,7 +640,10 @@ public sealed class UserRepository(
                 -- deleted row deleted rather than resurrecting it as a side
                 -- effect of an unrelated field change.
                 is_deleted = users.is_deleted,
-                deleted_at = users.deleted_at
+                deleted_at = users.deleted_at,
+                mailbox = EXCLUDED.mailbox,
+                mail_aliases = EXCLUDED.mail_aliases,
+                services = EXCLUDED.services
             """ + (ReturnsInsertedFlag(conn) ? "\n            RETURNING (xmax = 0) AS inserted" : ""), tx);
 
         DbParams.Add(cmd, Guid.Parse(u.Uuid));
@@ -596,6 +690,10 @@ public sealed class UserRepository(
         // the existing row, so this path cannot resurrect either.
         DbParams.Add(cmd, u.IsDeleted);
         DbParams.Add(cmd, (object?)u.DeletedAt ?? DBNull.Value);
+        // $41-$43 — the directory fields, normalized exactly as BindUserRow does.
+        DbParams.Add(cmd, (object?)DirectoryFields.NormalizeAddress(u.Mailbox) ?? DBNull.Value);
+        AddJsonbNotNull(cmd, JsonbHelpers.ToJsonbList(DirectoryFields.NormalizeAddresses(u.MailAliases)));
+        AddJsonbNotNull(cmd, JsonbHelpers.ToJsonbList(DirectoryFields.NormalizeServices(u.Services)));
 
         bool inserted;
         if (ReturnsInsertedFlag(conn))
@@ -611,6 +709,7 @@ public sealed class UserRepository(
             await cmd.ExecuteNonQueryAsync(ct);
             inserted = prior is null;
         }
+        await SyncDirectoryIndexAsync(conn, tx, [u.Shortname], ct);
         await tx.CommitAsync(ct);
         // user.roles / groups may have changed — evict only THIS user's bundle:
         // a global clear sent every active actor back to the database at once.
@@ -628,6 +727,7 @@ public sealed class UserRepository(
         await using var tx = await conn.BeginTransactionAsync(ct);
         await Tombstones.RecordAsync(conn, tx, "users", "shortname = $1",
             c => DbParams.Add(c, shortname), hasResourceType: false, ct);
+        await DeleteDirectoryIndexAsync(conn, tx, shortname, ct);
 
         await using var cmd = conn.Command("DELETE FROM users WHERE shortname = $1", tx);
         DbParams.Add(cmd, shortname);
@@ -852,6 +952,7 @@ public sealed class UserRepository(
             await cmd.ExecuteNonQueryAsync(ct);
         }
 
+        await DeleteDirectoryIndexAsync(conn, tx, shortname, ct);
         await using (var del = conn.Command("DELETE FROM users WHERE shortname = $1", tx))
         {
             DbParams.Add(del, shortname);
@@ -940,12 +1041,27 @@ public sealed class UserRepository(
             DbParams.Add(upd, newOwner);
             DbParams.Add(upd, Utils.QueryPolicies.Generate(space, subpath, "user", isActive, newOwner, ownerGroup, null).ToArray(),
                 SqlValueKind.TextArray);
+            // The host's clock, bound, never the database's NOW(): every other
+            // write stamps updated_at with it, and PostgreSQL's NOW() is in the
+            // server's timezone, so on a UTC server with a +03 host a renamed
+            // user would land hours behind an incremental reader's watermark
+            // (see Tombstones.RecordAsync).
+            var renamedAt = DbParams.Add(upd, TimeUtils.Now());
             upd.CommandText = $"""
                 UPDATE users
-                   SET shortname = $2, owner_shortname = $3, query_policies = $4, updated_at = {NowExpr(upd)}
+                   SET shortname = $2, owner_shortname = $3, query_policies = $4, updated_at = {renamedAt}
                  WHERE shortname = $1
                 """;
             await upd.ExecuteNonQueryAsync(ct);
+        }
+        // The directory index rows follow the user. Their foreign keys are
+        // deferred, so they may point at the old name until this runs.
+        foreach (var table in new[] { "user_addresses", "user_services" })
+        {
+            await using var idx = conn.Command($"UPDATE {table} SET shortname = $2 WHERE shortname = $1", tx);
+            DbParams.Add(idx, from);
+            DbParams.Add(idx, to);
+            await idx.ExecuteNonQueryAsync(ct);
         }
 
         // 2. Everything the user owns. query_policies embeds the owner, so it is
@@ -1217,15 +1333,22 @@ public sealed class UserRepository(
     ///
     /// Returns the rows affected so the caller can tell "upgraded" from "the
     /// row vanished underneath us" without a second query.
+    ///
+    /// <paramref name="touchUpdatedAt"/> is for replacing a hash imported from
+    /// LDAP (an {SSHA}): that one a directory replica should pick up rather
+    /// than keep the weak hash until the user next changes. An ordinary rehash
+    /// stays invisible to anything watching the row for change.
     /// </remarks>
     public async Task<int> UpdatePasswordHashOnlyAsync(
-        string shortname, string passwordHash, CancellationToken ct = default)
+        string shortname, string passwordHash, CancellationToken ct = default, bool touchUpdatedAt = false)
     {
         await using var conn = await db.OpenAsync(ct);
-        await using var cmd = conn.Command(
-            "UPDATE users SET password = $2 WHERE shortname = $1");
+        await using var cmd = conn.Command(touchUpdatedAt
+            ? "UPDATE users SET password = $2, updated_at = $3 WHERE shortname = $1"
+            : "UPDATE users SET password = $2 WHERE shortname = $1");
         DbParams.Add(cmd, shortname);
         DbParams.Add(cmd, passwordHash);
+        if (touchUpdatedAt) DbParams.Add(cmd, TimeUtils.Now());
         return await cmd.ExecuteNonQueryAsync(ct);
     }
 
@@ -1595,6 +1718,346 @@ public sealed class UserRepository(
         EvictAuth(shortname);
     }
 
+    // ----- directory index (docs/user-directory-fields.md) -----
+
+    // Re-derives the user_addresses / user_services rows of the given users
+    // FROM THEIR STORED ROWS, inside the caller's transaction. Reading back
+    // what was written rather than trusting the model matters: the upsert's
+    // conflict clause pins is_deleted to the existing value, so the model can
+    // disagree with the row about whether the user is live.
+    //
+    // An address another user already holds fails the INSERT on the
+    // user_addresses primary key, and the caller's whole transaction — user
+    // row included — rolls back. UserService pre-checks for a readable
+    // message; this is what makes the race between two writers safe.
+    private static async Task SyncDirectoryIndexAsync(
+        DbConnection conn, DbTransaction? tx, string[] shortnames, CancellationToken ct)
+    {
+        if (shortnames.Length == 0) return;
+        var sqlite = conn is Microsoft.Data.Sqlite.SqliteConnection;
+        foreach (var sql in DirectoryIndexStatements(sqlite, filtered: true))
+        {
+            await using var cmd = conn.Command(sql, tx);
+            DbParams.Add(cmd, shortnames, SqlValueKind.TextArray);
+            await cmd.ExecuteNonQueryAsync(ct);
+        }
+    }
+
+    private static async Task DeleteDirectoryIndexAsync(
+        DbConnection conn, DbTransaction tx, string shortname, CancellationToken ct)
+    {
+        foreach (var table in new[] { "user_addresses", "user_services" })
+        {
+            await using var cmd = conn.Command($"DELETE FROM {table} WHERE shortname = $1", tx);
+            DbParams.Add(cmd, shortname);
+            await cmd.ExecuteNonQueryAsync(ct);
+        }
+    }
+
+    // The four statements that (re)build the index: clear, then derive the
+    // addresses and the services from users. `filtered` restricts all four to
+    // the shortnames bound as $1; unfiltered they rebuild the whole index.
+    // Values are copied verbatim — BindUserRow already normalized them — so
+    // the two engines' differing lower() on non-ASCII text never comes into it.
+    private static string[] DirectoryIndexStatements(bool sqlite, bool filtered)
+    {
+        string In(string column) => !filtered ? "TRUE"
+            : sqlite ? $"{column} IN (SELECT value FROM json_each($1))" : $"{column} = ANY($1)";
+        var live = sqlite ? "u.is_deleted = 0" : "NOT u.is_deleted";
+        string Each(string column, string alias) => sqlite
+            ? $"json_each(u.{column}) AS {alias}"
+            : $"LATERAL jsonb_array_elements_text(u.{column}) AS {alias}(value)";
+        string IsArray(string column) => sqlite
+            ? $"json_type(u.{column}) = 'array'"
+            : $"jsonb_typeof(u.{column}) = 'array'";
+        return
+        [
+            $"DELETE FROM user_addresses WHERE {In("shortname")}",
+            $"DELETE FROM user_services WHERE {In("shortname")}",
+            $"""
+            INSERT INTO user_addresses (address, shortname, kind)
+            SELECT u.mailbox, u.shortname, 'mailbox' FROM users u
+             WHERE {In("u.shortname")} AND {live} AND u.mailbox IS NOT NULL AND u.mailbox <> ''
+            UNION ALL
+            SELECT a.value, u.shortname, 'alias' FROM users u CROSS JOIN {Each("mail_aliases", "a")}
+             WHERE {In("u.shortname")} AND {live} AND {IsArray("mail_aliases")}
+            """,
+            // ON CONFLICT rather than DISTINCT: services are de-duplicated on
+            // write already, and DISTINCT over a whole-table rebuild is a sort —
+            // at 3M users, 7M rows spilling to disk under a 1 GB cap, for minutes.
+            // (SQLite needs the SELECT's WHERE to parse an upsert after a join.)
+            $"""
+            INSERT INTO user_services (service, shortname)
+            SELECT s.value, u.shortname FROM users u CROSS JOIN {Each("services", "s")}
+             WHERE {In("u.shortname")} AND {live} AND {IsArray("services")}
+            ON CONFLICT DO NOTHING
+            """,
+        ];
+    }
+
+    // Rebuilds both index tables from users when they are empty but some live
+    // user has directory fields: the first start after the upgrade, or a
+    // restore that loaded users through a path that predates the index.
+    // Returns the number of address + service rows written, 0 when nothing
+    // needed doing.
+    public async Task<int> RebuildDirectoryIndexIfEmptyAsync(CancellationToken ct = default)
+    {
+        await using var conn = await db.OpenAsync(ct);
+        var sqlite = conn is Microsoft.Data.Sqlite.SqliteConnection;
+        var hasFields = sqlite
+            ? "EXISTS (SELECT 1 FROM users WHERE is_deleted = 0 AND (mailbox IS NOT NULL OR json_array_length(mail_aliases) > 0 OR json_array_length(services) > 0))"
+            : "EXISTS (SELECT 1 FROM users WHERE NOT is_deleted AND (mailbox IS NOT NULL OR jsonb_array_length(mail_aliases) > 0 OR jsonb_array_length(services) > 0))";
+        await using (var probe = conn.Command(
+            $"SELECT CASE WHEN {hasFields} AND NOT EXISTS (SELECT 1 FROM user_addresses) AND NOT EXISTS (SELECT 1 FROM user_services) THEN 1 ELSE 0 END"))
+        {
+            probe.CommandTimeout = 0;
+            if (DbParams.ReadCount(await probe.ExecuteScalarAsync(ct)) == 0) return 0;
+        }
+
+        // One all-or-nothing transaction, and NO command timeout: at 3M users
+        // the insert is 13M rows, which on a memory-capped PostgreSQL ran past
+        // Npgsql's default 30 s, rolled back, and left the index empty. A
+        // half-built index would be worse than an empty one — the probe above
+        // would see rows and never finish the job.
+        // On PostgreSQL the foreign keys are dropped for the bulk insert and
+        // re-added after it, in the same transaction. Kept in place, each of
+        // the 13M rows fires a row-level check that takes FOR KEY SHARE on its
+        // users row — a random heap read plus a dirtied page per row. At 3M users
+        // under a 1 GB cap that was 31 GB read and 10 GB written in 18 minutes,
+        // unfinished. Re-adding validates them all with one set-based join.
+        // (Deferred instead, the same 13M checks run at COMMIT, which is bound
+        // by the connection's timeout rather than these commands' zero.)
+        // SQLite's checks are plain index probes and need none of this.
+        string[] pre = sqlite ? [] :
+        [
+            "ALTER TABLE user_addresses DROP CONSTRAINT IF EXISTS user_addresses_shortname_fkey",
+            "ALTER TABLE user_services DROP CONSTRAINT IF EXISTS user_services_shortname_fkey",
+        ];
+        string[] post = sqlite ? [] :
+        [
+            "ALTER TABLE user_addresses ADD CONSTRAINT user_addresses_shortname_fkey FOREIGN KEY (shortname) REFERENCES users(shortname) DEFERRABLE INITIALLY DEFERRED",
+            "ALTER TABLE user_services ADD CONSTRAINT user_services_shortname_fkey FOREIGN KEY (shortname) REFERENCES users(shortname) DEFERRABLE INITIALLY DEFERRED",
+        ];
+
+        await using var tx = await conn.BeginTransactionAsync(ct);
+        var written = 0;
+        foreach (var sql in pre.Concat(DirectoryIndexStatements(sqlite, filtered: false)).Concat(post))
+        {
+            await using var cmd = conn.Command(sql, tx);
+            cmd.CommandTimeout = 0;
+            var n = await cmd.ExecuteNonQueryAsync(ct);
+            if (sql.StartsWith("INSERT", StringComparison.Ordinal)) written += n;
+        }
+        await tx.CommitAsync(ct);
+        return written;
+    }
+
+    // The live user holding `address` as their mailbox or as an alias, or
+    // null. `address` must already be normalized (DirectoryFields).
+    public async Task<(string Shortname, string Kind)?> FindAddressOwnerAsync(string address, CancellationToken ct = default)
+    {
+        await using var conn = await db.OpenAsync(ct);
+        await using var cmd = conn.Command("SELECT shortname, kind FROM user_addresses WHERE address = $1");
+        DbParams.Add(cmd, address);
+        await using var reader = await cmd.ExecuteReaderAsync(ct);
+        return await reader.ReadAsync(ct) ? (reader.GetString(0), reader.GetString(1)) : null;
+    }
+
+    // Whether `email` is the mailbox or an alias of a live user other than
+    // `shortname` (null: of anyone). A contact email must not be: LDAP's
+    // `mail` would match two people, and a login or reset by that address
+    // would reach the contact, not the mailbox's owner.
+    public async Task<bool> IsAnotherUsersAddressAsync(string? email, string? shortname, CancellationToken ct = default)
+        => DirectoryFields.NormalizeAddress(email) is { } address
+           && await FindAddressOwnerAsync(address, ct) is { } owner
+           && !string.Equals(owner.Shortname, shortname, StringComparison.Ordinal);
+
+    // The user whose mailbox (kind "mailbox") or alias (kind "alias") is
+    // `address`, through the user_addresses primary key.
+    public async Task<User?> GetByAddressAsync(string address, string kind, CancellationToken ct = default)
+    {
+        await using var conn = await db.OpenAsync(ct);
+        await using var cmd = conn.Command(
+            $"{SelectAllColumns} WHERE shortname = (SELECT shortname FROM user_addresses WHERE address = $1 AND kind = $2)");
+        DbParams.Add(cmd, address);
+        DbParams.Add(cmd, kind);
+        await using var reader = await cmd.ExecuteReaderAsync(ct);
+        return await reader.ReadAsync(ct) ? Hydrate(reader) : null;
+    }
+
+    // One keyset page of the live users granted `service`, in shortname order,
+    // read off the user_services primary key — the LDAP face's listing of
+    // `(authorizedService=x)` without touching any other user's row.
+    public async Task<List<User>> ListByServiceAsync(string service, string? after, int limit, CancellationToken ct = default)
+    {
+        await using var conn = await db.OpenAsync(ct);
+        await using var cmd = conn.Command(after is null
+            ? $"{SelectAllColumns} WHERE shortname IN (SELECT shortname FROM user_services WHERE service = $1 ORDER BY shortname LIMIT $2) ORDER BY shortname"
+            : $"{SelectAllColumns} WHERE shortname IN (SELECT shortname FROM user_services WHERE service = $1 AND shortname > $3 ORDER BY shortname LIMIT $2) ORDER BY shortname");
+        DbParams.Add(cmd, service);
+        DbParams.Add(cmd, limit);
+        if (after is not null) DbParams.Add(cmd, after);
+        await using var reader = await cmd.ExecuteReaderAsync(ct);
+        var list = new List<User>();
+        while (await reader.ReadAsync(ct)) list.Add(Hydrate(reader));
+        return list;
+    }
+
+    // ----- directory support (used by Ldap/LdapDirectory) -----
+
+    // `shortname` in byte order on both engines (idx_users_shortname_bytes on
+    // PostgreSQL): the order of every keyset walk a replica and its primary
+    // must agree on, whichever engine each runs.
+    private static string BytewiseShortname(DbConnection conn)
+        => conn is Microsoft.Data.Sqlite.SqliteConnection ? "shortname" : "shortname COLLATE \"C\"";
+
+    // One page of live users for the LDAP face's unanchored searches and the
+    // directory feed's full walk, in bytewise shortname order. Keyset rather than OFFSET: a scan resumes after the last
+    // shortname it saw, so page N costs the same as page 1 instead of re-reading
+    // every row before it — the difference between linear and quadratic over a
+    // multi-million-row table.
+    public async Task<List<User>> ListForDirectoryAsync(string? after, int limit, CancellationToken ct = default)
+    {
+        await using var conn = await db.OpenAsync(ct);
+        var name = BytewiseShortname(conn);
+        await using var cmd = conn.Command(after is null
+            ? $"{SelectAllColumns} WHERE is_deleted = false ORDER BY {name} LIMIT $1"
+            : $"{SelectAllColumns} WHERE is_deleted = false AND {name} > $2 ORDER BY {name} LIMIT $1");
+        DbParams.Add(cmd, limit);
+        if (after is not null) DbParams.Add(cmd, after);
+        await using var reader = await cmd.ExecuteReaderAsync(ct);
+        var list = new List<User>();
+        while (await reader.ReadAsync(ct)) list.Add(Hydrate(reader));
+        return list;
+    }
+
+    // The directory feed's changes walk (Services/DirectoryFeed): users whose
+    // row changed at or after `since`, soft-deleted ones included, in
+    // (updated_at, shortname) order after the (since, after) keyset position.
+    // idx_users_updated_at serves it.
+    public async Task<List<User>> ListChangedSinceAsync(DateTime since, string after, int limit, CancellationToken ct = default)
+    {
+        await using var conn = await db.OpenAsync(ct);
+        await using var cmd = conn.Command(
+            $"{SelectAllColumns} WHERE updated_at > $1 OR (updated_at = $1 AND shortname > $2) "
+            + "ORDER BY updated_at, shortname LIMIT $3");
+        DbParams.Add(cmd, since);
+        DbParams.Add(cmd, after);
+        DbParams.Add(cmd, limit);
+        await using var reader = await cmd.ExecuteReaderAsync(ct);
+        var list = new List<User>();
+        while (await reader.ReadAsync(ct)) list.Add(Hydrate(reader));
+        return list;
+    }
+
+    // Shortnames of users hard-deleted (or renamed away) at or after `since`,
+    // from the tombstones every delete and rename records. A name taken again
+    // since is left out: its current row arrives with the changes, and a
+    // replica that removed it first would refuse its binds until then.
+    public async Task<List<string>> ListDeletedSinceAsync(DateTime since, CancellationToken ct = default)
+    {
+        await using var conn = await db.OpenAsync(ct);
+        await using var cmd = conn.Command(
+            "SELECT DISTINCT shortname FROM deletions WHERE table_name = 'users' AND deleted_at >= $1 "
+            + "AND shortname NOT IN (SELECT shortname FROM users) ORDER BY shortname");
+        DbParams.Add(cmd, since);
+        await using var reader = await cmd.ExecuteReaderAsync(ct);
+        var list = new List<string>();
+        while (await reader.ReadAsync(ct)) list.Add(reader.GetString(0));
+        return list;
+    }
+
+    public async Task<string?> GetShortnameByUuidAsync(string uuid, CancellationToken ct = default)
+    {
+        // A Guid, not the string: PostgreSQL's column is uuid and has no
+        // uuid = text operator; DbParams writes SQLite's canonical text form.
+        if (!Guid.TryParse(uuid, out var id)) return null;
+        await using var conn = await db.OpenAsync(ct);
+        await using var cmd = conn.Command("SELECT shortname FROM users WHERE uuid = $1");
+        DbParams.Add(cmd, id);
+        return await cmd.ExecuteScalarAsync(ct) as string;
+    }
+
+    // Live shortnames in (after, upTo] (upTo null: to the end), in bytewise
+    // order: the replica's full walk reconciles each page of the primary
+    // against them, so the range must mean what it means on the primary.
+    public async Task<List<string>> ListShortnamesBetweenAsync(string after, string? upTo, CancellationToken ct = default)
+    {
+        await using var conn = await db.OpenAsync(ct);
+        var name = BytewiseShortname(conn);
+        await using var cmd = conn.Command(upTo is null
+            ? $"SELECT shortname FROM users WHERE is_deleted = false AND {name} > $1 ORDER BY {name}"
+            : $"SELECT shortname FROM users WHERE is_deleted = false AND {name} > $1 AND {name} <= $2 ORDER BY {name}");
+        DbParams.Add(cmd, after);
+        if (upTo is not null) DbParams.Add(cmd, upTo);
+        await using var reader = await cmd.ExecuteReaderAsync(ct);
+        var list = new List<string>();
+        while (await reader.ReadAsync(ct)) list.Add(reader.GetString(0));
+        return list;
+    }
+
+    // A replica's position in its primary's directory feed: the primary's clock
+    // at the start of the last complete walk, or null before the first one.
+    public async Task<DateTime?> GetReplicaWatermarkAsync(CancellationToken ct = default)
+    {
+        await using var conn = await db.OpenAsync(ct);
+        await using var cmd = conn.Command("SELECT watermark FROM directory_replica_state WHERE id = 1");
+        var value = await cmd.ExecuteScalarAsync(ct);
+        return value is null or DBNull ? null : Convert.ToDateTime(value, System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    // Records a complete walk: the primary's clock at its start (the next
+    // watermark) and this host's clock now (how fresh the copy is).
+    public async Task SetReplicaWatermarkAsync(DateTime? watermark, DateTime syncedAt, CancellationToken ct = default)
+    {
+        await using var conn = await db.OpenAsync(ct);
+        await using var cmd = conn.Command(
+            "INSERT INTO directory_replica_state (id, watermark, synced_at) VALUES (1, $1, $2) "
+            + "ON CONFLICT (id) DO UPDATE SET watermark = $1, synced_at = $2");
+        DbParams.Add(cmd, (object?)watermark ?? DBNull.Value);
+        DbParams.Add(cmd, syncedAt);
+        await cmd.ExecuteNonQueryAsync(ct);
+    }
+
+    // When this replica last completed a walk, by its own clock; null before
+    // the first one.
+    public async Task<DateTime?> GetReplicaSyncedAtAsync(CancellationToken ct = default)
+    {
+        await using var conn = await db.OpenAsync(ct);
+        await using var cmd = conn.Command("SELECT synced_at FROM directory_replica_state WHERE id = 1");
+        var value = await cmd.ExecuteScalarAsync(ct);
+        return value is null or DBNull ? null : Convert.ToDateTime(value, System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    // Members of several groups in one query: the `member` values of the LDAP
+    // face's group entries, which on SQLite would otherwise scan the users
+    // table once per group. Every requested group is a key, members in
+    // shortname order. Null when more than `maxUsers` users are members of
+    // any of them: the LDAP face's scan limit, which a group of every user
+    // would otherwise turn into one multi-million-row answer.
+    public async Task<Dictionary<string, List<string>>?> ListGroupMembersAsync(
+        IReadOnlyCollection<string> groups, int maxUsers, CancellationToken ct = default)
+    {
+        var result = groups.Distinct(StringComparer.Ordinal).ToDictionary(g => g, _ => new List<string>(), StringComparer.Ordinal);
+        if (result.Count == 0) return result;
+        await using var conn = await db.OpenAsync(ct);
+        await using var cmd = conn.CreateCommand();
+        var contains = QueryHelper.DialectFor(db)
+            .JsonArrayContainsAny("groups", result.Keys.ToList(), (v, k) => DbParams.Add(cmd, v, k));
+        var limit = DbParams.Add(cmd, maxUsers + 1);
+        cmd.CommandText = $"SELECT shortname, groups FROM users WHERE is_deleted = false AND {contains} ORDER BY shortname LIMIT {limit}";
+        await using var reader = await cmd.ExecuteReaderAsync(ct);
+        var rows = 0;
+        while (await reader.ReadAsync(ct))
+        {
+            if (++rows > maxUsers) return null;
+            var shortname = reader.GetString(0);
+            foreach (var g in JsonbHelpers.FromListString(reader.IsDBNull(1) ? null : reader.GetString(1)) ?? [])
+                if (result.TryGetValue(g, out var members)) members.Add(shortname);
+        }
+        return result;
+    }
+
     // ----- query support (used by QueryService for management/users) -----
 
     public Task<List<User>> QueryAsync(Models.Api.Query q, CancellationToken ct = default)
@@ -1704,6 +2167,9 @@ public sealed class UserRepository(
             LastFailedLogin = r.IsDBNull(38) ? null : r.GetDateTime(38),
             IsDeleted = !r.IsDBNull(39) && r.GetBoolean(39),
             DeletedAt = r.IsDBNull(40) ? null : r.GetDateTime(40),
+            Mailbox = r.IsDBNull(41) ? null : r.GetString(41),
+            MailAliases = JsonbHelpers.FromListString(r.IsDBNull(42) ? null : r.GetString(42)) ?? new(),
+            Services = JsonbHelpers.FromListString(r.IsDBNull(43) ? null : r.GetString(43)) ?? new(),
         };
     }
 
@@ -1759,9 +2225,15 @@ public sealed class UserRepository(
             UPDATE users SET
                 is_deleted = true,
                 deleted_at = $2,
+                -- A change like any other: an incremental reader keyed on
+                -- updated_at (the directory feed) must see the account go.
+                updated_at = $2,
                 email = NULL,
                 msisdn = NULL,
-                password = NULL
+                password = NULL,
+                mailbox = NULL,
+                mail_aliases = '[]',
+                services = '[]'
             WHERE shortname = $1
             """, tx))
         {
@@ -1769,6 +2241,9 @@ public sealed class UserRepository(
             DbParams.Add(cmd, TimeUtils.Now());
             await cmd.ExecuteNonQueryAsync(ct);
         }
+        // Released like the email and msisdn above: a deleted account's mailbox
+        // and aliases become available to the next account that asks for them.
+        await DeleteDirectoryIndexAsync(conn, tx, shortname, ct);
 
         await using (var cmd = conn.Command("DELETE FROM sessions WHERE shortname = $1", tx))
         {

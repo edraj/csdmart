@@ -148,6 +148,165 @@ public sealed class DmartSettings
     public string ManagementSpace { get; set; } = "management";
     public int MaxSessionsPerUser { get; set; } = 5;
 
+    // ---- Directory fields on users (docs/user-directory-fields.md) ----
+    // Comma-separated services a user can be granted (e.g. "mail,matrix,gitea").
+    // Empty accepts any lowercase slug.
+    public string UserServices { get; set; } = "";
+    // Comma-separated mail domains this deployment hosts. When set, a user's
+    // mailbox and aliases must be in one of them; empty accepts any domain.
+    public string UserMailDomains { get; set; } = "";
+    // Who may grant a service, on the model of a role's grantable_by: comma-
+    // separated "service:role" pairs, one per role that may add or remove that
+    // service on a user ("mail:mail_admin,mail:helpdesk,gitea:dev_lead"). A
+    // global admin may grant anything; anyone else, only the services a role
+    // they hold is listed for. A service with no pair is global-admin only.
+    public string UserServiceGranters { get; set; } = "";
+
+    public string[] ParseUserServices() => SplitList(UserServices).Select(x => x.ToLowerInvariant()).ToArray();
+    public string[] ParseUserMailDomains() => SplitList(UserMailDomains).Select(x => x.ToLowerInvariant()).ToArray();
+
+    // service -> the roles that may grant it. Pairs that are not "service:role"
+    // are returned in `invalid` for the validator.
+    public Dictionary<string, HashSet<string>> ParseUserServiceGranters(out string[] invalid)
+    {
+        var map = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
+        var bad = new List<string>();
+        foreach (var pair in SplitList(UserServiceGranters))
+        {
+            var colon = pair.IndexOf(':');
+            var service = colon > 0 ? pair[..colon].Trim().ToLowerInvariant() : "";
+            var role = colon > 0 ? pair[(colon + 1)..].Trim() : "";
+            if (service.Length == 0 || role.Length == 0 || role.Contains(':'))
+            {
+                bad.Add(pair);
+                continue;
+            }
+            if (!map.TryGetValue(service, out var roles)) map[service] = roles = new(StringComparer.Ordinal);
+            roles.Add(role);
+        }
+        invalid = bad.ToArray();
+        return map;
+    }
+
+    // ---- LDAP directory face (Ldap/) ----
+    // A read-only LDAPv3 listener that serves the users table as a directory, so
+    // mail servers, Gitea and Dex can search and bind against dmart directly.
+    // 0 (the default) leaves it off. Plain LDAP, with StartTLS once a
+    // certificate is configured; LdapsPort adds an implicit-TLS listener.
+    public int LdapPort { get; set; }
+    public string LdapHost { get; set; } = "127.0.0.1";
+    // LDAPS (TLS from the first byte, conventionally 636) on LdapHost. 0 = off.
+    // Needs LdapTlsCertFile and LdapTlsKeyFile.
+    public int LdapsPort { get; set; }
+    // PEM certificate (the full chain, leaf first) and its PEM private key. With
+    // them set, the plain port also offers StartTLS, and a password bind over a
+    // connection that is still cleartext is refused unless the peer is in
+    // LdapTrustedPeers. Both files are re-read when they change on disk, so an
+    // ACME renewal needs no restart.
+    public string LdapTlsCertFile { get; set; } = "";
+    public string LdapTlsKeyFile { get; set; } = "";
+    // Addresses or CIDR ranges of this deployment's own directory clients:
+    // Dovecot, Postfix, Gitea, Dex. They bind on behalf of every user from one
+    // address, so they are exempt from the per-address failed-bind limit (which
+    // would otherwise be a global one), and once TLS is configured they may still
+    // bind over cleartext (loopback, or a WireGuard link that encrypts already).
+    // Empty trusts nobody.
+    public string LdapTrustedPeers { get; set; } = "127.0.0.0/8,::1";
+    // Users are served as uid=<shortname>,ou=people,<base>; groups as
+    // cn=<group>,ou=groups,<base>; service accounts as cn=<name>,ou=services,<base>.
+    public string LdapBaseDn { get; set; } = "dc=dmart";
+    // Comma-separated dmart user shortnames that may bind as
+    // cn=<name>,ou=services,<base> and read the whole directory (Dex, Postfix,
+    // Gitea...). Every other bind sees only its own entry. Each must be a bot,
+    // binds only from LdapTrustedPeers, and never as uid=<name>,ou=people.
+    public string LdapServiceAccounts { get; set; } = "";
+    // Comma-separated objectClass values added to every user entry, for
+    // consumers whose filters name a site schema (e.g. "freexPerson,freexUser").
+    public string LdapExtraUserObjectClasses { get; set; } = "";
+    // Most entries one unpaged search returns (slapd's default is also 500).
+    // Paged searches (RFC 2696) are not capped by it.
+    public int LdapSizeLimit { get; set; } = 500;
+    // Most rows one request may examine when its filter names no indexed
+    // attribute (uid, mail, mailAlias, mobile, authorizedService). An unpaged
+    // search past it ends with adminLimitExceeded; a paged one sends a short
+    // page and resumes on the next request, so a full listing still completes.
+    public int LdapMaxScan { get; set; } = 100_000;
+
+    // ---- Directory replication (docs/directory-replica.md) ----
+    // On a PRIMARY: comma-separated bot shortnames that may read
+    // /managed/directory-feed, which hands out every user's password hash so a
+    // replica can answer binds on its own. Empty (the default) turns the feed
+    // off.
+    public string DirectoryFeedReaders { get; set; } = "";
+    // On a REPLICA: the primary's base URL (e.g. "http://10.77.0.2:8282", over
+    // WireGuard, or an https URL). Set, this instance keeps its users and
+    // groups in step with the primary's and serves them over LDAP, answering
+    // `unavailable` until its first sync completes. Empty: not a replica.
+    public string DirectoryReplicaOf { get; set; } = "";
+    // The bot account the replica signs in to the primary as; it must be
+    // listed in the primary's DirectoryFeedReaders.
+    public string DirectoryReplicaShortname { get; set; } = "";
+    public string DirectoryReplicaPassword { get; set; } = "";
+    // Seconds between polls of the primary.
+    public int DirectoryReplicaIntervalSeconds { get; set; } = 30;
+    // Hours a replica keeps answering binds after its last successful sync.
+    // Past it, binds answer `unavailable` (its copy may still hold a password
+    // the primary has changed) while lookups keep answering, so mail still
+    // flows. 0: no limit.
+    public int DirectoryReplicaMaxStalenessHours { get; set; } = 24;
+
+    public string[] ParseDirectoryFeedReaders() => SplitList(DirectoryFeedReaders);
+
+    // ---- OpenID Connect provider (docs/oidc-provider.md) ----
+    // The issuer: the public base URL relying parties reach this dmart at,
+    // exactly as they will compare it (e.g. "https://id.example.com"). Set, it
+    // serves discovery at <issuer>/.well-known/openid-configuration and the
+    // provider under <issuer>/oidc/. Empty (the default) turns it off.
+    public string OidcIssuer { get; set; } = "";
+    // PEM file holding the RSA key that signs ID and access tokens. Created
+    // (0600) on first start when missing. Losing it invalidates every token in
+    // flight; keep it with the database backups.
+    public string OidcSigningKeyFile { get; set; } = "";
+    // JSON file listing the relying parties (docs/oidc-provider.md has the
+    // format). Re-read when it changes on disk.
+    public string OidcClientsFile { get; set; } = "";
+    // Lifetime of ID and access tokens, in seconds.
+    public int OidcTokenSeconds { get; set; } = 3600;
+    public bool OidcEnabled => OidcIssuer.Length > 0;
+    public bool IsDirectoryReplica => DirectoryReplicaOf.Length > 0;
+
+    public string[] ParseLdapServiceAccounts() => SplitList(LdapServiceAccounts);
+    public string[] ParseLdapExtraUserObjectClasses() => SplitList(LdapExtraUserObjectClasses);
+    public bool LdapTlsConfigured => LdapTlsCertFile.Length > 0 && LdapTlsKeyFile.Length > 0;
+
+    // LdapTrustedPeers as networks; a bare address is its own /32 or /128.
+    // Entries that do not parse are returned in `invalid` for the validator,
+    // which refuses to start rather than silently trusting less than was meant.
+    public System.Net.IPNetwork[] ParseLdapTrustedPeers(out string[] invalid)
+    {
+        var networks = new List<System.Net.IPNetwork>();
+        var bad = new List<string>();
+        foreach (var raw in SplitList(LdapTrustedPeers))
+        {
+            if (raw.Contains('/') ? System.Net.IPNetwork.TryParse(raw, out var net)
+                : System.Net.IPAddress.TryParse(raw, out var ip) && TryHost(ip, out net))
+                networks.Add(net);
+            else
+                bad.Add(raw);
+        }
+        invalid = bad.ToArray();
+        return networks.ToArray();
+
+        static bool TryHost(System.Net.IPAddress ip, out System.Net.IPNetwork net)
+        {
+            net = new System.Net.IPNetwork(ip, ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork ? 32 : 128);
+            return true;
+        }
+    }
+
+    private static string[] SplitList(string? raw)
+        => (raw ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
     // Bad password/OTP attempts before an account is locked. The lock is the
     // counter alone — it leaves is_active set (that means admin deactivation) and
     // leaves live sessions running, so it blocks new logins and refreshes rather
@@ -274,7 +433,8 @@ public sealed class DmartSettings
     // window. Complements MaxFailedLoginAttempts (per-account) by stopping
     // username enumeration across many shortnames from one host. Bump for
     // legitimate batch clients; lower for stricter posture. Overshoot rejects
-    // immediately with HTTP 429 (no queue).
+    // immediately with HTTP 429 (no queue). The LDAP face allows the same
+    // number of FAILED binds per address (Ldap/LdapBindGuard).
     public int AuthRateLimitPerMinute { get; set; } = 10;
 
     // Per-IP cap on ALL /public calls in a 60-second window. 0 disables it.

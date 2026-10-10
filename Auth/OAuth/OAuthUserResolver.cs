@@ -150,7 +150,10 @@ public sealed class OAuthUserResolver(
             if (!ReferenceEquals(updated, user)) dirty = true;
         }
 
-        if (!string.IsNullOrEmpty(info.Email) && info.Email != user.Email)
+        // Not an address another account holds as its hosted mailbox or
+        // alias: the stored contact email stays instead.
+        if (!string.IsNullOrEmpty(info.Email) && info.Email != user.Email
+            && !await users.IsAnotherUsersAddressAsync(info.Email, user.Shortname, ct))
         {
             updated = updated with { Email = info.Email, IsEmailVerified = true };
             dirty = true;

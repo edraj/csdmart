@@ -396,6 +396,9 @@ public interface ISqlDialect
     /// <summary>Number of elements in a string-array column; 0 when absent.</summary>
     string ArrayLength(string column);
 
+    /// <summary>Number of elements in a JSON-array column; 0 when it holds anything else.</summary>
+    string JsonArrayLength(string column);
+
     /// <summary>
     /// Renders a bound value as a timestamp comparable against a timestamp column.
     /// </summary>

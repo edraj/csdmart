@@ -55,6 +55,17 @@ public sealed record User
     [JsonIgnore]
     public List<string> QueryPolicies { get; set; } = new();
 
+    // ----- Directory fields (docs/user-directory-fields.md) -----
+    // The address this deployment HOSTS for the user. Not `Email`: that is the
+    // verified contact address (OTP, resets), often hosted elsewhere entirely.
+    public string? Mailbox { get; init; }
+    // Further addresses delivered to the mailbox.
+    public List<string> MailAliases { get; set; } = new();
+    // Services the user may use (mail, matrix, gitea...). Not groups: a group
+    // is team structure and permission delegation, and granting mail should
+    // not be a side effect of joining a team.
+    public List<string> Services { get; set; } = new();
+
     // Soft-delete state. Irreversible once set — see UserService.DeleteUserAsync.
     // A soft-deleted row keeps its shortname/uuid (so entries.owner_shortname etc.
     // keep resolving) but has Email/Msisdn/Password cleared.

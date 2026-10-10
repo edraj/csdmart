@@ -91,6 +91,12 @@ public static class SqlSchema
         is_deleted              BOOLEAN NOT NULL DEFAULT FALSE,
         deleted_at              TIMESTAMP,
 
+        -- Directory fields (docs/user-directory-fields.md). Indexed through
+        -- user_addresses / user_services below, not here.
+        mailbox                 TEXT,
+        mail_aliases            JSONB NOT NULL DEFAULT '[]'::jsonb,
+        services                JSONB NOT NULL DEFAULT '[]'::jsonb,
+
         UNIQUE (shortname, space_name, subpath)
     );
 
@@ -332,6 +338,39 @@ public static class SqlSchema
     -- a trigger: `dmart import --fast` sets session_replication_role='replica',
     -- which bypasses triggers — so a trigger-based tombstone would be silently
     -- skipped during exactly the bulk operations that move the most rows.
+    -- ============================================================
+    -- USER DIRECTORY INDEXES  (docs/user-directory-fields.md)
+    -- ============================================================
+    -- Derived from users.mailbox / mail_aliases / services, and maintained by
+    -- UserRepository IN THE SAME TRANSACTION as every user write — in code,
+    -- not triggers, because `import --fast` disables triggers (see
+    -- Tombstones). Tables rather than indexes on the JSON arrays because
+    -- uniqueness ACROSS ROWS of array elements is not expressible as an index:
+    -- a GIN index finds an alias fast but cannot stop two users holding it.
+    -- The deferred foreign keys turn a write path that forgets these rows into
+    -- a commit-time error instead of a silent orphan.
+    -- The foreign keys are NAMED because the bulk rebuild drops and re-adds
+    -- them (UserRepository.RebuildDirectoryIndexIfEmptyAsync).
+    CREATE TABLE IF NOT EXISTS user_addresses (
+        address    TEXT PRIMARY KEY,               -- lowercased
+        shortname  TEXT NOT NULL,
+        kind       TEXT NOT NULL CHECK (kind IN ('mailbox', 'alias')),
+        CONSTRAINT user_addresses_shortname_fkey FOREIGN KEY (shortname)
+            REFERENCES users(shortname) DEFERRABLE INITIALLY DEFERRED
+    );
+    CREATE INDEX IF NOT EXISTS idx_user_addresses_shortname ON user_addresses (shortname);
+
+    CREATE TABLE IF NOT EXISTS user_services (
+        service    TEXT NOT NULL,
+        shortname  TEXT NOT NULL,
+        -- (service, shortname): a service's members come out in shortname
+        -- order, which is what a keyset-paged LDAP listing reads.
+        PRIMARY KEY (service, shortname),
+        CONSTRAINT user_services_shortname_fkey FOREIGN KEY (shortname)
+            REFERENCES users(shortname) DEFERRABLE INITIALLY DEFERRED
+    );
+    CREATE INDEX IF NOT EXISTS idx_user_services_shortname ON user_services (shortname);
+
     CREATE TABLE IF NOT EXISTS deletions (
         id             BIGSERIAL PRIMARY KEY,
         table_name     TEXT NOT NULL,
@@ -363,6 +402,16 @@ public static class SqlSchema
         floor_at  TIMESTAMP NOT NULL
     );
 
+    -- A directory replica's watermark in its primary's feed (Services/
+    -- DirectoryReplica). One row, absent on anything that is not a replica.
+    -- synced_at is the replica's own clock at that sync: how stale its copy
+    -- is, which survives a restart while the primary is unreachable.
+    CREATE TABLE IF NOT EXISTS directory_replica_state (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        watermark TIMESTAMP,
+        synced_at TIMESTAMP
+    );
+
     -- ============================================================
     -- INCREMENTAL SCAN INDEXES  (§5.1)
     -- ============================================================
@@ -370,6 +419,8 @@ public static class SqlSchema
     -- of these columns was indexed, so that scan was a seq scan on every table
     -- it touched — a prerequisite for the feature, not an optimization.
     CREATE INDEX IF NOT EXISTS idx_entries_updated_at ON entries (updated_at);
+    -- The directory feed's changes walk: (updated_at, shortname) keyset.
+    CREATE INDEX IF NOT EXISTS idx_users_updated_at ON users (updated_at, shortname);
     CREATE INDEX IF NOT EXISTS idx_attachments_updated_at ON attachments (updated_at);
     -- histories is append-only, so its `timestamp` is the equivalent column.
     -- idx_histories_lookup leads with space_name and cannot serve a scan keyed
@@ -610,6 +661,29 @@ public static class SqlSchema
     ALTER TABLE users       ADD COLUMN IF NOT EXISTS query_policies        TEXT[] NOT NULL DEFAULT '{}';
     ALTER TABLE users       ADD COLUMN IF NOT EXISTS is_deleted            BOOLEAN NOT NULL DEFAULT FALSE;
     ALTER TABLE users       ADD COLUMN IF NOT EXISTS deleted_at            TIMESTAMP;
+    ALTER TABLE users       ADD COLUMN IF NOT EXISTS mailbox               TEXT;
+    ALTER TABLE users       ADD COLUMN IF NOT EXISTS mail_aliases          JSONB NOT NULL DEFAULT '[]'::jsonb;
+    ALTER TABLE users       ADD COLUMN IF NOT EXISTS services              JSONB NOT NULL DEFAULT '[]'::jsonb;
+    -- @services: and @mail_aliases: in the search grammar; the LDAP face and
+    -- the uniqueness rules use user_services / user_addresses instead. AFTER
+    -- the columns above: on a database from before them, an index created
+    -- earlier in this script fails, and with it the whole script, which runs
+    -- as one transaction.
+    CREATE INDEX IF NOT EXISTS idx_users_services_gin
+        ON users USING GIN (services jsonb_path_ops);
+    CREATE INDEX IF NOT EXISTS idx_users_mail_aliases_gin
+        ON users USING GIN (mail_aliases jsonb_path_ops);
+    -- The directory's keyset walks (the LDAP face's unanchored searches, the
+    -- replica feed's full walk) order shortnames bytewise, as SQLite does, so
+    -- a replica on one engine and its primary on the other agree on which
+    -- names lie between two others. The primary key's index follows the
+    -- database collation, where 'Bob' sorts between 'alice' and 'carol'.
+    CREATE INDEX IF NOT EXISTS idx_users_shortname_bytes
+        ON users ((shortname COLLATE "C"));
+    -- LDAP's uid is case-insensitive: `uid=Alice` must find 'alice'
+    -- (UserRepository.GetByShortnameIgnoringCaseAsync).
+    CREATE INDEX IF NOT EXISTS idx_users_shortname_lower
+        ON users (lower(shortname));
     ALTER TABLE roles       ADD COLUMN IF NOT EXISTS last_checksum_history TEXT;
     ALTER TABLE roles       ADD COLUMN IF NOT EXISTS grantable_by          JSONB;
     ALTER TABLE roles       ADD COLUMN IF NOT EXISTS query_policies        TEXT[] NOT NULL DEFAULT '{}';

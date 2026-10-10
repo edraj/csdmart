@@ -195,6 +195,18 @@ public static class OtpHandler
                 var lower = EmailDest(req.Email!)!;
                 user = await users.GetByEmailAsync(lower, ct);
                 dest = lower;
+                // A reset may name the account by its hosted mailbox, the
+                // address its owner signs in to mail with. That mailbox is the
+                // account being recovered, so the code goes where a shortname
+                // reset sends it: the msisdn, else the contact email. Never to
+                // the mailbox itself, and reset only (see
+                // UserService.ResolveUserAsync for why not login).
+                if (user is null && purpose == OtpPurpose.Reset
+                    && await users.GetByAddressAsync(lower, "mailbox", ct) is { } owner)
+                {
+                    user = owner;
+                    dest = !string.IsNullOrEmpty(owner.Msisdn) ? owner.Msisdn : EmailDest(owner.Email);
+                }
             }
 
             // login and reset require an existing, usable account;
@@ -321,12 +333,19 @@ public static class OtpHandler
 
             // Resolve user via the typed identifier the caller supplied.
             Models.Core.User? user;
+            var byMailbox = false;
             if (!string.IsNullOrEmpty(req.Shortname))
                 user = await users.GetByShortnameAsync(req.Shortname, ct);
             else if (!string.IsNullOrEmpty(req.Msisdn))
                 user = await users.GetByMsisdnAsync(req.Msisdn, ct);
             else
+            {
                 user = await users.GetByEmailAsync(EmailDest(req.Email!)!, ct);
+                // The hosted-mailbox reset /otp-request accepts; the code went
+                // where a shortname reset's goes.
+                if (user is null && await users.GetByAddressAsync(EmailDest(req.Email!)!, "mailbox", ct) is { } owner)
+                    (user, byMailbox) = (owner, true);
+            }
 
             if (user is null)
                 return Response.Fail(InternalErrorCode.OTP_INVALID,
@@ -350,7 +369,7 @@ public static class OtpHandler
             //   msisdn-direct or shortname-with-msisdn → user.Msisdn
             //   shortname-only no msisdn → user.Email
             string? dest = null;
-            if (!string.IsNullOrEmpty(req.Email))
+            if (!string.IsNullOrEmpty(req.Email) && !byMailbox)
             {
                 if (!string.IsNullOrEmpty(user.Email)
                     && string.Equals(user.Email, req.Email, StringComparison.OrdinalIgnoreCase))
@@ -360,7 +379,7 @@ public static class OtpHandler
             {
                 dest = user.Msisdn;
             }
-            else if (!string.IsNullOrEmpty(req.Shortname)
+            else if ((!string.IsNullOrEmpty(req.Shortname) || byMailbox)
                      && !string.IsNullOrEmpty(user.Email))
             {
                 dest = EmailDest(user.Email);
@@ -488,8 +507,11 @@ public static class OtpHandler
                 var collision = isEmail
                     ? await users.GetByEmailAsync(dest, ct)
                     : await users.GetByMsisdnAsync(dest, ct);
-                if (collision is not null
-                    && !string.Equals(collision.Shortname, user.Shortname, StringComparison.Ordinal))
+                // An email that is another account's hosted mailbox or alias is
+                // taken too (UserRepository.IsAnotherUsersAddressAsync).
+                if ((collision is not null
+                     && !string.Equals(collision.Shortname, user.Shortname, StringComparison.Ordinal))
+                    || (isEmail && await users.IsAnotherUsersAddressAsync(dest, user.Shortname, ct)))
                     return Response.Fail(InternalErrorCode.DATA_SHOULD_BE_UNIQUE,
                         $"Entry properties should be unique: @{(isEmail ? "email" : "msisdn")}:{dest} ",
                         ErrorTypes.Request);

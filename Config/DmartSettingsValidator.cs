@@ -16,6 +16,88 @@ internal sealed class DmartSettingsValidator : IValidateOptions<DmartSettings>
         if (s.ListeningPort is < 1 or > 65535)
             failures.Add($"ListeningPort must be 1-65535 (got {s.ListeningPort})");
 
+        // The LDAP face is off at port 0; once on, every knob it reads must be
+        // usable, because it binds a socket at startup and has nobody to report
+        // a bad value to afterwards.
+        if (s.LdapPort is < 0 or > 65535)
+            failures.Add($"LdapPort must be 0 (off) or 1-65535 (got {s.LdapPort})");
+        if (s.LdapsPort is < 0 or > 65535)
+            failures.Add($"LdapsPort must be 0 (off) or 1-65535 (got {s.LdapsPort})");
+        if (s.LdapPort > 0 || s.LdapsPort > 0)
+        {
+            if (!System.Net.IPAddress.TryParse(s.LdapHost, out _))
+                failures.Add($"LdapHost must be an IP address (got '{s.LdapHost}')");
+            if (Dmart.Ldap.LdapDn.Normalize(s.LdapBaseDn) is not { Length: > 0 })
+                failures.Add($"LdapBaseDn is not a usable DN (got '{s.LdapBaseDn}')");
+            if (s.LdapSizeLimit <= 0)
+                failures.Add($"LdapSizeLimit must be > 0 (got {s.LdapSizeLimit})");
+            if (s.LdapMaxScan <= 0)
+                failures.Add($"LdapMaxScan must be > 0 (got {s.LdapMaxScan})");
+            if (s.LdapsPort > 0 && s.LdapsPort == s.LdapPort)
+                failures.Add($"LdapsPort and LdapPort must differ (both {s.LdapPort})");
+            if (s.LdapsPort > 0 && !s.LdapTlsConfigured)
+                failures.Add("LdapsPort needs LdapTlsCertFile and LdapTlsKeyFile");
+            if ((s.LdapTlsCertFile.Length > 0) != (s.LdapTlsKeyFile.Length > 0))
+                failures.Add("LdapTlsCertFile and LdapTlsKeyFile must be set together");
+            foreach (var (setting, path) in new[] { ("LdapTlsCertFile", s.LdapTlsCertFile), ("LdapTlsKeyFile", s.LdapTlsKeyFile) })
+                if (path.Length > 0 && !File.Exists(path))
+                    failures.Add($"{setting} '{path}' does not exist");
+            s.ParseLdapTrustedPeers(out var badPeers);
+            if (badPeers.Length > 0)
+                failures.Add($"LdapTrustedPeers has entries that are not an address or CIDR range: {string.Join(", ", badPeers)}");
+        }
+
+        // The OIDC provider signs with a key it may have to create, and serves
+        // clients from a file: both paths must be usable before it starts.
+        if (s.OidcEnabled)
+        {
+            if (!Uri.TryCreate(s.OidcIssuer, UriKind.Absolute, out var issuer)
+                || issuer.Scheme is not ("https" or "http")
+                || !string.IsNullOrEmpty(issuer.Query) || !string.IsNullOrEmpty(issuer.Fragment))
+                failures.Add($"OidcIssuer must be an absolute http(s) URL without query or fragment (got '{s.OidcIssuer}')");
+            else if (issuer.Scheme == "http" && !issuer.IsLoopback)
+                failures.Add("OidcIssuer must be https unless it is a loopback address: relying parties send it codes and secrets");
+            if (s.OidcSigningKeyFile.Length == 0)
+                failures.Add("OidcIssuer needs OidcSigningKeyFile (it is created on first start if missing)");
+            else if (Path.GetDirectoryName(Path.GetFullPath(s.OidcSigningKeyFile)) is { } keyDir && !Directory.Exists(keyDir))
+                failures.Add($"OidcSigningKeyFile's directory '{keyDir}' does not exist");
+            if (s.OidcClientsFile.Length == 0 || !File.Exists(s.OidcClientsFile))
+                failures.Add($"OidcIssuer needs OidcClientsFile to name an existing file (got '{s.OidcClientsFile}')");
+            if (s.OidcTokenSeconds is < 60 or > 86400)
+                failures.Add($"OidcTokenSeconds must be 60-86400 (got {s.OidcTokenSeconds})");
+        }
+
+        // A replica polls its primary from startup on; a URL or credential it
+        // cannot use would only surface as a warning in the log, while LDAP
+        // answers `unavailable` forever.
+        if (s.IsDirectoryReplica)
+        {
+            if (!Uri.TryCreate(s.DirectoryReplicaOf, UriKind.Absolute, out var primary)
+                || primary.Scheme is not ("http" or "https"))
+                failures.Add($"DirectoryReplicaOf must be an absolute http(s) URL (got '{s.DirectoryReplicaOf}')");
+            if (s.DirectoryReplicaShortname.Length == 0 || s.DirectoryReplicaPassword.Length == 0)
+                failures.Add("DirectoryReplicaOf needs DirectoryReplicaShortname and DirectoryReplicaPassword");
+            if (s.DirectoryReplicaIntervalSeconds < 1)
+                failures.Add($"DirectoryReplicaIntervalSeconds must be >= 1 (got {s.DirectoryReplicaIntervalSeconds})");
+        }
+
+        // Directory fields: a service name the write path would reject can
+        // never be granted, so a typo here should stop startup instead.
+        var offered = s.ParseUserServices();
+        var badServices = offered.Where(x => !Dmart.Utils.DirectoryFields.IsValidService(x)).ToArray();
+        if (badServices.Length > 0)
+            failures.Add($"UserServices has names that are not lowercase slugs: {string.Join(", ", badServices)}");
+        var granters = s.ParseUserServiceGranters(out var badPairs);
+        if (badPairs.Length > 0)
+            failures.Add($"UserServiceGranters entries must be service:role pairs (got {string.Join(", ", badPairs)})");
+        foreach (var service in granters.Keys)
+        {
+            if (!Dmart.Utils.DirectoryFields.IsValidService(service))
+                failures.Add($"UserServiceGranters names '{service}', which is not a valid service name");
+            else if (offered.Length > 0 && !offered.Contains(service, StringComparer.Ordinal))
+                failures.Add($"UserServiceGranters names '{service}', which is not in UserServices");
+        }
+
         // Fail on an unrecognized driver rather than defaulting. A typo'd
         // DATABASE_DRIVER that silently ran on PostgreSQL would only surface
         // as "why is my SQLite file empty" long after deployment.

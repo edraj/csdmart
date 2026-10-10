@@ -101,6 +101,12 @@ public static class SqliteSchema
         is_deleted              INTEGER NOT NULL DEFAULT 0,
         deleted_at              TEXT,
 
+        -- Directory fields (docs/user-directory-fields.md). Indexed through
+        -- user_addresses / user_services below, not here.
+        mailbox                 TEXT,
+        mail_aliases            TEXT NOT NULL DEFAULT '[]',
+        services                TEXT NOT NULL DEFAULT '[]',
+
         UNIQUE (shortname, space_name, subpath)
     );
 
@@ -360,6 +366,25 @@ public static class SqliteSchema
     -- ============================================================
     -- See SqlSchema for why these are written in code rather than by a trigger.
     -- INTEGER PRIMARY KEY is SQLite's rowid alias, which is its BIGSERIAL.
+    -- User directory indexes — see the PostgreSQL schema for why these are
+    -- tables maintained in code. SQLite has no JSON index at all, so without
+    -- them every alias lookup and service listing here is a full scan.
+    -- WITHOUT ROWID: the primary key is the only access path, so storing the
+    -- rows in it saves the rowid indirection on every lookup.
+    CREATE TABLE IF NOT EXISTS user_addresses (
+        address    TEXT PRIMARY KEY,
+        shortname  TEXT NOT NULL REFERENCES users(shortname) DEFERRABLE INITIALLY DEFERRED,
+        kind       TEXT NOT NULL CHECK (kind IN ('mailbox', 'alias'))
+    ) WITHOUT ROWID;
+    CREATE INDEX IF NOT EXISTS idx_user_addresses_shortname ON user_addresses (shortname);
+
+    CREATE TABLE IF NOT EXISTS user_services (
+        service    TEXT NOT NULL,
+        shortname  TEXT NOT NULL REFERENCES users(shortname) DEFERRABLE INITIALLY DEFERRED,
+        PRIMARY KEY (service, shortname)
+    ) WITHOUT ROWID;
+    CREATE INDEX IF NOT EXISTS idx_user_services_shortname ON user_services (shortname);
+
     CREATE TABLE IF NOT EXISTS deletions (
         id             INTEGER PRIMARY KEY AUTOINCREMENT,
         table_name     TEXT NOT NULL,
@@ -390,6 +415,12 @@ public static class SqliteSchema
         floor_at  TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS directory_replica_state (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        watermark TEXT,
+        synced_at TEXT
+    );
+
     -- ============================================================
     -- INCREMENTAL SCAN INDEXES  (§5.1)
     -- ============================================================
@@ -397,6 +428,7 @@ public static class SqliteSchema
     -- of these columns was indexed, so that scan was a seq scan on every table
     -- it touched — a prerequisite for the feature, not an optimization.
     CREATE INDEX IF NOT EXISTS idx_entries_updated_at ON entries (updated_at);
+    CREATE INDEX IF NOT EXISTS idx_users_updated_at ON users (updated_at, shortname);
     CREATE INDEX IF NOT EXISTS idx_attachments_updated_at ON attachments (updated_at);
     -- histories is append-only, so its `timestamp` is the equivalent column.
     -- idx_histories_lookup leads with space_name and cannot serve a scan keyed
@@ -520,6 +552,8 @@ public static class SqliteSchema
     -- block index creation on databases with several such rows.
     CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_lower_unique
         ON users (lower(email)) WHERE email IS NOT NULL AND email <> '';
+    -- LDAP's uid is case-insensitive (UserRepository.GetByShortnameIgnoringCaseAsync).
+    CREATE INDEX IF NOT EXISTS idx_users_shortname_lower ON users (lower(shortname));
     CREATE UNIQUE INDEX IF NOT EXISTS idx_users_msisdn_unique
         ON users (msisdn) WHERE msisdn IS NOT NULL AND msisdn <> '';
     CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_id
@@ -601,6 +635,9 @@ public static class SqliteSchema
         ("users", "last_checksum_history", "TEXT"),
         ("users", "is_deleted", "INTEGER NOT NULL DEFAULT 0"),
         ("users", "deleted_at", "TEXT"),
+        ("users", "mailbox", "TEXT"),
+        ("users", "mail_aliases", "TEXT NOT NULL DEFAULT '[]'"),
+        ("users", "services", "TEXT NOT NULL DEFAULT '[]'"),
         ("roles", "last_checksum_history", "TEXT"),
         ("roles", "grantable_by", "TEXT"),
         ("permissions", "last_checksum_history", "TEXT"),

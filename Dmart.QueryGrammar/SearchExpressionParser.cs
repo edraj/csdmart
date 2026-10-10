@@ -286,8 +286,15 @@ public static class SearchExpressionParser
     private static readonly Regex RangeRegex = new(@"^\[(.+?)[\s,](.+?)\]$",
         RegexOptions.Compiled, matchTimeout: TimeSpan.FromMilliseconds(RegexTimeoutMs));
 
+    // services and mail_aliases are the users table's directory fields
+    // (docs/user-directory-fields.md), searched like roles and groups.
     private static readonly HashSet<string> JsonbArrayColumns = new(StringComparer.Ordinal)
-        { "tags", "roles", "groups" };
+        { "tags", "roles", "groups", "services", "mail_aliases" };
+
+    // Directory fields stored folded to lowercase; a search folds its values
+    // the same way, so @mailbox:Alice@Example.org finds alice@example.org.
+    private static readonly HashSet<string> FoldedColumns = new(StringComparer.Ordinal)
+        { "mailbox", "mail_aliases", "services" };
 
     private static readonly HashSet<string> TextArrayColumns = new(StringComparer.Ordinal)
         { "query_policies" };
@@ -691,6 +698,8 @@ public static class SearchExpressionParser
     private static string? BuildSearchFieldSql(string field, SearchField data, ParamCtx ctx)
     {
         if (data.Values.Count == 0) return null;
+        if (FoldedColumns.Contains(field))
+            data.Values = data.Values.ConvertAll(v => v.ToLowerInvariant());
 
         // Existence check: @k:* → IS NOT NULL,  -@k:* → IS NULL
         if (data.Values.Count == 1 && data.Values[0] == "*" && !data.IsRange)
@@ -705,6 +714,14 @@ public static class SearchExpressionParser
             if (TextArrayColumns.Contains(field))
             {
                 var lengthExpr = ctx.Dialect.ArrayLength(field);
+                return data.Negative ? $"{lengthExpr} = 0" : $"{lengthExpr} > 0";
+            }
+            // The directory fields are NOT NULL with '[]' for "none", so
+            // existence means "holds at least one": @services:* is the users
+            // with any service, not every user.
+            if (field is "services" or "mail_aliases")
+            {
+                var lengthExpr = ctx.Dialect.JsonArrayLength(field);
                 return data.Negative ? $"{lengthExpr} = 0" : $"{lengthExpr} > 0";
             }
             return $"{field} {nullCheck}";

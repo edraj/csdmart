@@ -177,6 +177,18 @@ public sealed class PasswordHasher
     /// <exception cref="PasswordHashingCapacityException">The budget stayed saturated past the queue timeout.</exception>
     public async Task<bool> VerifyAsync(string password, string encoded, CancellationToken ct = default)
     {
+        // An LDAP {SHA*} hash from `dmart import-ldif` (LegacyLdapHash): a
+        // microsecond of SHA, then an Argon2 at the configured cost on filler,
+        // so an imported account that has not signed in since is not told
+        // apart from every other account by how fast a wrong password fails.
+        if (LegacyLdapHash.IsSha(encoded))
+        {
+            var ok = LegacyLdapHash.Verify(password, encoded);
+            using var burn = await AcquireAsync(_memoryKb, ct);
+            _ = ComputeArgon2id(EmptyPasswordFiller, LegacyFillerSalt, _memoryKb, _iterations, _parallelism, 32);
+            return ok;
+        }
+        encoded = StripArgon2Prefix(encoded);
         if (!TryParse(encoded, out var m, out var t, out var p, out var salt, out var expected))
             return false;   // malformed hash: no work to budget for
 
@@ -207,6 +219,14 @@ public sealed class PasswordHasher
     private static void BurnEmptyPassword(byte[] salt, int m, int t, int p, int outputLength)
         => _ = ComputeArgon2id(EmptyPasswordFiller, salt, m, t, p, outputLength);
 
+    private static readonly byte[] LegacyFillerSalt = Encoding.ASCII.GetBytes("dmart-legacy-ldap");
+
+    // OpenLDAP's argon2 module stores "{ARGON2}$argon2id$...": the PHC string
+    // dmart itself writes, behind a scheme prefix.
+    private static string StripArgon2Prefix(string encoded)
+        => encoded.StartsWith(LegacyLdapHash.Argon2Prefix, StringComparison.OrdinalIgnoreCase)
+            ? encoded[LegacyLdapHash.Argon2Prefix.Length..] : encoded;
+
     /// <summary>Synchronous hash. Test and CLI paths only — see HashAsync.</summary>
     internal string Hash(string password) => HashWith(password, _memoryKb, _iterations, _parallelism);
 
@@ -220,6 +240,8 @@ public sealed class PasswordHasher
         Justification = "Instance method for API symmetry with VerifyAsync/Hash; see comment above.")]
     internal bool Verify(string password, string encoded)
     {
+        if (LegacyLdapHash.IsSha(encoded)) return LegacyLdapHash.Verify(password, encoded);
+        encoded = StripArgon2Prefix(encoded);
         if (!TryParse(encoded, out var m, out var t, out var p, out var salt, out var expected))
             return false;
         if (password.Length == 0) { BurnEmptyPassword(salt, m, t, p, expected.Length); return false; }
@@ -238,8 +260,9 @@ public sealed class PasswordHasher
     /// would overwrite a hash that `Verify` also could not have matched.
     /// </remarks>
     public bool NeedsRehash(string encoded)
-        => TryParse(encoded, out var m, out var t, out var p, out _, out _)
-           && (m != _memoryKb || t != _iterations || p != _parallelism);
+        => LegacyLdapHash.IsLegacy(encoded)
+           || (TryParse(encoded, out var m, out var t, out var p, out _, out _)
+               && (m != _memoryKb || t != _iterations || p != _parallelism));
 
     // ========================================================================
     // BUDGET

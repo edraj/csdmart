@@ -242,4 +242,75 @@ public class SettingsValidatorTests
         s.DatabasePort = -1;
         new DmartSettingsValidator().Validate(null, s).Failed.ShouldBeTrue();
     }
+
+    // ---- LDAP face TLS and trusted peers ----
+
+    [Fact]
+    public void Ldaps_Without_A_Certificate_Fails()
+    {
+        var s = Valid();
+        s.LdapsPort = 6636;
+        var r = new DmartSettingsValidator().Validate(null, s);
+        r.Failed.ShouldBeTrue();
+        r.FailureMessage!.ShouldContain("LdapsPort needs LdapTlsCertFile and LdapTlsKeyFile");
+    }
+
+    [Fact]
+    public void A_Certificate_Without_A_Key_Or_A_Missing_File_Fails()
+    {
+        var s = Valid();
+        s.LdapPort = 3389;
+        s.LdapTlsCertFile = "/nonexistent/fullchain.pem";
+        var r = new DmartSettingsValidator().Validate(null, s);
+        r.Failed.ShouldBeTrue();
+        r.FailureMessage!.ShouldContain("must be set together");
+        r.FailureMessage!.ShouldContain("does not exist");
+    }
+
+    [Fact]
+    public void An_Unparseable_Trusted_Peer_Fails_Rather_Than_Being_Dropped()
+    {
+        var s = Valid();
+        s.LdapPort = 3389;
+        s.LdapTrustedPeers = "127.0.0.1, 10.77.0.0/16, ldap.example.com";
+        var r = new DmartSettingsValidator().Validate(null, s);
+        r.Failed.ShouldBeTrue();
+        r.FailureMessage!.ShouldContain("ldap.example.com");
+        r.FailureMessage!.ShouldNotContain("10.77.0.0/16");
+    }
+
+    // ---- directory fields: services and who may grant them ----
+
+    [Fact]
+    public void Service_Granters_Must_Be_Pairs_Naming_Offered_Services()
+    {
+        var s = Valid();
+        s.UserServices = "mail,gitea";
+        s.UserServiceGranters = "mail:mail_admin, gitea:dev_lead, matrix:ops, helpdesk, :x";
+        var r = new DmartSettingsValidator().Validate(null, s);
+        r.Failed.ShouldBeTrue();
+        r.FailureMessage!.ShouldContain("'matrix', which is not in UserServices");
+        r.FailureMessage!.ShouldContain("must be service:role pairs (got helpdesk, :x)");
+        r.FailureMessage!.ShouldNotContain("mail_admin");
+    }
+
+    [Fact]
+    public void Service_Granters_Parse_Into_Roles_Per_Service()
+    {
+        var map = new DmartSettings { UserServiceGranters = "Mail:mail_admin,mail:helpdesk,gitea:dev_lead" }
+            .ParseUserServiceGranters(out var invalid);
+        invalid.ShouldBeEmpty();
+        map["mail"].ShouldBe(new[] { "mail_admin", "helpdesk" }, ignoreOrder: true);
+        map["gitea"].ShouldBe(new[] { "dev_lead" });
+    }
+
+    [Fact]
+    public void An_Offered_Service_That_Is_Not_A_Slug_Fails()
+    {
+        var s = Valid();
+        s.UserServices = "mail,Web Mail";
+        var r = new DmartSettingsValidator().Validate(null, s);
+        r.Failed.ShouldBeTrue();
+        r.FailureMessage!.ShouldContain("web mail");
+    }
 }

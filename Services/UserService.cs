@@ -191,7 +191,8 @@ public sealed class UserService(
         // before OTP — we intentionally diverge to close the enumeration.) When
         // is_otp_for_create_required=false the OTP gate is a no-op, so the
         // surfaced DATA_SHOULD_BE_UNIQUE error is unchanged for that config.
-        if (!string.IsNullOrEmpty(email) && await users.GetByEmailAsync(email, ct) is not null)
+        if (!string.IsNullOrEmpty(email)
+            && (await users.GetByEmailAsync(email, ct) is not null || await users.IsAnotherUsersAddressAsync(email, null, ct)))
             return Result<(User, string, string)>.Fail(
                 InternalErrorCode.DATA_SHOULD_BE_UNIQUE,
                 $"Entry properties should be unique: @email:{email} ", ErrorTypes.Request);
@@ -329,7 +330,7 @@ public sealed class UserService(
     public async Task<Result<(string Access, string Refresh, User User, bool Created)>> LoginAsync(
         UserLoginRequest req, Dictionary<string, string>? requestHeaders = null, CancellationToken ct = default)
     {
-        var user = await ResolveUserAsync(req, ct);
+        var user = await ResolveUserAsync(req, ct, allowMailbox: true);
         if (user is null)
         {
             // Deliberate constant-work path — see DecoyHash. The body already
@@ -674,7 +675,10 @@ public sealed class UserService(
         // user (shortname > email > msisdn): a shortname login carries no
         // verification requirement even if the body also echoes an email/msisdn.
         if (!string.IsNullOrEmpty(req.Shortname)) return null;
-        if (!string.IsNullOrEmpty(req.Email) && !user.IsEmailVerified)
+        // An email that named the user's hosted mailbox rather than their
+        // contact email is no contact channel either, like a shortname.
+        if (!string.IsNullOrEmpty(req.Email) && !user.IsEmailVerified
+            && string.Equals(user.Email, req.Email.Trim(), StringComparison.OrdinalIgnoreCase))
             return Result<(string, string, User, bool)>.Fail(
                 InternalErrorCode.USER_ISNT_VERIFIED, "Email is not verified.", ErrorTypes.Auth);
         if (!string.IsNullOrEmpty(req.Msisdn) && !user.IsMsisdnVerified)
@@ -698,7 +702,7 @@ public sealed class UserService(
     // attempt-counter lock; a manually-deactivated / never-verified account
     // (attempt_count < max) is left to RejectIfNotActive and never auto-unlocks.
     private async Task<(Result<(string Access, string Refresh, User User, bool Created)>? Rejection, User User)>
-        RejectIfAttemptLockedAsync(User user, CancellationToken ct)
+        RejectIfAttemptLockedAsync(User user, CancellationToken ct, bool refreshCooldown = true)
     {
         // A bot authenticates from CI/MCP with a machine credential, and never
         // re-runs /user/login — so the cool-down below, which is what rescues a
@@ -724,7 +728,10 @@ public sealed class UserService(
         // Still locked → refresh the cool-down anchor (so ongoing attacks keep the
         // window from ever elapsing) and reject. Message is kept identical to the
         // fresh-lock path (generic — no remaining-time leak, no message drift).
-        await users.TouchLastFailedLoginAsync(user.Shortname, TimeUtils.Now(), ct);
+        // Not for an attempt known to be a stale saved password (an LDAP bind
+        // repeating a recent failure, refreshCooldown false): a device retrying
+        // it every few minutes would keep the account locked for good.
+        if (refreshCooldown) await users.TouchLastFailedLoginAsync(user.Shortname, TimeUtils.Now(), ct);
         return (Result<(string, string, User, bool)>.Fail(
             InternalErrorCode.USER_ACCOUNT_LOCKED,
             "Account has been locked due to too many failed login attempts.",
@@ -1079,14 +1086,21 @@ public sealed class UserService(
     /// </remarks>
     private async Task RehashIfNeededAsync(User user, string plaintext, CancellationToken ct)
     {
-        if (!settings.Value.PasswordRehashOnLogin) return;
+        // A directory replica's hashes are its primary's: one rewritten here
+        // would be put back by the next sync, and rewritten again by the next
+        // bind. The primary upgrades it on the owner's next sign-in there.
+        if (settings.Value.IsDirectoryReplica) return;
+        // A hash imported from LDAP is replaced whatever the setting says: it
+        // is a fast SHA, kept only until its owner's first sign-in.
+        if (!settings.Value.PasswordRehashOnLogin && !LegacyLdapHash.IsLegacy(user.Password)) return;
         if (string.IsNullOrEmpty(user.Password) || string.IsNullOrEmpty(plaintext)) return;
         if (!hasher.NeedsRehash(user.Password)) return;
 
         try
         {
             var upgraded = await hasher.HashAsync(plaintext, ct);
-            var rows = await users.UpdatePasswordHashOnlyAsync(user.Shortname, upgraded, ct);
+            var rows = await users.UpdatePasswordHashOnlyAsync(user.Shortname, upgraded, ct,
+                touchUpdatedAt: LegacyLdapHash.IsLegacy(user.Password));
             if (rows == 0)
             {
                 log.LogWarning("password rehash for {Shortname} matched no row — left as-is", user.Shortname);
@@ -1109,6 +1123,55 @@ public sealed class UserService(
         var user = await users.GetByShortnameAsync(shortname, ct);
         if (user is null || string.IsNullOrEmpty(user.Password)) return false;
         return await hasher.VerifyAsync(password, user.Password, ct);
+    }
+
+    // An LDAP simple bind (Ldap/LdapServer): the credential half of LoginAsync
+    // with none of its session half. Same lockout counter, same deactivation
+    // gate, same opportunistic rehash — but no session row, no JWT and no
+    // device or contact-verification checks, because a bind is a yes/no answer
+    // to a mail server or an IdP, not a login by a client app.
+    //
+    // Returns the user on success, null on any failure. The caller answers every
+    // null with the same invalidCredentials, so unlike LoginAsync this path can
+    // close the timing side of enumeration completely: every failure, including
+    // locked and deactivated accounts, pays for a hash. WrongPassword is true
+    // only when the password itself was checked and did not match, not for an
+    // account that was locked, inactive or unknown: what LdapBindGuard may
+    // remember as a stale password.
+    //
+    // countFailure false leaves a wrong password off the lockout counter, and
+    // a locked account's cool-down where it was. The LDAP face passes it for a
+    // password the account already failed with recently (a stale saved
+    // password retried by a device; see LdapBindGuard).
+    public async Task<DirectoryBindResult> VerifyDirectoryBindAsync(string shortname, string password,
+        bool countFailure = true, CancellationToken ct = default)
+    {
+        var user = await users.GetByShortnameAsync(shortname, ct);
+        if (user is null)
+        {
+            _ = await hasher.VerifyAsync(password, DecoyHash, ct);
+            return default;
+        }
+
+        var (attemptLocked, unlockedUser) = await RejectIfAttemptLockedAsync(user, ct, refreshCooldown: countFailure);
+        user = unlockedUser;
+        if (attemptLocked is not null || !user.IsUsable || string.IsNullOrEmpty(user.Password))
+        {
+            _ = await hasher.VerifyAsync(password, DecoyHash, ct);
+            return default;
+        }
+
+        if (!await hasher.VerifyAsync(password, user.Password, ct))
+        {
+            if (countFailure) await HandleFailedLoginAttemptAsync(user, ct);
+            return new DirectoryBindResult(null, WrongPassword: true);
+        }
+
+        await RehashIfNeededAsync(user, password, ct);
+        // A correct bind clears earlier failures exactly as a correct login
+        // does; otherwise occasional typos accumulate into a lock.
+        if (user.AttemptCount is > 0) await users.ResetAttemptsAsync(user.Shortname, ct);
+        return new DirectoryBindResult(user, WrongPassword: false);
     }
 
     public async Task<Result<User>> UpdateProfileAsync(
@@ -1466,12 +1529,23 @@ public sealed class UserService(
             !string.IsNullOrEmpty(token));
     }
 
-    private async Task<User?> ResolveUserAsync(UserLoginRequest req, CancellationToken ct)
+    // allowMailbox: an `email` that is no one's contact email may name a
+    // hosted mailbox (docs/user-directory-fields.md), the address the user
+    // signs in to mail with. Password logins only. A one-time code proves
+    // control of the address it was sent to, and a mailbox is the account,
+    // not a contact for it: whoever can read the mailbox (an alias forwarded
+    // elsewhere, an administrator) must not get a way in from that alone.
+    private async Task<User?> ResolveUserAsync(UserLoginRequest req, CancellationToken ct, bool allowMailbox = false)
     {
-        return req.Shortname is not null ? await users.GetByShortnameAsync(req.Shortname, ct)
-             : req.Email is not null     ? await users.GetByEmailAsync(req.Email, ct)
-             : req.Msisdn is not null    ? await users.GetByMsisdnAsync(req.Msisdn, ct)
-             : null;
+        if (req.Shortname is not null) return await users.GetByShortnameAsync(req.Shortname, ct);
+        if (req.Email is not null)
+        {
+            if (await users.GetByEmailAsync(req.Email, ct) is { } byContact) return byContact;
+            return allowMailbox && DirectoryFields.NormalizeAddress(req.Email) is { } mailbox
+                ? await users.GetByAddressAsync(mailbox, "mailbox", ct)
+                : null;
+        }
+        return req.Msisdn is not null ? await users.GetByMsisdnAsync(req.Msisdn, ct) : null;
     }
 
     private static Language ParseLanguage(string? code) => code?.ToLowerInvariant() switch
@@ -1483,3 +1557,7 @@ public sealed class UserService(
         _                 => Language.En,
     };
 }
+
+// UserService.VerifyDirectoryBindAsync's answer: the user on success; on a
+// failure, whether it was the password that was wrong.
+public readonly record struct DirectoryBindResult(User? User, bool WrongPassword);

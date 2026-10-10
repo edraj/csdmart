@@ -40,6 +40,11 @@
         language: formData.language || null,
         roles: formData.roles || [],
         groups: formData.groups || [],
+        // Directory fields (docs/user-directory-fields.md). The server
+        // normalizes them and checks them only when they change.
+        mailbox: formData.mailbox || null,
+        mail_aliases: formData.mail_aliases || [],
+        services: formData.services || [],
         firebase_token: formData.firebase_token || null,
         google_id: formData.google_id || null,
         facebook_id: formData.facebook_id || null,
@@ -67,6 +72,20 @@
     function applyAttemptReset() {
         formData.attempt_count = resolveAttemptCount(failedAttempts, resetAttempts);
     }
+
+    // Aliases are edited one per line and services comma-separated; both are
+    // sent as arrays. Blank entries are dropped here, case and duplicates are
+    // the server's to fold.
+    let aliasesText = $state((formData.mail_aliases as string[]).join("\n"));
+    let servicesText = $state((formData.services as string[]).join(", "));
+    const splitList = (text: string, separator: RegExp) =>
+        text.split(separator).map((s) => s.trim()).filter((s) => s.length > 0);
+    $effect(() => {
+        formData.mail_aliases = splitList(aliasesText, /\r?\n/);
+    });
+    $effect(() => {
+        formData.services = splitList(servicesText, /,/);
+    });
 
     // User types are server identifiers; shown as they are.
     const userTypeOptions = ["bot", "mobile", "web", "admin", "api"].map((type) => ({ name: type, value: type }));
@@ -175,6 +194,27 @@
                 <div class="py-2 space-y-6">
                     <ShortnamePicker bind:selected={formData.roles} subpath="/roles" label={$_("roles")} emptyText={$_("no_roles_added")} />
                     <ShortnamePicker bind:selected={formData.groups} subpath="/groups" label={$_("groups")} emptyText={$_("no_groups_added")} />
+                </div>
+            </AccordionItem>
+
+            <AccordionItem>
+                {#snippet header()}{$_("mail_and_services")}{/snippet}
+                <div class="py-2 space-y-4">
+                    <div>
+                        <Label for="{uid}-mailbox" class="mb-1.5">{$_("mailbox")}</Label>
+                        <Input id="{uid}-mailbox" type="email" placeholder="user@example.org" bind:value={formData.mailbox} dir="ltr" />
+                        <p class={help}>{$_("mailbox_help")}</p>
+                    </div>
+                    <div>
+                        <Label for="{uid}-mail_aliases" class="mb-1.5">{$_("mail_aliases")}</Label>
+                        <Textarea id="{uid}-mail_aliases" class="w-full" bind:value={aliasesText} rows={3} dir="ltr" />
+                        <p class={help}>{$_("mail_aliases_help")}</p>
+                    </div>
+                    <div>
+                        <Label for="{uid}-services" class="mb-1.5">{$_("services")}</Label>
+                        <Input id="{uid}-services" placeholder="mail, matrix, gitea" bind:value={servicesText} dir="ltr" />
+                        <p class={help}>{$_("services_help")}</p>
+                    </div>
                 </div>
             </AccordionItem>
 

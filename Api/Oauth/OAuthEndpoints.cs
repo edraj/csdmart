@@ -8,6 +8,7 @@ using Dmart.Models.Api;
 using Dmart.Models.Enums;
 using Dmart.Models.Json;
 using Dmart.Services;
+using Dmart.Utils;
 using Microsoft.AspNetCore.Http.Extensions;
 using Microsoft.Extensions.Options;
 
@@ -526,7 +527,7 @@ public static class OAuthEndpoints
             <head>
               <meta charset="utf-8">
               <meta name="viewport" content="width=device-width,initial-scale=1">
-              <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none';" />
+              <meta http-equiv="Content-Security-Policy" content="{CSP}" />
               <title>dmart — authorize MCP client</title>
               <style>
                 body { font-family: -apple-system, system-ui, sans-serif; background:#0f172a; color:#e5e7eb;
@@ -550,6 +551,9 @@ public static class OAuthEndpoints
             <body><div class="card">
               <h1>Authorize MCP client</h1>
             """);
+        // The form's success is a redirect to the client, which form-action
+        // must admit (Utils/FormActionCsp).
+        html.Replace("{CSP}", HtmlEncode(FormActionCsp.For(p.RedirectUri)));
         html.Append("<p class=\"sub\">Sign in to let <span class=\"client\">");
         html.Append(HtmlEncode(clientLabel));
         html.Append("</span> access dmart as you.");
