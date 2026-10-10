@@ -141,10 +141,8 @@ public sealed class SpaceRepository(IDbConnectionFactory db)
         DbParams.Add(cmd, space.Icon ?? "");
         AddJsonb(cmd, JsonbHelpers.ToJsonb(space.Mirrors));
         AddJsonb(cmd, JsonbHelpers.ToJsonb(space.HideFolders));
-#pragma warning disable CA1508 // Analyzer limitation: bool?/int? boxed via (object?) cast IS null when source is null; the ?? is load-bearing.
-        DbParams.Add(cmd, (object?)space.HideSpace ?? DBNull.Value);
-        DbParams.Add(cmd, (object?)space.Ordinal ?? DBNull.Value);
-#pragma warning restore CA1508
+        DbParams.Add(cmd, space.HideSpace);
+        DbParams.Add(cmd, space.Ordinal);
         DbParams.Add(cmd, space.QueryPolicies.ToArray(), SqlValueKind.TextArray);
 
         await cmd.ExecuteNonQueryAsync(ct);

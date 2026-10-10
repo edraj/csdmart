@@ -419,16 +419,14 @@ public sealed class UserRepository(
         p[i++] = DbParams.Add(cmd, (object?)u.FacebookId ?? DBNull.Value);
         p[i++] = DbParams.Add(cmd, (object?)u.AppleId ?? DBNull.Value);
         p[i++] = DbParams.Add(cmd, (object?)u.SocialAvatarUrl ?? DBNull.Value);
-#pragma warning disable CA1508 // Analyzer limitation: int? boxed via (object?) cast IS null when source is null; the ?? is load-bearing.
-        p[i++] = DbParams.Add(cmd, (object?)u.AttemptCount ?? DBNull.Value);
-#pragma warning restore CA1508
+        p[i++] = DbParams.Add(cmd, u.AttemptCount);
         p[i++] = AddJsonb(cmd, JsonbHelpers.ToJsonb(u.LastLogin));
         p[i++] = DbParams.Add(cmd, (object?)u.Notes ?? DBNull.Value);
         p[i++] = DbParams.Add(cmd, u.QueryPolicies.ToArray(), SqlValueKind.TextArray);
         // Bound so INSERT works on a fresh row; the ON CONFLICT clause pins
         // both to the EXISTING values, so an upsert can never resurrect.
         p[i++] = DbParams.Add(cmd, u.IsDeleted);
-        p[i++] = DbParams.Add(cmd, (object?)u.DeletedAt ?? DBNull.Value);
+        p[i++] = DbParams.Add(cmd, u.DeletedAt);
         p[i++] = DbParams.Add(cmd, (object?)DirectoryFields.NormalizeAddress(u.Mailbox) ?? DBNull.Value);
         p[i++] = AddJsonbNotNull(cmd, JsonbHelpers.ToJsonbList(DirectoryFields.NormalizeAddresses(u.MailAliases)));
         p[i++] = AddJsonbNotNull(cmd, JsonbHelpers.ToJsonbList(DirectoryFields.NormalizeServices(u.Services)));
@@ -680,16 +678,14 @@ public sealed class UserRepository(
         DbParams.Add(cmd, (object?)u.FacebookId ?? DBNull.Value);
         DbParams.Add(cmd, (object?)u.AppleId ?? DBNull.Value);
         DbParams.Add(cmd, (object?)u.SocialAvatarUrl ?? DBNull.Value);
-#pragma warning disable CA1508 // Analyzer limitation: int? boxed via (object?) cast IS null when source is null; the ?? is load-bearing.
-        DbParams.Add(cmd, (object?)u.AttemptCount ?? DBNull.Value);
-#pragma warning restore CA1508
+        DbParams.Add(cmd, u.AttemptCount);
         AddJsonb(cmd, JsonbHelpers.ToJsonb(u.LastLogin));
         DbParams.Add(cmd, (object?)u.Notes ?? DBNull.Value);
         DbParams.Add(cmd, u.QueryPolicies.ToArray(), SqlValueKind.TextArray);
         // $39/$40 — bound for the INSERT; the ON CONFLICT clause pins both to
         // the existing row, so this path cannot resurrect either.
         DbParams.Add(cmd, u.IsDeleted);
-        DbParams.Add(cmd, (object?)u.DeletedAt ?? DBNull.Value);
+        DbParams.Add(cmd, u.DeletedAt);
         // $41-$43 — the directory fields, normalized exactly as BindUserRow does.
         DbParams.Add(cmd, (object?)DirectoryFields.NormalizeAddress(u.Mailbox) ?? DBNull.Value);
         AddJsonbNotNull(cmd, JsonbHelpers.ToJsonbList(DirectoryFields.NormalizeAddresses(u.MailAliases)));
@@ -2014,7 +2010,7 @@ public sealed class UserRepository(
         await using var cmd = conn.Command(
             "INSERT INTO directory_replica_state (id, watermark, synced_at) VALUES (1, $1, $2) "
             + "ON CONFLICT (id) DO UPDATE SET watermark = $1, synced_at = $2");
-        DbParams.Add(cmd, (object?)watermark ?? DBNull.Value);
+        DbParams.Add(cmd, watermark);
         DbParams.Add(cmd, syncedAt);
         await cmd.ExecuteNonQueryAsync(ct);
     }
