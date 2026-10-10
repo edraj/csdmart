@@ -43,6 +43,8 @@ internal sealed class LdapDirectory(
         "uid", "mail", "mailAlias", "mobile",
     };
 
+    private static readonly string NormSubschema = LdapDn.Normalize(LdapSubschema.Dn)!;
+
     private Layout? _layout;
     private Layout L => _layout ??= new Layout(settings.Value);
 
@@ -87,11 +89,13 @@ internal sealed class LdapDirectory(
     // matches: Results yields entries as they are found, so a paged search
     // reads one page of rows at a time instead of materializing the answer.
     //
-    // A null in Results is a checkpoint: the budget ran out. An unpaged caller
-    // stops there (adminLimitExceeded); a paged caller ends the page, and on the
-    // next page resets the budget and resumes the same enumerator, so a full
-    // listing of a multi-million-row table is many bounded requests rather than
-    // one unbounded one. Code / Message / MatchedDn are final once Results ends.
+    // A null in Results is a checkpoint: a scan handing control back between
+    // pages of rows, so the caller can check a time limit. When Budget is
+    // Exhausted at a checkpoint the budget ran out: an unpaged caller stops
+    // there (adminLimitExceeded); a paged caller ends the page, and on the next
+    // page resets the budget and resumes the same enumerator, so a full listing
+    // of a multi-million-row table is many bounded requests rather than one
+    // unbounded one. Code / Message / MatchedDn are final once Results ends.
     internal sealed class Search
     {
         public ScanBudget Budget { get; } = new();
@@ -147,6 +151,16 @@ internal sealed class LdapDirectory(
             yield break;
         }
 
+        if (nb == NormSubschema)
+        {
+            // Readable before binding too: schema-aware clients fetch it
+            // right after the root DSE. It has no children.
+            if (req.Scope == LdapScope.SingleLevel) yield break;
+            var schema = LdapSubschema.Entry();
+            if (req.Filter.Evaluate(schema) == Tri.True) yield return schema;
+            yield break;
+        }
+
         if (who.Kind == PrincipalKind.Anonymous)
         {
             s.Fail(LdapResult.InsufficientAccessRights, "bind before searching");
@@ -191,7 +205,7 @@ internal sealed class LdapDirectory(
                 if (Match(ou)) yield return ou;
             if (scope != LdapScope.WholeSubtree) yield break;
             await foreach (var e in UsersAsync(s, f, ct)) yield return e;
-            await foreach (var e in GroupsAsync(s, f, ct)) yield return e;
+            await foreach (var e in GroupsAsync(s, req, ct)) yield return e;
             await foreach (var e in ServicesAsync(f, ct)) yield return e;
             yield break;
         }
@@ -211,7 +225,7 @@ internal sealed class LdapDirectory(
                 var children = ou switch
                 {
                     "people" => UsersAsync(s, f, ct),
-                    "groups" => GroupsAsync(s, f, ct),
+                    "groups" => GroupsAsync(s, req, ct),
                     _ => ServicesAsync(f, ct),
                 };
                 await foreach (var e in children) yield return e;
@@ -272,7 +286,7 @@ internal sealed class LdapDirectory(
     {
         await foreach (var u in UserCandidatesAsync(s, f, ct))
         {
-            if (u is null) { yield return null; continue; }   // budget checkpoint
+            if (u is null) { yield return null; continue; }   // checkpoint
             if (L.ServiceAccounts.Contains(u.Shortname)) continue;
             var e = UserEntry(u);
             if (f.Evaluate(e) == Tri.True) yield return e;
@@ -336,6 +350,32 @@ internal sealed class LdapDirectory(
     // Pages through a shortname-ordered source, charging each row to the
     // budget. Holds no connection between pages, so a paged LDAP search can
     // sit between client requests indefinitely.
+    // The member lists a group search needs, at the least cost:
+    //   - every member, in one query for all the groups, when the client asked
+    //     for `member` or the filter tests it other than by plain equality;
+    //   - only the users the filter names, when it does test it that way. This
+    //     is the login-time question Dex and Gitea ask, (member=<user DN>) for
+    //     cn, answered from those users' own rows;
+    //   - none, when neither the filter nor the answer involves members.
+    private async Task<Dictionary<string, List<string>>> MembersForAsync(
+        List<Group> groups, LdapFilter f, AttributeSelection selection, CancellationToken ct)
+    {
+        var named = new List<string>();
+        if (groups.Count > 0 && (selection.Includes("member") || !f.TestsOnlyByEquality("member", named)))
+            return await users.ListGroupMembersAsync(groups.Select(g => g.Shortname).ToList(), ct);
+
+        var result = groups.ToDictionary(g => g.Shortname, _ => new List<string>(), StringComparer.Ordinal);
+        foreach (var dn in named.Distinct(StringComparer.Ordinal))
+        {
+            var p = ClassifyBindDn(dn);
+            if (p.Kind != PrincipalKind.User || await FindUserAsync(p.Shortname!, ct) is not { IsDeleted: false } member)
+                continue;
+            foreach (var g in member.Groups)
+                if (result.TryGetValue(g, out var list)) list.Add(member.Shortname);
+        }
+        return result;
+    }
+
     private static async IAsyncEnumerable<User?> KeysetAsync(
         Search s, Func<string?, int, Task<List<User>>> fetch)
     {
@@ -350,6 +390,10 @@ internal sealed class LdapDirectory(
             }
             if (page.Count < ScanPage) yield break;
             after = page[^1].Shortname;
+            // A checkpoint between pages even with budget left, so a scan that
+            // matches nothing still hands control back often enough for the
+            // caller to honour a time limit.
+            yield return null;
         }
     }
 
@@ -394,8 +438,9 @@ internal sealed class LdapDirectory(
     }
 
     private async IAsyncEnumerable<LdapEntry?> GroupsAsync(
-        Search s, LdapFilter f, [EnumeratorCancellation] CancellationToken ct)
+        Search s, LdapSearchRequest req, [EnumeratorCancellation] CancellationToken ct)
     {
+        var f = req.Filter;
         List<Group> groups;
         var anchors = f.Anchors(a => a.Equals("cn", StringComparison.OrdinalIgnoreCase)
             || a.Equals("member", StringComparison.OrdinalIgnoreCase));
@@ -418,9 +463,11 @@ internal sealed class LdapDirectory(
             groups = names.Count == 0 ? [] : await access.GetGroupsAsync(names, ct);
         }
 
-        foreach (var g in groups.OrderBy(g => g.Shortname, StringComparer.Ordinal))
+        var ordered = groups.OrderBy(g => g.Shortname, StringComparer.Ordinal).ToList();
+        var members = await MembersForAsync(ordered, f, new AttributeSelection(req.Attributes), ct);
+        foreach (var g in ordered)
         {
-            var e = GroupEntry(g, await users.ListShortnamesInGroupAsync(g.Shortname, ct));
+            var e = GroupEntry(g, members[g.Shortname]);
             if (f.Evaluate(e) == Tri.True) yield return e;
             if (s.Budget.Spend()) yield return null;
         }
@@ -446,6 +493,7 @@ internal sealed class LdapDirectory(
         .Add("supportedControl", LdapOid.PagedResults)
         .AddRange("supportedExtension", settings.Value.LdapTlsConfigured
             ? [LdapOid.WhoAmI, LdapOid.StartTls] : [LdapOid.WhoAmI])
+        .Add("subschemaSubentry", LdapSubschema.Dn)
         .Add("vendorName", "dmart");
 
     private LdapEntry BaseEntry()

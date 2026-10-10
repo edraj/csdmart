@@ -57,6 +57,8 @@
   - A wrong password the account failed with recently is not counted toward
     the lockout again, so a device retrying a stale password cannot keep
     the account locked.
+  - A subschema entry for schema-aware clients, time limits honoured, and
+    group searches that load member lists only when the answer needs them.
 
   `bench/REPORT-ldap-face.md` has the interop and scale measurements.
 

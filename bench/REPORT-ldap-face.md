@@ -44,7 +44,8 @@ the AOT binary.
 | Failed-bind limit | `AUTH_RATE_LIMIT_PER_MINUTE` failed binds a minute per client address, the number the HTTP login endpoints allow; then `busy` (51) before any password is checked. `LDAP_TRUSTED_PEERS` (loopback by default) are exempt |
 | Search | All scopes and the full RFC 4511 filter grammar: three-valued logic, attribute aliases, case-insensitive, DN-valued, boolean and telephone matching, and `*` / `+` / `1.1` attribute selection |
 | Paged results (RFC 2696) | **Streamed**: each page reads only the rows it needs, and the scan budget applies per request, so a full listing continues across pages |
-| Who Am I (RFC 4532), root DSE | Yes |
+| Who Am I (RFC 4532), root DSE, subschema (`cn=Subschema`) | Yes |
+| Size and time limits | Size: `LDAP_SIZE_LIMIT` for unpaged searches. Time: the client's, ending with `timeLimitExceeded` |
 | Add, modify, delete, modify-DN, compare, password modify | `unwillingToPerform` (53). Users change through dmart |
 | StartTLS, LDAPS | With `LDAP_TLS_CERT_FILE`/`LDAP_TLS_KEY_FILE`; `LDAPS_PORT` for implicit TLS. The files are re-read when they change. A cleartext password bind from outside `LDAP_TRUSTED_PEERS` is then refused with `confidentialityRequired` (13) |
 | SASL | `authMethodNotSupported` (7) |
@@ -316,7 +317,13 @@ run's details are in this file's git history.
      users hits the size limit here, as it would on slapd's defaults, so add
      `--page-size 500`.
    - Enable Dovecot's auth cache (see binds above).
-8. **Smaller items:**
-   - there is no subschema entry, which some GUI browsers want
-   - time limits are ignored
-   - group `member` lists cost one query per group
+8. ~~**Smaller items**~~ Done:
+   - a subschema entry at `cn=Subschema`, named by the root DSE. It defines
+     everything the face serves, with the freex definitions copied from
+     matrix-deploy, OIDs included
+   - time limits end a search with `timeLimitExceeded`. Scans now hand back
+     control between pages of rows, so a limit holds even when nothing matches
+   - group `member` lists are loaded only when the answer needs them. Dex's
+     and Gitea's `(member=<user DN>)` for `cn` reads only that user's row.
+     When every list is needed, it is one query for all the groups, not one
+     per group (each of which was a full scan on SQLite)

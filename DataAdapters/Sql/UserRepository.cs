@@ -1845,6 +1845,29 @@ public sealed class UserRepository(
         return list;
     }
 
+    // Members of several groups in one query: the LDAP face's group listing,
+    // which on SQLite would otherwise scan the users table once per group.
+    // Every requested group is a key, members in shortname order.
+    public async Task<Dictionary<string, List<string>>> ListGroupMembersAsync(
+        IReadOnlyCollection<string> groups, CancellationToken ct = default)
+    {
+        var result = groups.Distinct(StringComparer.Ordinal).ToDictionary(g => g, _ => new List<string>(), StringComparer.Ordinal);
+        if (result.Count == 0) return result;
+        await using var conn = await db.OpenAsync(ct);
+        await using var cmd = conn.CreateCommand();
+        var contains = QueryHelper.DialectFor(db)
+            .JsonArrayContainsAny("groups", result.Keys.ToList(), (v, k) => DbParams.Add(cmd, v, k));
+        cmd.CommandText = $"SELECT shortname, groups FROM users WHERE is_deleted = false AND {contains} ORDER BY shortname";
+        await using var reader = await cmd.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+        {
+            var shortname = reader.GetString(0);
+            foreach (var g in JsonbHelpers.FromListString(reader.IsDBNull(1) ? null : reader.GetString(1)) ?? [])
+                if (result.TryGetValue(g, out var members)) members.Add(shortname);
+        }
+        return result;
+    }
+
     // ----- query support (used by QueryService for management/users) -----
 
     public Task<List<User>> QueryAsync(Models.Api.Query q, CancellationToken ct = default)

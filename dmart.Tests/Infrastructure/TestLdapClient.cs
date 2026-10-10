@@ -156,6 +156,15 @@ internal sealed class TestLdapClient : IAsyncDisposable
         return (code, entries);
     }
 
+    // A search carrying a time limit; paged (one page) when pageSize > 0.
+    public async Task<(int Code, List<TestLdapEntry> Entries)> SearchTimedAsync(
+        string baseDn, byte[] filter, int timeLimitSeconds, int pageSize = 0)
+    {
+        var (code, entries, _) = await SearchPageAsync(baseDn, filter, 2, [],
+            pageSize > 0 ? [] : null, pageSize, timeLimitSeconds);
+        return (code, entries);
+    }
+
     public async Task<(int Code, List<TestLdapEntry> Entries, int Pages)> SearchPagedAsync(
         string baseDn, byte[] filter, int pageSize, params string[] attrs)
     {
@@ -237,6 +246,12 @@ internal static class TestLdapFilter
 
     public static byte[] Present(string attr)
         => Encode(w => w.WriteOctetString(Encoding.UTF8.GetBytes(attr), new Asn1Tag(TagClass.ContextSpecific, 7)));
+
+    public static byte[] Not(byte[] child) => Encode(w =>
+    {
+        using (w.PushSequence(new Asn1Tag(TagClass.ContextSpecific, 2, isConstructed: true)))
+            w.WriteEncodedValue(child);
+    });
 
     public static byte[] And(params byte[][] children) => Encode(w =>
     {

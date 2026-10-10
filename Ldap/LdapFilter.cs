@@ -120,6 +120,19 @@ internal abstract record LdapFilter
     // lookup instead of a scan: an AND needs only one anchored child, an OR
     // needs every branch anchored (the union of their lookups covers it).
     public virtual IReadOnlyList<(string Attribute, string Value)>? Anchors(Func<string, bool> indexed) => null;
+
+    // Whether every test of `attribute` in this filter is a plain, un-negated
+    // equality; if so, the values they name are added to `values`. An entry
+    // carrying only those of its values then matches exactly when the full
+    // entry would, which lets the face skip loading a large multi-valued
+    // attribute (a group's `member` list) that the filter only probes for
+    // named values. Un-negated matters: with a value missing, a test reads
+    // Undefined where the full entry reads False, which AND and OR treat
+    // alike but NOT does not.
+    public abstract bool TestsOnlyByEquality(string attribute, List<string> values);
+
+    private protected static bool Names(string filterAttribute, string attribute)
+        => LdapSchema.Canonical(filterAttribute).Equals(attribute, StringComparison.OrdinalIgnoreCase);
 }
 
 internal enum Tri { False, True, Undefined }
@@ -146,6 +159,9 @@ internal sealed record AndFilter(IReadOnlyList<LdapFilter> Children) : LdapFilte
             if (c.Anchors(indexed) is { } a) return a;
         return null;
     }
+
+    public override bool TestsOnlyByEquality(string attribute, List<string> values)
+        => Children.All(c => c.TestsOnlyByEquality(attribute, values));
 
     public override string ToString() => "(&" + string.Concat(Children) + ")";
 }
@@ -176,6 +192,9 @@ internal sealed record OrFilter(IReadOnlyList<LdapFilter> Children) : LdapFilter
         return all;
     }
 
+    public override bool TestsOnlyByEquality(string attribute, List<string> values)
+        => Children.All(c => c.TestsOnlyByEquality(attribute, values));
+
     public override string ToString() => "(|" + string.Concat(Children) + ")";
 }
 
@@ -187,6 +206,12 @@ internal sealed record NotFilter(LdapFilter Child) : LdapFilter
         Tri.False => Tri.True,
         _ => Tri.Undefined,
     };
+
+    public override bool TestsOnlyByEquality(string attribute, List<string> values)
+    {
+        var negated = new List<string>();
+        return Child.TestsOnlyByEquality(attribute, negated) && negated.Count == 0;
+    }
 
     public override string ToString() => $"(!{Child})";
 }
@@ -218,6 +243,16 @@ internal sealed record ComparisonFilter(FilterKind Kind, string Attribute, strin
         => Kind == FilterKind.Equality && indexed(LdapSchema.Canonical(Attribute))
             ? [(LdapSchema.Canonical(Attribute), Value)]
             : null;
+
+    public override bool TestsOnlyByEquality(string attribute, List<string> values)
+    {
+        if (!Names(Attribute, attribute)) return true;
+        // Approx is evaluated as equality (see Evaluate), so it qualifies;
+        // the ordering forms need the whole value set.
+        if (Kind is not (FilterKind.Equality or FilterKind.Approx)) return false;
+        values.Add(Value);
+        return true;
+    }
 
     public override string ToString()
     {
@@ -267,6 +302,8 @@ internal sealed record SubstringFilter(string Attribute, string? Initial, IReadO
         return true;
     }
 
+    public override bool TestsOnlyByEquality(string attribute, List<string> values) => !Names(Attribute, attribute);
+
     public override string ToString()
         => $"({Attribute}={Initial}*{string.Concat(Any.Select(a => a + "*"))}{Final})";
 }
@@ -277,6 +314,8 @@ internal sealed record PresentFilter(string Attribute) : LdapFilter
     // entry the face builds carries objectClass, so the generic rule covers it.
     public override Tri Evaluate(LdapEntry entry)
         => entry.Get(Attribute) is { Count: > 0 } ? Tri.True : Tri.False;
+
+    public override bool TestsOnlyByEquality(string attribute, List<string> values) => !Names(Attribute, attribute);
 
     public override string ToString() => $"({Attribute}=*)";
 }
@@ -290,6 +329,11 @@ internal sealed record ExtensibleFilter(string? MatchingRule, string? Attribute,
         => MatchingRule is null && Attribute is not null && !DnAttributes
             ? new ComparisonFilter(FilterKind.Equality, Attribute, Value).Evaluate(entry)
             : Tri.Undefined;
+
+    // dnAttributes matches values in the entry's DN, never `member`'s; only a
+    // test that names the attribute itself counts.
+    public override bool TestsOnlyByEquality(string attribute, List<string> values)
+        => Attribute is null || !Names(Attribute, attribute);
 
     public override string ToString() => $"({Attribute}:{MatchingRule}:={Value})";
 }

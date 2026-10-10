@@ -167,6 +167,9 @@ echo "== libldap (ldapsearch / ldapwhoami / ldapmodify)"
 out=$(in_box "ldapsearch -LLL -x -H $URI -b '' -s base '(objectClass=*)' namingContexts supportedControl")
 check "root DSE, anonymous" "namingContexts: $BASE" "$out"
 
+out=$(in_box "ldapsearch -LLL -x -H $URI -b cn=Subschema -s base '(objectClass=subschema)' objectClasses")
+check "subschema, anonymous: the freex classes" "NAME 'freexUser'" "$out"
+
 out=$(in_box "ldapwhoami -x -H $URI -D uid=alice,ou=people,$BASE -w Alice12345")
 check "user bind + Who Am I" "dn:uid=alice,ou=people,$BASE" "$out"
 

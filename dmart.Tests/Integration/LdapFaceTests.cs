@@ -34,6 +34,9 @@ public sealed class LdapFaceTests(LdapFaceTests.Fixture fx) : IClassFixture<Ldap
         private readonly DmartFactory _factory = new();
         public WebApplicationFactory<Program> Host { get; private set; } = null!;
         public int Port { get; private set; }
+        // The LDAP server's clock, for the time-limit test. Still unless a test
+        // sets Step.
+        internal SteppingClock Clock { get; } = new();
 
         private static readonly string Suffix = Guid.NewGuid().ToString("N")[..6];
         public string Service { get; } = "ldsvc_" + Suffix;
@@ -66,7 +69,7 @@ public sealed class LdapFaceTests(LdapFaceTests.Fixture fx) : IClassFixture<Ldap
                 // Small enough that an unindexed search over the shared test
                 // database runs out, which is what the budget tests need.
                 o.LdapMaxScan = 3;
-            })));
+            }).AddSingleton<TimeProvider>(Clock)));
             _ = Host.CreateClient();   // starts the host, and with it the listener
 
             var users = Host.Services.GetRequiredService<UserRepository>();
@@ -299,5 +302,87 @@ public sealed class LdapFaceTests(LdapFaceTests.Fixture fx) : IClassFixture<Ldap
         var (code, entries) = await c.SearchAsync(Base, Filter.Present("objectClass"), "uid");
         code.ShouldBe(LdapResult.Success);
         entries.Select(e => e.Dn).ToArray().ShouldBe(new[] { UserDn(fx.Alice) });
+    }
+
+    [FactIfPg]
+    public async Task The_Subschema_Is_Named_By_The_Root_Dse_And_Readable_Before_Binding()
+    {
+        await using var c = await TestLdapClient.ConnectAsync(fx.Port);
+        var (_, root) = await c.SearchAsync("", Filter.Present("objectClass"), 0, "subschemaSubentry");
+        root.ShouldHaveSingleItem().Attrs["subschemaSubentry"].ShouldBe(new[] { "cn=Subschema" });
+
+        var (code, entries) = await c.SearchAsync("cn=Subschema", Filter.Eq("objectClass", "subschema"), 0,
+            "objectClasses", "attributeTypes");
+        code.ShouldBe(LdapResult.Success);
+        var schema = entries.ShouldHaveSingleItem();
+        schema.Attrs["objectClasses"].ShouldContain(d => d.Contains("NAME 'freexUser'"));
+        schema.Attrs["objectClasses"].ShouldContain(d => d.Contains("NAME 'dmartUser'"));
+        schema.Attrs["attributeTypes"].ShouldContain(d => d.Contains("NAME 'mailAlias'") && d.Contains("1.1.2.1.2"));
+        // Every OID is defined once.
+        var oids = schema.Attrs["objectClasses"].Concat(schema.Attrs["attributeTypes"])
+            .Select(d => d.Split(' ', StringSplitOptions.RemoveEmptyEntries)[1]).ToList();
+        oids.Distinct().Count().ShouldBe(oids.Count);
+    }
+
+    [FactIfPg]
+    public async Task A_Group_Search_Loads_Member_Lists_Only_When_The_Answer_Needs_Them()
+    {
+        await using var c = await TestLdapClient.ConnectAsync(fx.Port);
+        (await c.BindAsync(ServiceDn, Password)).ShouldBe(LdapResult.Success);
+        var groupDn = $"cn={fx.Group},ou=groups,{Base}";
+        var byAlice = Filter.And(Filter.Eq("objectClass", "groupOfNames"), Filter.Eq("member", UserDn(fx.Alice)));
+
+        // Dex's login-time question: which groups is this user in, for cn.
+        var (code, entries) = await c.SearchAsync($"ou=groups,{Base}", byAlice, "cn");
+        code.ShouldBe(LdapResult.Success);
+        var group = entries.ShouldHaveSingleItem();
+        group.Dn.ShouldBe(groupDn);
+        group.Attrs.Keys.ToArray().ShouldBe(new[] { "cn" });
+
+        // Asking for member returns every member, not only the one named.
+        (_, entries) = await c.SearchAsync($"ou=groups,{Base}", byAlice, "member");
+        entries.ShouldHaveSingleItem().Attrs["member"].ShouldBe(
+            new[] { UserDn(fx.Alice), UserDn(fx.Bob) }, ignoreOrder: true);
+
+        // A negated or non-equality test of member is decided on the full list.
+        (_, entries) = await c.SearchAsync($"ou=groups,{Base}", Filter.And(
+            Filter.Eq("cn", fx.Group), Filter.Not(Filter.Eq("member", $"uid=nobody,ou=people,{Base}"))), "cn");
+        entries.Select(e => e.Dn).ShouldBe(new[] { groupDn });
+        (_, entries) = await c.SearchAsync($"ou=groups,{Base}", Filter.And(
+            Filter.Eq("cn", fx.Group), Filter.Not(Filter.Eq("member", UserDn(fx.Bob)))), "cn");
+        entries.ShouldBeEmpty();
+        (_, entries) = await c.SearchAsync($"ou=groups,{Base}", Filter.And(
+            Filter.Eq("cn", fx.Group), Filter.Present("member")), "cn");
+        entries.Select(e => e.Dn).ShouldBe(new[] { groupDn });
+    }
+
+    [FactIfPg]
+    public async Task A_Time_Limit_Ends_A_Search_With_What_It_Has_Sent()
+    {
+        await using var c = await TestLdapClient.ConnectAsync(fx.Port);
+        (await c.BindAsync(ServiceDn, Password)).ShouldBe(LdapResult.Success);
+
+        // Not reached: an indexed lookup well inside its limit.
+        (await c.SearchTimedAsync($"ou=people,{Base}", Filter.Eq("uid", fx.Alice), timeLimitSeconds: 5))
+            .Code.ShouldBe(LdapResult.Success);
+
+        // Every reading of the server's clock now moves it a second, so a
+        // 2-second limit runs out a couple of results in.
+        fx.Clock.Step = TimeSpan.FromSeconds(1);
+        try
+        {
+            var (code, _) = await c.SearchTimedAsync($"ou=people,{Base}", Filter.Present("objectClass"), timeLimitSeconds: 2);
+            code.ShouldBe(LdapResult.TimeLimitExceeded);
+            // ...paged too, which ends the paged search rather than pausing it.
+            (code, _) = await c.SearchTimedAsync($"ou=people,{Base}", Filter.Present("objectClass"), timeLimitSeconds: 2, pageSize: 100);
+            code.ShouldBe(LdapResult.TimeLimitExceeded);
+            // No limit, no effect, however the clock moves.
+            (code, _) = await c.SearchTimedAsync($"ou=people,{Base}", Filter.Eq("uid", fx.Alice), timeLimitSeconds: 0);
+            code.ShouldBe(LdapResult.Success);
+        }
+        finally
+        {
+            fx.Clock.Step = TimeSpan.Zero;
+        }
     }
 }

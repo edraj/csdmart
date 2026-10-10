@@ -32,8 +32,12 @@ internal sealed class LdapServer(
     PasswordHasher hasher,
     LdapTls tls,
     LdapBindGuard guard,
-    ILogger<LdapServer> log) : BackgroundService
+    ILogger<LdapServer> log,
+    // For tests; the host leaves it to the system clock.
+    TimeProvider? clock = null) : BackgroundService
 {
+    private readonly TimeProvider _clock = clock ?? TimeProvider.System;
+
     // Bind and search requests are a few hundred bytes. Anything near this is
     // not a client this face serves.
     private const int MaxMessageBytes = 1 << 20;
@@ -393,6 +397,11 @@ internal sealed class LdapServer(
         var pagedControl = s.Controls.FirstOrDefault(c => c.Oid == LdapOid.PagedResults);
         byte[] Done(int code, string message, string matchedDn = "", IReadOnlyList<LdapControl>? controls = null)
             => LdapCodec.Result(s.MessageId, LdapOp.SearchResultDone, code, message, matchedDn, controls);
+        // The client's time limit, in seconds; 0 is none. Checked between
+        // entries and at the scan's checkpoints (LdapDirectory.Search), so a
+        // search that has run out of time ends with what it has sent.
+        var started = _clock.GetTimestamp();
+        bool OutOfTime() => s.TimeLimit > 0 && _clock.GetElapsedTime(started).TotalSeconds >= s.TimeLimit;
 
         if (pagedControl is null)
         {
@@ -405,6 +414,11 @@ internal sealed class LdapServer(
             {
                 while (await results.MoveNextAsync())
                 {
+                    if (OutOfTime())
+                    {
+                        stoppedWith = LdapResult.TimeLimitExceeded;
+                        break;
+                    }
                     if (results.Current is not { } entry)
                     {
                         if (!search.Budget.Exhausted) continue;
@@ -469,6 +483,14 @@ internal sealed class LdapServer(
             {
                 finished = true;
                 break;
+            }
+            if (OutOfTime())
+            {
+                // A time limit ends the search outright, as on slapd: no
+                // cookie, and the paged state is dropped.
+                await session.SetPagedAsync(null);
+                await send(Done(LdapResult.TimeLimitExceeded, "", controls: [LdapCodec.PagedControl([])]));
+                return;
             }
             if (paged.Results.Current is not { } entry)
             {

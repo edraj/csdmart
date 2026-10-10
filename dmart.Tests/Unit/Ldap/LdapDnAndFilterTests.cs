@@ -57,6 +57,35 @@ public sealed class LdapDnAndFilterTests
 
     // ----- filters -----
 
+    [Fact]
+    public void Positive_Equalities_On_An_Attribute_Are_Recognised_With_Their_Values()
+    {
+        var named = new List<string>();
+        Parse(F.And(F.Eq("objectClass", "groupOfNames"), F.Or(F.Eq("member", "uid=a,dc=x"), F.Eq("MEMBER", "uid=b,dc=x"))))
+            .TestsOnlyByEquality("member", named).ShouldBeTrue();
+        named.ShouldBe(new[] { "uid=a,dc=x", "uid=b,dc=x" });
+
+        // Not mentioned at all: trivially true, nothing named.
+        var none = new List<string>();
+        Parse(F.Eq("cn", "staff")).TestsOnlyByEquality("member", none).ShouldBeTrue();
+        none.ShouldBeEmpty();
+    }
+
+    [Theory]
+    [InlineData("present")]
+    [InlineData("ordering")]
+    [InlineData("negated")]
+    public void Any_Other_Test_Of_The_Attribute_Needs_Its_Full_Value_Set(string form)
+    {
+        var filter = form switch
+        {
+            "present" => F.And(F.Eq("cn", "staff"), F.Present("member")),
+            "ordering" => F.Ge("member", "uid=a,dc=x"),
+            _ => F.And(F.Eq("cn", "staff"), F.Not(F.Eq("member", "uid=a,dc=x"))),
+        };
+        Parse(filter).TestsOnlyByEquality("member", new List<string>()).ShouldBeFalse();
+    }
+
     private static LdapEntry Alice() => new LdapEntry("uid=alice,ou=people,dc=x")
         .Add("objectClass", "inetOrgPerson").Add("objectClass", "freexUser")
         .Add("uid", "alice")
