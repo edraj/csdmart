@@ -2770,6 +2770,11 @@ builder.Services.AddOpenApi(options =>
 
     // Suppress noisy ASP.NET framework logs.
     builder.Logging.AddFilter("Microsoft.AspNetCore", LogLevel.Warning);
+    // And the outbound clients' four Information lines per request (start,
+    // send, headers, end). A directory replica polls its primary every 30 s,
+    // which made 11,000 lines a day on a mail host's journal; failures are
+    // still logged, as warnings and errors.
+    builder.Logging.AddFilter("System.Net.Http.HttpClient", LogLevel.Warning);
     builder.Logging.AddFilter("Microsoft.Hosting.Lifetime", LogLevel.Information);
     // Pin the dmart startup banner to Information so it survives even when
     // the global default is raised to Warning.
