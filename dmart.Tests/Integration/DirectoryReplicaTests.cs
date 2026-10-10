@@ -10,6 +10,7 @@ using Dmart.Models.Enums;
 using Dmart.Services;
 using Dmart.Tests.Infrastructure;
 using Dmart.Utils;
+using FeedService = Dmart.Services.DirectoryFeedService;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -151,8 +152,8 @@ public sealed class DirectoryReplicaTests(DirectoryReplicaTests.Fixture fx) : IC
 
         // The replica answers binds itself, with the primary's hash.
         var replicaUsers = fx.Replica.Services.GetRequiredService<UserService>();
-        (await replicaUsers.VerifyDirectoryBindAsync(fx.Alice, Password)).ShouldNotBeNull();
-        (await replicaUsers.VerifyDirectoryBindAsync(fx.Alice, "Wrong12345")).ShouldBeNull();
+        (await replicaUsers.VerifyDirectoryBindAsync(fx.Alice, Password)).User.ShouldNotBeNull();
+        (await replicaUsers.VerifyDirectoryBindAsync(fx.Alice, "Wrong12345")).User.ShouldBeNull();
 
         (await fx.Replica.Services.GetRequiredService<AccessRepository>().GetGroupAsync(fx.Group)).ShouldNotBeNull();
         (await ReplicaUsers.GetReplicaWatermarkAsync()).ShouldNotBeNull();
@@ -180,7 +181,7 @@ public sealed class DirectoryReplicaTests(DirectoryReplicaTests.Fixture fx) : IC
         copy.Services.ShouldBe(new[] { "mail", "gitea" });
         copy.AttemptCount.ShouldBe(2);
         var replicaUsers = fx.Replica.Services.GetRequiredService<UserService>();
-        (await replicaUsers.VerifyDirectoryBindAsync(fx.Alice, "Changed12345")).ShouldNotBeNull();
+        (await replicaUsers.VerifyDirectoryBindAsync(fx.Alice, "Changed12345")).User.ShouldNotBeNull();
         (await ReplicaUsers.GetByShortnameAsync(fx.Bob)).ShouldBeNull();
         (await ReplicaUsers.GetByShortnameAsync(fx.Carol)).ShouldBeNull();
         (await ReplicaUsers.GetByShortnameAsync(fx.Dave)).ShouldBeNull();
@@ -232,6 +233,191 @@ public sealed class DirectoryReplicaTests(DirectoryReplicaTests.Fixture fx) : IC
 
         await using var c = await TestLdapClient.ConnectAsync(port);
         (await c.BindAsync($"uid={fx.Alice},ou=people,dc=orphan", Password)).ShouldBe(LdapResult.Unavailable);
+    }
+
+    // A replica on a host of its own, whose primary never answers, over the
+    // SQLite file `db` (kept between hosts, as a restart keeps it).
+    private WebApplicationFactory<Program> CutOffReplica(string db, int ldapPort, int maxStalenessHours = 24)
+        => fx.Primary.WithWebHostBuilder(b =>
+        {
+            b.ConfigureAppConfiguration((_, cfg) => cfg.AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["Dmart:DatabaseDriver"] = "sqlite",
+                ["Dmart:SqlitePath"] = db,
+                ["Dmart:PostgresConnection"] = null,
+                ["Dmart:DatabaseHost"] = null,
+                ["Dmart:DatabasePassword"] = null,
+                ["Dmart:DatabaseName"] = null,
+                ["Dmart:DirectoryReplicaOf"] = "http://unreachable.test/",
+                ["Dmart:DirectoryReplicaShortname"] = fx.Reader,
+                ["Dmart:DirectoryReplicaPassword"] = Password,
+                ["Dmart:DirectoryReplicaIntervalSeconds"] = "3600",
+                ["Dmart:DirectoryReplicaMaxStalenessHours"] = maxStalenessHours.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                ["Dmart:LdapPort"] = ldapPort.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                ["Dmart:LdapBaseDn"] = "dc=cutoff",
+            }));
+            b.ConfigureServices(s => s.AddHttpClient(DirectoryReplica.HttpClientName)
+                .ConfigurePrimaryHttpMessageHandler(() => new RefusingHandler()));
+        });
+
+    // A replica restarted while its primary is down serves the copy it
+    // synced before, until that copy is older than its staleness limit. Past
+    // it, binds answer `unavailable` and lookups still answer.
+    [FactIfPg]
+    public async Task A_Restarted_Replica_Serves_Its_Copy_Until_It_Is_Too_Old()
+    {
+        var db = Path.Combine(Path.GetTempPath(), $"dmart-cutoff-{Guid.NewGuid():N}.db");
+        var hash = await fx.Primary.Services.GetRequiredService<PasswordHasher>().HashAsync(Password);
+        var alice = Fixture.NewUser("cutalice_" + Guid.NewGuid().ToString("N")[..6], hash, UserType.Web);
+        try
+        {
+            // The first run: a copy, synced an hour ago.
+            await using (var first = CutOffReplica(db, Fixture.FreePort()))
+            {
+                _ = first.CreateClient();
+                var users = first.Services.GetRequiredService<UserRepository>();
+                await users.UpsertReplicatedAsync(alice);
+                await users.SetReplicaWatermarkAsync(TimeUtils.Now().AddHours(-1), DateTime.UtcNow.AddHours(-1));
+            }
+
+            var port = Fixture.FreePort();
+            await using (var restarted = CutOffReplica(db, port))
+            {
+                _ = restarted.CreateClient();
+                var status = restarted.Services.GetRequiredService<DirectoryIndexStatus>();
+                for (var i = 0; i < 50 && !status.ReplicaSynced; i++) await Task.Delay(100);
+                status.ReplicaSynced.ShouldBeTrue("the copy on disk serves without the primary");
+                status.ReplicaStale.ShouldBeFalse();
+                await using var c = await TestLdapClient.ConnectAsync(port);
+                (await c.BindAsync($"uid={alice.Shortname},ou=people,dc=cutoff", Password)).ShouldBe(LdapResult.Success);
+            }
+
+            // The same copy, against a limit it has outlived.
+            port = Fixture.FreePort();
+            await using (var stale = CutOffReplica(db, port, maxStalenessHours: 1))
+            {
+                var http = stale.CreateClient();
+                var status = stale.Services.GetRequiredService<DirectoryIndexStatus>();
+                for (var i = 0; i < 50 && !status.ReplicaSynced; i++) await Task.Delay(100);
+                status.ReplicaStale.ShouldBeTrue();
+                await using var c = await TestLdapClient.ConnectAsync(port);
+                (await c.BindAsync($"uid={alice.Shortname},ou=people,dc=cutoff", Password)).ShouldBe(LdapResult.Unavailable);
+                (await http.GetAsync("/health/ready")).StatusCode.ShouldBe(HttpStatusCode.ServiceUnavailable);
+            }
+        }
+        finally
+        {
+            foreach (var f in new[] { db, db + "-wal", db + "-shm" })
+                try { File.Delete(f); } catch { }
+        }
+    }
+
+    // A replica and its primary may run different engines; PostgreSQL's
+    // default collation sorts 'Bob' between 'alice' and 'carol', SQLite's
+    // bytes put it first. The full walk's ranges must mean the same on both,
+    // or the replica deletes users that fall between them.
+    [FactIfPg]
+    public async Task Keyset_Walks_Order_Shortnames_Bytewise_On_Both_Engines()
+    {
+        var tag = Guid.NewGuid().ToString("N")[..6];
+        var names = new[] { $"Zbyte{tag}", $"abyte{tag}", $"Mbyte{tag}", $"_byte{tag}" };
+        var hash = await fx.Primary.Services.GetRequiredService<PasswordHasher>().HashAsync(Password);
+        try
+        {
+            foreach (var n in names) await PrimaryUsers.UpsertAsync(Fixture.NewUser(n, hash, UserType.Web));
+            var walked = (await PrimaryUsers.ListShortnamesBetweenAsync("", null)).Where(names.Contains).ToList();
+            walked.ShouldBe(names.Order(StringComparer.Ordinal).ToList());
+
+            var listed = new List<string>();
+            string? after = null;
+            while (true)
+            {
+                var page = await PrimaryUsers.ListForDirectoryAsync(after, 500);
+                listed.AddRange(page.Select(u => u.Shortname).Where(names.Contains));
+                if (page.Count < 500) break;
+                after = page[^1].Shortname;
+            }
+            listed.ShouldBe(names.Order(StringComparer.Ordinal).ToList());
+        }
+        finally
+        {
+            foreach (var n in names) await TestUserCleanup.DeleteUserAndOwnedAsync(fx.Primary.Services, n);
+        }
+    }
+
+    // The feed hands out password hashes: only to a listed BOT, and with
+    // nothing a replica does not serve.
+    [FactIfPg]
+    public async Task The_Feed_Reads_Only_For_Listed_Bots_And_Carries_Only_What_A_Replica_Serves()
+    {
+        var sp = fx.Primary.Services;
+        var person = "replperson_" + Guid.NewGuid().ToString("N")[..6];
+        var hash = await sp.GetRequiredService<PasswordHasher>().HashAsync(Password);
+        await PrimaryUsers.UpsertAsync(Fixture.NewUser(person, hash, UserType.Web) with
+        {
+            Notes = "admin notes", DeviceId = "device-1", GoogleId = "g-1",
+            LastLogin = new() { ["at"] = "yesterday" },
+        });
+        try
+        {
+            FeedService MakeFeed(string readers) => new(sp.GetRequiredService<UserRepository>(),
+                sp.GetRequiredService<AccessRepository>(), sp.GetRequiredService<IDbConnectionFactory>(),
+                Microsoft.Extensions.Options.Options.Create(new DmartSettings { DirectoryFeedReaders = readers }));
+            (await MakeFeed(person).MayReadAsync(person, CancellationToken.None)).ShouldBeFalse("listed, but a person");
+            (await MakeFeed(fx.Reader).MayReadAsync(fx.Reader, CancellationToken.None)).ShouldBeTrue();
+
+            var feed = MakeFeed(fx.Reader);
+            DirectoryFeedUser? fed = null;
+            string? after = null;
+            while (fed is null)
+            {
+                var page = await feed.FullAsync(after, DirectoryFeedService.MaxPage, CancellationToken.None);
+                fed = page.Users.FirstOrDefault(u => u.User.Shortname == person);
+                if (!page.More) break;
+                after = page.After;
+            }
+            fed.ShouldNotBeNull();
+            fed!.PasswordHash.ShouldBe(hash);
+            fed.User.Notes.ShouldBeNull();
+            fed.User.DeviceId.ShouldBeNull();
+            fed.User.GoogleId.ShouldBeNull();
+            fed.User.LastLogin.ShouldBeNull();
+        }
+        finally
+        {
+            await TestUserCleanup.DeleteUserAndOwnedAsync(sp, person);
+        }
+    }
+
+    // A group's owner must be a local user; one the feed never carries (soft
+    // deleted on the primary) is replaced by the replica's own account rather
+    // than failing the whole sync.
+    [FactIfPg]
+    public async Task A_Group_Whose_Owner_The_Replica_Lacks_Still_Arrives()
+    {
+        var owner = "replowner_" + Guid.NewGuid().ToString("N")[..6];
+        var group = "replogrp_" + Guid.NewGuid().ToString("N")[..6];
+        var hash = await fx.Primary.Services.GetRequiredService<PasswordHasher>().HashAsync(Password);
+        var access = fx.Primary.Services.GetRequiredService<AccessRepository>();
+        await PrimaryUsers.UpsertAsync(Fixture.NewUser(owner, hash, UserType.Web));
+        await access.UpsertGroupAsync(new Group
+        {
+            Uuid = Guid.NewGuid().ToString(), Shortname = group, SpaceName = "management", Subpath = "/groups",
+            OwnerShortname = owner, IsActive = true, CreatedAt = TimeUtils.Now(), UpdatedAt = TimeUtils.Now(),
+        });
+        await PrimaryUsers.SoftDeleteAsync(owner);
+        try
+        {
+            await SyncAsync();
+            var copy = await fx.Replica.Services.GetRequiredService<AccessRepository>().GetGroupAsync(group);
+            copy.ShouldNotBeNull();
+            copy!.OwnerShortname.ShouldBe(fx.Reader);
+        }
+        finally
+        {
+            try { await access.DeleteGroupAsync(group); } catch { }
+            await TestUserCleanup.DeleteUserAndOwnedAsync(fx.Primary.Services, owner);
+        }
     }
 
     private sealed class RefusingHandler : HttpMessageHandler

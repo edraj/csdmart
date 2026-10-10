@@ -716,6 +716,14 @@ public static class SearchExpressionParser
                 var lengthExpr = ctx.Dialect.ArrayLength(field);
                 return data.Negative ? $"{lengthExpr} = 0" : $"{lengthExpr} > 0";
             }
+            // The directory fields are NOT NULL with '[]' for "none", so
+            // existence means "holds at least one": @services:* is the users
+            // with any service, not every user.
+            if (field is "services" or "mail_aliases")
+            {
+                var lengthExpr = ctx.Dialect.JsonArrayLength(field);
+                return data.Negative ? $"{lengthExpr} = 0" : $"{lengthExpr} > 0";
+            }
             return $"{field} {nullCheck}";
         }
 

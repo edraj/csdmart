@@ -45,8 +45,12 @@ public sealed class DirectoryReplica(
     // How far before the watermark a changes walk starts. A write stamps
     // updated_at before its transaction commits; one that commits after a walk
     // read its page, with a stamp from before the walk began, is still inside
-    // this window next time. Re-applying a row is harmless.
-    internal static readonly TimeSpan Overlap = TimeSpan.FromMinutes(5);
+    // this window next time. An hour and five minutes because dmart stamps
+    // host-local time: when the primary's clock falls back an hour at the end
+    // of daylight saving, the rows written in the next hour carry stamps from
+    // before the watermark. Unchanged rows in the window cost a comparison
+    // each (ApplyAsync), not a write.
+    internal static readonly TimeSpan Overlap = TimeSpan.FromMinutes(65);
     private const int PageSize = 500;
     private const string TimeFormat = "yyyy-MM-ddTHH:mm:ss.FFFFFFF";
 
@@ -59,21 +63,40 @@ public sealed class DirectoryReplica(
     {
         var s = settings.Value;
         if (!s.IsDirectoryReplica) return;
-        status.SetReplicaSynced(false);
+        status.BeginReplica(TimeSpan.FromHours(s.DirectoryReplicaMaxStalenessHours));
         var interval = TimeSpan.FromSeconds(s.DirectoryReplicaIntervalSeconds);
         log.LogInformation("directory replica of {Primary}, polling every {Seconds}s", s.DirectoryReplicaOf, interval.TotalSeconds);
+
+        // A copy synced before a restart serves at once, so a replica that
+        // restarts while its primary is down still answers. How old the copy
+        // is still counts toward the staleness limit.
+        try
+        {
+            if (await users.GetReplicaSyncedAtAsync(stoppingToken) is { } before
+                && await users.GetReplicaWatermarkAsync(stoppingToken) is not null)
+            {
+                status.SetReplicaSyncedAt(before);
+                LastSync = before;
+                log.LogInformation("directory replica: serving the copy synced at {SyncedAt:u} until the primary answers", before);
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            log.LogWarning(ex, "directory replica: could not read the last sync time; LDAP answers 'unavailable' until a sync succeeds");
+        }
 
         while (!stoppingToken.IsCancellationRequested)
         {
             try
             {
-                var applied = await SyncOnceAsync(stoppingToken);
-                if (!status.ReplicaSynced)
-                    log.LogInformation("directory replica: first sync complete ({Count} user row(s)); LDAP is serving", applied);
+                var wasServing = status.ReplicaSynced && !status.ReplicaStale;
+                var (applied, syncedAt) = await SyncOnceAsync(stoppingToken);
+                if (!wasServing)
+                    log.LogInformation("directory replica: in sync with the primary ({Count} user row(s) applied); LDAP is serving", applied);
                 else if (applied > 0)
                     log.LogInformation("directory replica: applied {Count} user change(s)", applied);
-                status.SetReplicaSynced(true);
-                LastSync = DateTime.UtcNow;
+                status.SetReplicaSyncedAt(syncedAt);
+                LastSync = syncedAt;
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
@@ -86,9 +109,9 @@ public sealed class DirectoryReplica(
             catch (Exception ex)
             {
                 log.LogWarning(ex, "directory replica: syncing with {Primary} failed; {State}", s.DirectoryReplicaOf,
-                    LastSync is { } last
-                        ? $"still serving the copy from {(DateTime.UtcNow - last).TotalMinutes:F0} min ago"
-                        : "LDAP answers 'unavailable' until a sync succeeds");
+                    LastSync is not { } last ? "LDAP answers 'unavailable' until a sync succeeds"
+                    : status.ReplicaStale ? $"the copy is from {(DateTime.UtcNow - last).TotalHours:F0} h ago, past the limit: binds answer 'unavailable' until a sync succeeds"
+                    : $"still serving the copy from {(DateTime.UtcNow - last).TotalMinutes:F0} min ago");
             }
 
             try { await Task.Delay(interval, stoppingToken); }
@@ -96,21 +119,24 @@ public sealed class DirectoryReplica(
         }
     }
 
-    // One poll. Returns how many user rows it applied.
-    internal async Task<int> SyncOnceAsync(CancellationToken ct)
+    // One poll. Returns how many user rows it applied, and when (UTC, this
+    // host's clock) it began: what the copy is current to.
+    internal async Task<(int Applied, DateTime SyncedAt)> SyncOnceAsync(CancellationToken ct)
     {
+        var started = DateTime.UtcNow;
         if (await users.GetReplicaWatermarkAsync(ct) is { } watermark)
         {
-            if (await ChangesAsync(watermark, ct) is { } applied) return applied;
+            if (await ChangesAsync(watermark, started, ct) is { } applied) return (applied, started);
             log.LogWarning("directory replica: the primary no longer has every deletion since {Watermark}; walking it in full",
                 watermark);
         }
-        return await FullAsync(ct);
+        return (await FullAsync(started, ct), started);
     }
 
-    private async Task<int> FullAsync(CancellationToken ct)
+    private async Task<int> FullAsync(DateTime started, CancellationToken ct)
     {
         DateTime? serverTime = null;
+        List<Group>? groups = null;
         string? after = null;
         var reconciledTo = "";
         var applied = 0;
@@ -121,7 +147,7 @@ public sealed class DirectoryReplica(
             if (after is null)
             {
                 serverTime = page.ServerTime;
-                await ApplyGroupsAsync(page.Groups, ct);
+                groups = page.Groups;
             }
             foreach (var u in page.Users)
                 if (await ApplyAsync(u, ct)) applied++;
@@ -135,16 +161,18 @@ public sealed class DirectoryReplica(
             after = page.After;
         } while (page.More);
 
-        await users.SetReplicaWatermarkAsync(serverTime, ct);
+        await ApplyGroupsAsync(groups, ct);
+        await users.SetReplicaWatermarkAsync(serverTime, started, ct);
         return applied;
     }
 
     // Null when a changes walk from `watermark` cannot be complete: the primary
     // has no tombstones from that far back.
-    private async Task<int?> ChangesAsync(DateTime watermark, CancellationToken ct)
+    private async Task<int?> ChangesAsync(DateTime watermark, DateTime started, CancellationToken ct)
     {
         var since = watermark - Overlap;
         DateTime? serverTime = null, afterTime = null;
+        List<Group>? groups = null;
         string? after = null;
         var applied = 0;
         DirectoryFeedPage page;
@@ -159,7 +187,7 @@ public sealed class DirectoryReplica(
             if (afterTime is null)
             {
                 serverTime = page.ServerTime;
-                await ApplyGroupsAsync(page.Groups, ct);
+                groups = page.Groups;
                 // Deletions first: a name deleted and then taken again is in
                 // both lists, and the row that exists now must win.
                 foreach (var gone in page.Deleted)
@@ -171,7 +199,8 @@ public sealed class DirectoryReplica(
             after = page.After;
         } while (page.More && afterTime is not null);
 
-        await users.SetReplicaWatermarkAsync(serverTime, ct);
+        await ApplyGroupsAsync(groups, ct);
+        await users.SetReplicaWatermarkAsync(serverTime, started, ct);
         return applied;
     }
 
@@ -194,8 +223,10 @@ public sealed class DirectoryReplica(
             return false;
         // A local row under the same name, whatever its uuid (this replica's
         // own bootstrap admin, or an account the primary re-created), is
-        // overwritten in place: the upsert resolves on shortname.
-        incoming = incoming with { AttemptCount = local?.AttemptCount, LastFailedLogin = local?.LastFailedLogin };
+        // overwritten in place: the upsert resolves on shortname. The feed
+        // carries no attempt counter, and a null one keeps the local count
+        // (the upsert's COALESCE), including binds that fail meanwhile.
+        incoming = incoming with { AttemptCount = null };
         try
         {
             await users.UpsertReplicatedAsync(incoming, ct);
@@ -242,12 +273,27 @@ public sealed class DirectoryReplica(
     }
 
     // Groups are few: the first page of every walk carries all of them, and
-    // the local set is made to match.
+    // the local set is made to match once the walk's users are in, since a
+    // group's owner must be a local user. One the replica does not have (the
+    // feed carries live users only) is replaced by the replica's own account.
     private async Task ApplyGroupsAsync(List<Group>? groups, CancellationToken ct)
     {
         if (groups is null) return;
         var names = groups.Select(g => g.Shortname).ToHashSet(StringComparer.Ordinal);
-        foreach (var g in groups) await access.UpsertGroupAsync(g, ct);
+        var present = new Dictionary<string, bool>(StringComparer.Ordinal);
+        async Task<bool> Exists(string shortname)
+        {
+            if (!present.TryGetValue(shortname, out var exists))
+                present[shortname] = exists = await users.GetByShortnameAsync(shortname, ct) is not null;
+            return exists;
+        }
+        foreach (var g in groups)
+        {
+            var owner = g.OwnerShortname;
+            if (!await Exists(owner))
+                owner = await Exists(settings.Value.DirectoryReplicaShortname) ? settings.Value.DirectoryReplicaShortname : "dmart";
+            await access.UpsertGroupAsync(g with { OwnerShortname = owner }, ct);
+        }
         foreach (var local in await access.ListGroupsForDirectoryAsync(ct))
             if (!names.Contains(local.Shortname)) await access.DeleteGroupAsync(local.Shortname, ct);
     }

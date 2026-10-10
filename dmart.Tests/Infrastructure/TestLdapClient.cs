@@ -100,6 +100,17 @@ internal sealed class TestLdapClient : IAsyncDisposable
         await _stream.WriteAsync(w.Encode());
     }
 
+    // Raw bytes, for tests of what the server does with malformed or
+    // oversized input.
+    public async Task SendRawAsync(byte[] bytes) => await _stream.WriteAsync(bytes);
+
+    // The next whole message, or null once the server has closed the connection.
+    public async Task<byte[]?> ReceiveFrameOrCloseAsync()
+    {
+        try { return await LdapCodec.ReadFrameAsync(_stream, 1 << 20, CancellationToken.None); }
+        catch (IOException) { return null; }
+    }
+
     // The op, plus the paged-results cookie when the message carries one.
     private async Task<(int Tag, AsnReader Op, byte[]? Cookie)> ReceiveAsync()
     {

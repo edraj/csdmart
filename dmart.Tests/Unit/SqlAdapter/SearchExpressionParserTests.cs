@@ -1247,6 +1247,18 @@ public class SearchExpressionParserTests
         Sql($"-@{column}:admin").ShouldContain($"NOT ({column} @> CAST(@s_1 AS jsonb))");
     }
 
+    [Theory]
+    [InlineData("services")]
+    [InlineData("mail_aliases")]
+    public void Directory_Field_Existence_Means_At_Least_One_Value(string column)
+    {
+        // Both are NOT NULL with '[]' for none: IS NOT NULL would match everyone.
+        var any = Sql($"@{column}:*");
+        any.ShouldContain($"jsonb_array_length({column})");
+        any.ShouldContain("> 0");
+        Sql($"-@{column}:*").ShouldContain("= 0");
+    }
+
     [Fact]
     public void Directory_Fields_Fold_Their_Values_Like_The_Stored_Ones()
     {

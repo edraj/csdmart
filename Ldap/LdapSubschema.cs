@@ -133,6 +133,26 @@ internal static class LdapSubschema
             + "MAY ( mailAlias $ authorizedService ) )",
     ];
 
+    // Every attribute type defined above, under each of its names. A filter
+    // testing one of these on an entry that lacks it is False; only a name the
+    // face does not know at all is Undefined (RFC 4511 §4.5.1.7). Declared
+    // after AttributeTypes, which static initialization reads first.
+    private static readonly HashSet<string> Known = AttributeTypes.SelectMany(NamesOf).ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+    public static bool IsKnownAttribute(string attribute) => Known.Contains(LdapSchema.Canonical(attribute));
+
+    // "( oid NAME 'a' ..." or "( oid NAME ( 'a' 'b' ) ...".
+    private static IEnumerable<string> NamesOf(string definition)
+    {
+        var at = definition.IndexOf(" NAME ", StringComparison.Ordinal);
+        if (at < 0) yield break;
+        var rest = definition[(at + 6)..];
+        var end = rest.StartsWith('(') ? rest.IndexOf(')', StringComparison.Ordinal) : rest.IndexOf('\'', 1);
+        var names = rest[..(end + 1)];
+        var parts = names.Split('\'');
+        for (var i = 1; i < parts.Length; i += 2) yield return parts[i];
+    }
+
     public static LdapEntry Entry() => new LdapEntry(Dn)
         .AddRange("objectClass", ["top", "subentry", "subschema"])
         .Add("cn", "Subschema")

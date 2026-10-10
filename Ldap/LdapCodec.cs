@@ -15,13 +15,24 @@ internal static class LdapCodec
     // ----- framing -----
 
     // Reads exactly one LDAPMessage TLV. Null on a clean EOF between messages.
-    // The length is checked against maxBytes BEFORE anything is allocated, so
-    // a client cannot make the server reserve memory by announcing a huge one.
-    public static async Task<byte[]?> ReadFrameAsync(Stream stream, int maxBytes, CancellationToken ct)
+    //
+    // `idle` bounds the wait for the message's first byte; once it arrives,
+    // `frameTimeout` bounds the rest, so a client cannot hold a connection
+    // open by trickling one message a byte at a time. The length is checked
+    // against maxBytes before anything is read, and the buffer then grows with
+    // the bytes that actually arrive: announcing a megabyte reserves nothing
+    // until the megabyte is sent.
+    public static async Task<byte[]?> ReadFrameAsync(
+        Stream stream, int maxBytes, TimeSpan frameTimeout, CancellationToken idle, CancellationToken stop)
     {
         var head = new byte[6];
-        if (!await ReadExactlyOrEofAsync(stream, head.AsMemory(0, 2), ct)) return null;
+        if (!await ReadExactlyOrEofAsync(stream, head.AsMemory(0, 1), idle)) return null;
         if (head[0] != 0x30) throw new LdapProtocolException("message is not a SEQUENCE", 0);
+
+        using var rest = CancellationTokenSource.CreateLinkedTokenSource(stop);
+        rest.CancelAfter(frameTimeout);
+        var ct = rest.Token;
+        await stream.ReadExactlyAsync(head.AsMemory(1, 1), ct);
 
         int length, headerLength;
         var first = head[1];
@@ -44,11 +55,25 @@ internal static class LdapCodec
             headerLength = 2 + n;
         }
 
-        var frame = new byte[headerLength + length];
+        var frame = new byte[headerLength + Math.Min(length, InitialBody)];
         head.AsSpan(0, headerLength).CopyTo(frame);
-        await stream.ReadExactlyAsync(frame.AsMemory(headerLength, length), ct);
+        var filled = 0;
+        while (filled < length)
+        {
+            if (headerLength + filled == frame.Length)
+                Array.Resize(ref frame, headerLength + Math.Min(length, 2 * (frame.Length - headerLength)));
+            var got = await stream.ReadAsync(frame.AsMemory(headerLength + filled), ct);
+            if (got == 0) throw new EndOfStreamException("connection closed mid-message");
+            filled += got;
+        }
         return frame;
     }
+
+    private const int InitialBody = 4096;
+
+    // Without timeouts: the test client's side of the wire.
+    public static Task<byte[]?> ReadFrameAsync(Stream stream, int maxBytes, CancellationToken ct)
+        => ReadFrameAsync(stream, maxBytes, Timeout.InfiniteTimeSpan, ct, ct);
 
     private static async Task<bool> ReadExactlyOrEofAsync(Stream stream, Memory<byte> buffer, CancellationToken ct)
     {
@@ -75,7 +100,9 @@ internal static class LdapCodec
         {
             var outer = new AsnReader(frame, AsnEncodingRules.BER);
             var msg = outer.ReadSequence();
-            if (!msg.TryReadInt32(out messageId) || messageId < 0)
+            // 0 is reserved for the server's unsolicited notifications
+            // (RFC 4511 §4.1.1.1); a request never carries it.
+            if (!msg.TryReadInt32(out messageId) || messageId <= 0)
                 throw new LdapProtocolException("message id out of range", 0);
 
             var tag = msg.PeekTag();

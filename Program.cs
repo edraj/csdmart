@@ -796,6 +796,14 @@ switch (subcommand)
                                            into the database
                              --force     → overwrite existing files / upsert
                                            existing rows (default: skip both)
+              import-ldif    Move an LDAP directory (slapcat output) into the
+                             users, keeping {SSHA}/{SHA*}/{ARGON2} password
+                             hashes until each owner's first sign-in.
+                             Usage: dmart import-ldif <file.ldif> [--apply]
+                                      [--update]
+                             (no flag)   → dry run: print what it would do
+                             --apply     → write
+                             --update    → also update accounts that exist
               website        Build the static site from the "website" space,
                              reading only what an anonymous visitor may see.
                              The server serves the result under WEBSITE_URL.
@@ -930,9 +938,12 @@ switch (subcommand)
         var hashed = hasher.Hash(password);
         await using var conn = await dbInst.OpenAsync();
         await using var cmd = conn.Command(
-            "UPDATE users SET password = $1, is_active = true, attempt_count = 0 WHERE shortname = $2");
+            "UPDATE users SET password = $1, is_active = true, attempt_count = 0, updated_at = $3 WHERE shortname = $2");
         DbParams.Add(cmd, hashed);
         DbParams.Add(cmd, username);
+        // A change like any other: a directory replica learns of it through
+        // updated_at (docs/directory-replica.md).
+        DbParams.Add(cmd, Dmart.Utils.TimeUtils.Now());
         var rows = await cmd.ExecuteNonQueryAsync();
         if (rows > 0)
         {
@@ -1933,6 +1944,14 @@ switch (subcommand)
         {
             Environment.ExitCode = await SeedCommand.SeedDbAsync(spacesFolder, dotenvPath, dotenvValues, force);
         }
+        return;
+    }
+
+    case "import-ldif":
+    {
+        // Move an LDAP directory (slapcat output) into dmart's users, with
+        // their password hashes — see Cli/ImportLdifCommand.cs.
+        Environment.ExitCode = await Dmart.Cli.ImportLdifCommand.RunAsync(serverArgs, dotenvPath, dotenvValues);
         return;
     }
 

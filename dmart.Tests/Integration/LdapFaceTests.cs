@@ -42,13 +42,14 @@ public sealed class LdapFaceTests(LdapFaceTests.Fixture fx) : IClassFixture<Ldap
         public string Service { get; } = "ldsvc_" + Suffix;
         public string Alice { get; } = "ldalice_" + Suffix;   // mailbox, alias, the service
         public string Bob { get; } = "ldbob_" + Suffix;       // the service, but deactivated
-        public string Carol { get; } = "ldcarol_" + Suffix;   // no mailbox: `mail` is her contact email
+        public string Carol { get; } = "ldcarol_" + Suffix;   // no mailbox: `mail` is her verified contact email
         public string Group { get; } = "ldgrp_" + Suffix;
         public string Granted { get; } = "ldmail" + Suffix;   // a service slug
         public string AliceMailbox => $"{Alice}@Hosted.test";
         public string AliceAlias => $"alias-{Alice}@hosted.test";
         public string AliceContact => $"{Alice}@elsewhere.test";
         public string CarolContact => $"{Carol}@elsewhere.test";
+        public string BobContact => $"{Bob}@hosted.test";      // unverified: never his `mail`
 
         public async Task InitializeAsync()
         {
@@ -84,11 +85,14 @@ public sealed class LdapFaceTests(LdapFaceTests.Fixture fx) : IClassFixture<Ldap
             {
                 Mailbox = AliceMailbox, MailAliases = [AliceAlias], Services = [Granted],
             });
-            await users.UpsertAsync(NewUser(Bob, hash, UserType.Web, active: false, groups: [Group], email: null) with
+            await users.UpsertAsync(NewUser(Bob, hash, UserType.Web, active: false, groups: [Group], email: BobContact) with
             {
                 Services = [Granted],
             });
-            await users.UpsertAsync(NewUser(Carol, hash, UserType.Web, active: true, groups: [], email: CarolContact));
+            await users.UpsertAsync(NewUser(Carol, hash, UserType.Web, active: true, groups: [], email: CarolContact) with
+            {
+                IsEmailVerified = true,
+            });
 
             for (var i = 0; i < 100; i++)
             {
@@ -212,6 +216,18 @@ public sealed class LdapFaceTests(LdapFaceTests.Fixture fx) : IClassFixture<Ldap
             .Entries.ShouldHaveSingleItem();
         carol.Dn.ShouldBe(UserDn(fx.Carol));
         carol.Attrs["mail"].ShouldBe(new[] { fx.CarolContact });
+    }
+
+    // Postfix routes by `mail`: an address nobody confirmed, in a hosted domain,
+    // would otherwise claim that domain's mail for whoever typed it.
+    [FactIfPg]
+    public async Task An_Unverified_Contact_Email_Is_Not_A_Directory_Address()
+    {
+        await using var c = await TestLdapClient.ConnectAsync(fx.Port);
+        (await c.BindAsync(ServiceDn, Password)).ShouldBe(LdapResult.Success);
+        (await c.SearchAsync($"ou=people,{Base}", Filter.Eq("mail", fx.BobContact))).Entries.ShouldBeEmpty();
+        var bob = (await c.SearchAsync($"ou=people,{Base}", Filter.Eq("uid", fx.Bob))).Entries.ShouldHaveSingleItem();
+        bob.Attrs.ContainsKey("mail").ShouldBeFalse();
     }
 
     [FactIfPg]

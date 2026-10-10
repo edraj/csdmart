@@ -50,6 +50,11 @@ and auditable. Groups keep serving `memberOf`.
   - If `USER_MAIL_DOMAINS` is set, the domain must be one of them.
   - Must not be another user's contact `email`. Otherwise LDAP `mail` lookups
     could match two people.
+- **A contact `email`**, the other way round, must not be another user's
+  mailbox or alias: on create, admin update, `/user/verify-contact`,
+  registration and OAuth sign-in. A login or reset by that address would
+  otherwise reach the contact's account rather than the mailbox's owner.
+  A user's own mailbox may also be their contact email.
 - **Aliases** require a mailbox, and an alias may not repeat the user's own
   mailbox.
 - **Services**:
@@ -158,6 +163,10 @@ with no command timeout. The 3M-user scale run shaped three details:
   lookups that need the index with `unavailable`. "No such entry" would make
   Postfix bounce mail for real addresses with a permanent 550; `unavailable`
   makes it defer. `uid` lookups do not need the index and keep working.
+- **Only an empty index is repaired.** Checking a non-empty one against
+  `users` would cost a full comparison on every boot. An index that is wrong
+  but not empty (rows edited by hand in SQL) is not detected; empty both
+  tables and restart to rebuild it.
 
 ### Clashes
 
@@ -170,14 +179,22 @@ The loser's whole user write rolls back and surfaces as the same error.
 
 | LDAP | dmart |
 |---|---|
-| `mail` | `mailbox`, else `email` |
+| `mail` | `mailbox`, else `email` once verified |
 | `mailAlias` | `mail_aliases` |
 | `authorizedService` | `services` |
 | `memberOf` | `groups` (unchanged) |
 
+An unverified contact email is never `mail`: Postfix routes by it, and an
+address someone typed in a hosted domain would claim that domain's mail.
+
 Indexed attributes for the search planner are `uid`, `mail`, `mailAlias` and
 `mobile` (point lookups), and `authorizedService` (a range read a page at a
-time). A filter anchored on none of them still scans. Paged searches now read
+time). `uid` matches whatever its case (`idx_users_shortname_lower`), as do
+group names; `mobile` is tried as written, then as digits with and without a
+leading `+`. An OR of more than 64 values is not looked up one by one but
+scanned under the budget, and a filter of more than 256 terms is refused.
+A group whose member list would exceed `LDAP_MAX_SCAN` answers
+`adminLimitExceeded` instead of loading it. A filter anchored on none of them still scans. Paged searches now read
 a page at a time instead of materializing the result. `LDAP_MAX_SCAN` bounds
 the rows examined **per request** (per page, for paged searches), so a
 paged full listing continues across pages instead of failing.
@@ -196,9 +213,18 @@ paged full listing continues across pages instead of failing.
 - **Search.** `@services:gitea`, `@mail_aliases:help@example.org` and
   `@mailbox:alice@example.org` work in the query grammar, on the users table.
   Values are folded to lowercase like the stored ones. On PostgreSQL the two
-  array columns have GIN indexes, as `roles` and `groups` do.
-- **cxb.** The user form has a "Mail and services" section: the mailbox,
-  aliases one per line, and services comma-separated.
+  array columns have GIN indexes, as `roles` and `groups` do. `@services:*`
+  finds users with at least one service (`-@services:*`, none), and the same
+  for `@mail_aliases:*`.
+- **cxb and the catalog.** Both user forms (cxb's, and the catalog's User
+  Management) have a "Mail and services" section: the mailbox, aliases one
+  per line, and services comma-separated.
+- **`dmart import-ldif`** reads what `slapcat` prints and creates the users,
+  bots and groups, keeping `{SSHA}`-family and `{ARGON2}` password hashes
+  until each owner's first sign-in replaces them with Argon2id
+  (`Auth/LegacyLdapHash.cs`). A `mail` outside `USER_MAIL_DOMAINS` becomes
+  the contact email. Dry run by default; `--apply` writes, `--update`
+  overwrites accounts that exist.
 - **Updates check only what changes.** An admin UI sends the whole record
   back on every save, so the rules above run only when a field's value
   differs from the stored one, as for `email` and `msisdn`. A mailbox that

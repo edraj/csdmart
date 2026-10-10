@@ -340,6 +340,9 @@ public sealed class PostgresSqlDialect : ISqlDialect
     // array_length returns NULL for an empty array, hence the COALESCE.
     public string ArrayLength(string column) => $"COALESCE(array_length({column}, 1), 0)";
 
+    public string JsonArrayLength(string column)
+        => $"(CASE WHEN jsonb_typeof({column}) = 'array' THEN jsonb_array_length({column}) ELSE 0 END)";
+
     public string TimestampFrom(string placeholder, bool epochMillis)
         => epochMillis ? $"to_timestamp({placeholder}::float8 / 1000.0)" : $"{placeholder}::timestamptz";
 

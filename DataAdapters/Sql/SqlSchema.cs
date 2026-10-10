@@ -404,9 +404,12 @@ public static class SqlSchema
 
     -- A directory replica's watermark in its primary's feed (Services/
     -- DirectoryReplica). One row, absent on anything that is not a replica.
+    -- synced_at is the replica's own clock at that sync: how stale its copy
+    -- is, which survives a restart while the primary is unreachable.
     CREATE TABLE IF NOT EXISTS directory_replica_state (
         id INTEGER PRIMARY KEY CHECK (id = 1),
-        watermark TIMESTAMP
+        watermark TIMESTAMP,
+        synced_at TIMESTAMP
     );
 
     -- ============================================================
@@ -609,12 +612,6 @@ public static class SqlSchema
         ON users USING GIN (roles jsonb_path_ops);
     CREATE INDEX IF NOT EXISTS idx_users_groups_gin
         ON users USING GIN (groups jsonb_path_ops);
-    -- @services: and @mail_aliases: in the search grammar. The LDAP face and
-    -- the uniqueness rules use user_services / user_addresses instead.
-    CREATE INDEX IF NOT EXISTS idx_users_services_gin
-        ON users USING GIN (services jsonb_path_ops);
-    CREATE INDEX IF NOT EXISTS idx_users_mail_aliases_gin
-        ON users USING GIN (mail_aliases jsonb_path_ops);
     CREATE INDEX IF NOT EXISTS idx_roles_permissions_gin
         ON roles USING GIN (permissions jsonb_path_ops);
     CREATE INDEX IF NOT EXISTS idx_entries_schema_shortname
@@ -667,6 +664,26 @@ public static class SqlSchema
     ALTER TABLE users       ADD COLUMN IF NOT EXISTS mailbox               TEXT;
     ALTER TABLE users       ADD COLUMN IF NOT EXISTS mail_aliases          JSONB NOT NULL DEFAULT '[]'::jsonb;
     ALTER TABLE users       ADD COLUMN IF NOT EXISTS services              JSONB NOT NULL DEFAULT '[]'::jsonb;
+    -- @services: and @mail_aliases: in the search grammar; the LDAP face and
+    -- the uniqueness rules use user_services / user_addresses instead. AFTER
+    -- the columns above: on a database from before them, an index created
+    -- earlier in this script fails, and with it the whole script, which runs
+    -- as one transaction.
+    CREATE INDEX IF NOT EXISTS idx_users_services_gin
+        ON users USING GIN (services jsonb_path_ops);
+    CREATE INDEX IF NOT EXISTS idx_users_mail_aliases_gin
+        ON users USING GIN (mail_aliases jsonb_path_ops);
+    -- The directory's keyset walks (the LDAP face's unanchored searches, the
+    -- replica feed's full walk) order shortnames bytewise, as SQLite does, so
+    -- a replica on one engine and its primary on the other agree on which
+    -- names lie between two others. The primary key's index follows the
+    -- database collation, where 'Bob' sorts between 'alice' and 'carol'.
+    CREATE INDEX IF NOT EXISTS idx_users_shortname_bytes
+        ON users ((shortname COLLATE "C"));
+    -- LDAP's uid is case-insensitive: `uid=Alice` must find 'alice'
+    -- (UserRepository.GetByShortnameIgnoringCaseAsync).
+    CREATE INDEX IF NOT EXISTS idx_users_shortname_lower
+        ON users (lower(shortname));
     ALTER TABLE roles       ADD COLUMN IF NOT EXISTS last_checksum_history TEXT;
     ALTER TABLE roles       ADD COLUMN IF NOT EXISTS grantable_by          JSONB;
     ALTER TABLE roles       ADD COLUMN IF NOT EXISTS query_policies        TEXT[] NOT NULL DEFAULT '{}';

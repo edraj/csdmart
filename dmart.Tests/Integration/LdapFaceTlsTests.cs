@@ -22,6 +22,8 @@ namespace Dmart.Tests.Integration;
 //   127.0.0.1  an ordinary, untrusted client
 //   127.0.0.2  the client that uses up its failed-bind budget
 //   127.0.0.3  the one trusted peer (LdapTrustedPeers), like a local Dovecot
+//   127.0.0.4  an untrusted client trying a service account
+//   127.0.0.5  an untrusted client opening too many connections
 public sealed class LdapFaceTlsTests(LdapFaceTlsTests.Fixture fx) : IClassFixture<LdapFaceTlsTests.Fixture>
 {
     private const string Base = "dc=ldaptls";
@@ -30,6 +32,8 @@ public sealed class LdapFaceTlsTests(LdapFaceTlsTests.Fixture fx) : IClassFixtur
     private static readonly IPAddress Untrusted = IPAddress.Parse("127.0.0.1");
     private static readonly IPAddress Guesser = IPAddress.Parse("127.0.0.2");
     private static readonly IPAddress Trusted = IPAddress.Parse("127.0.0.3");
+    private static readonly IPAddress Outsider = IPAddress.Parse("127.0.0.4");
+    private static readonly IPAddress Crowd = IPAddress.Parse("127.0.0.5");
 
     public sealed class Fixture : IAsyncLifetime
     {
@@ -40,6 +44,8 @@ public sealed class LdapFaceTlsTests(LdapFaceTlsTests.Fixture fx) : IClassFixtur
         public int TlsPort { get; private set; }
         internal TestCertificates.Pem Certificate { get; } = TestCertificates.SelfSigned();
         public string Alice { get; } = "lstls_" + Guid.NewGuid().ToString("N")[..6];
+        public string Service { get; } = "lstsvc_" + Guid.NewGuid().ToString("N")[..6];
+        public string NotABot { get; } = "lstweb_" + Guid.NewGuid().ToString("N")[..6];   // listed, but a person
 
         public async Task InitializeAsync()
         {
@@ -62,17 +68,19 @@ public sealed class LdapFaceTlsTests(LdapFaceTlsTests.Fixture fx) : IClassFixtur
                 o.LdapTlsCertFile = certFile;
                 o.LdapTlsKeyFile = keyFile;
                 o.LdapTrustedPeers = Trusted.ToString();
+                o.LdapServiceAccounts = $"{Service},{NotABot}";
                 o.AuthRateLimitPerMinute = FailuresPerMinute;
             })));
             _ = Host.CreateClient();
 
             var hash = await Host.Services.GetRequiredService<PasswordHasher>().HashAsync(Password);
-            await Host.Services.GetRequiredService<UserRepository>().UpsertAsync(new User
-            {
-                Uuid = Guid.NewGuid().ToString(), Shortname = Alice, SpaceName = "management", Subpath = "/users",
-                OwnerShortname = Alice, IsActive = true, Password = hash, Type = UserType.Web, Language = Language.En,
-                Roles = new(), Groups = new(), CreatedAt = TimeUtils.Now(), UpdatedAt = TimeUtils.Now(),
-            });
+            foreach (var (name, type) in new[] { (Alice, UserType.Web), (Service, UserType.Bot), (NotABot, UserType.Web) })
+                await Host.Services.GetRequiredService<UserRepository>().UpsertAsync(new User
+                {
+                    Uuid = Guid.NewGuid().ToString(), Shortname = name, SpaceName = "management", Subpath = "/users",
+                    OwnerShortname = name, IsActive = true, Password = hash, Type = type, Language = Language.En,
+                    Roles = new(), Groups = new(), CreatedAt = TimeUtils.Now(), UpdatedAt = TimeUtils.Now(),
+                });
 
             foreach (var port in new[] { Port, TlsPort })
                 for (var i = 0; i < 100; i++)
@@ -95,7 +103,8 @@ public sealed class LdapFaceTlsTests(LdapFaceTlsTests.Fixture fx) : IClassFixtur
         {
             if (Host is not null)
             {
-                await TestUserCleanup.DeleteUserAndOwnedAsync(Host.Services, Alice);
+                foreach (var name in new[] { Alice, Service, NotABot })
+                    await TestUserCleanup.DeleteUserAndOwnedAsync(Host.Services, name);
                 await Host.DisposeAsync();
             }
             await ((IAsyncLifetime)_factory).DisposeAsync();
@@ -176,6 +185,72 @@ public sealed class LdapFaceTlsTests(LdapFaceTlsTests.Fixture fx) : IClassFixtur
             for (var i = 0; i < FailuresPerMinute + 2; i++)
                 (await c.BindAsync(nobody, Password)).ShouldBe(LdapResult.InvalidCredentials);
             (await c.BindAsync(AliceDn, Password)).ShouldBe(LdapResult.Success);
+        }
+    }
+
+    private string ServiceDn(string name) => $"cn={name},ou=services,{Base}";
+
+    // A service account reads every user, so its credential is accepted only
+    // from the deployment's own hosts, only under ou=services, and only for a
+    // bot.
+    [FactIfPg]
+    public async Task Service_Accounts_Bind_Only_As_Bots_From_Trusted_Peers()
+    {
+        await using (var c = await TestLdapClient.ConnectAsync(fx.Port, Trusted))
+        {
+            (await c.BindAsync(ServiceDn(fx.Service), Password)).ShouldBe(LdapResult.Success);
+            (await c.BindAsync($"uid={fx.Service},ou=people,{Base}", Password))
+                .ShouldBe(LdapResult.InvalidCredentials, "a service is not a person");
+            (await c.BindAsync(ServiceDn(fx.NotABot), Password))
+                .ShouldBe(LdapResult.InvalidCredentials, "listed as a service, but not a bot");
+        }
+        await using (var c = await TestLdapClient.ConnectTlsAsync(fx.TlsPort, fx.Certificate.Public, Outsider))
+        {
+            (await c.BindAsync(ServiceDn(fx.Service), Password))
+                .ShouldBe(LdapResult.InvalidCredentials, "the right password, from outside the trusted peers");
+            (await c.BindAsync(AliceDn, Password)).ShouldBe(LdapResult.Success);
+        }
+    }
+
+    [FactIfPg]
+    public async Task A_Uid_Binds_Whatever_Its_Case()
+    {
+        await using var c = await TestLdapClient.ConnectAsync(fx.Port, Trusted);
+        (await c.BindAsync($"uid={fx.Alice.ToUpperInvariant()},ou=people,{Base}", Password)).ShouldBe(LdapResult.Success);
+    }
+
+    // Before a bind, a connection from outside the trusted peers may send
+    // small messages only: a length header announcing more is refused before
+    // the server reads, or reserves, any of it.
+    [FactIfPg]
+    public async Task A_Large_Message_Before_A_Bind_Ends_The_Connection()
+    {
+        await using var c = await TestLdapClient.ConnectAsync(fx.Port, Untrusted);
+        await c.SendRawAsync([0x30, 0x83, 0x01, 0x86, 0xA0]);   // a 100,000-byte SEQUENCE
+        var notice = await c.ReceiveFrameOrCloseAsync();
+        notice.ShouldNotBeNull("a notice of disconnection");
+        (await c.ReceiveFrameOrCloseAsync()).ShouldBeNull();
+    }
+
+    [FactIfPg]
+    public async Task One_Address_Cannot_Take_Every_Connection()
+    {
+        var open = new List<TestLdapClient>();
+        try
+        {
+            for (var i = 0; i < 32; i++) open.Add(await TestLdapClient.ConnectAsync(fx.Port, Crowd));
+            // Each one is served.
+            (await open[^1].BindAsync("", "")).ShouldBe(LdapResult.Success);
+
+            await using var extra = await TestLdapClient.ConnectAsync(fx.Port, Crowd);
+            (await extra.ReceiveFrameOrCloseAsync()).ShouldBeNull("the 33rd connection is closed at once");
+
+            await using var other = await TestLdapClient.ConnectAsync(fx.Port, Untrusted);
+            (await other.BindAsync("", "")).ShouldBe(LdapResult.Success, "another address is unaffected");
+        }
+        finally
+        {
+            foreach (var c in open) await c.DisposeAsync();
         }
     }
 }

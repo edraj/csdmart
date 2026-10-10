@@ -2293,7 +2293,14 @@
     "google_id": "معرّف Google",
     "facebook_id": "معرّف Facebook",
     "apple_id": "معرّف Apple",
-    "social_avatar_url": "رابط صورة الملف الاجتماعي"
+    "social_avatar_url": "رابط صورة الملف الاجتماعي",
+    "mail_and_services": "البريد والخدمات",
+    "mailbox": "صندوق البريد المستضاف",
+    "mailbox_help": "العنوان الذي يستضيفه هذا النظام للمستخدم، ويقدّمه LDAP في الحقل mail. وهو غير بريد التواصل.",
+    "mail_aliases": "عناوين بريد بديلة",
+    "mail_aliases_help": "عنوان واحد في كل سطر. يصل البريد المرسل إلى أيّ منها إلى صندوق البريد.",
+    "services": "الخدمات",
+    "services_help": "مفصولة بفواصل، مثل mail وmatrix وgitea. يقدّمها LDAP في الحقل authorizedService."
   },
   "notifications_page": {
     "connection": {

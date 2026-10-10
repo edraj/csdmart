@@ -217,7 +217,8 @@ public sealed class DmartSettings
     public string LdapBaseDn { get; set; } = "dc=dmart";
     // Comma-separated dmart user shortnames that may bind as
     // cn=<name>,ou=services,<base> and read the whole directory (Dex, Postfix,
-    // Gitea...). Every other bind sees only its own entry.
+    // Gitea...). Every other bind sees only its own entry. Each must be a bot,
+    // binds only from LdapTrustedPeers, and never as uid=<name>,ou=people.
     public string LdapServiceAccounts { get; set; } = "";
     // Comma-separated objectClass values added to every user entry, for
     // consumers whose filters name a site schema (e.g. "freexPerson,freexUser").
@@ -248,6 +249,11 @@ public sealed class DmartSettings
     public string DirectoryReplicaPassword { get; set; } = "";
     // Seconds between polls of the primary.
     public int DirectoryReplicaIntervalSeconds { get; set; } = 30;
+    // Hours a replica keeps answering binds after its last successful sync.
+    // Past it, binds answer `unavailable` (its copy may still hold a password
+    // the primary has changed) while lookups keep answering, so mail still
+    // flows. 0: no limit.
+    public int DirectoryReplicaMaxStalenessHours { get; set; } = 24;
 
     public string[] ParseDirectoryFeedReaders() => SplitList(DirectoryFeedReaders);
 

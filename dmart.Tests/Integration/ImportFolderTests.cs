@@ -359,6 +359,58 @@ public class ImportFolderTests : IClassFixture<DmartFactory>
         }
     }
 
+    // --fast holds one transaction open for the whole run, and PostgreSQL has
+    // no nested BEGIN: the user write, which keeps its directory index rows in
+    // its own transaction everywhere else, must join the session's instead.
+    // A user with a mailbox is the case that writes both.
+    [FactIfFastImport]
+    public async Task Fast_Import_Writes_Users_And_Their_Directory_Index()
+    {
+        var sp = _factory.Services;
+        _factory.CreateClient();
+        var io = sp.GetRequiredService<ImportExportService>();
+        var users = sp.GetRequiredService<UserRepository>();
+        var shortname = "fastusr_" + Guid.NewGuid().ToString("N")[..6];
+        var mailbox = $"{shortname}@hosted.test";
+
+        var stagingDir = Path.Combine(Path.GetTempPath(), $"dmart-fastusers-{Guid.NewGuid():N}");
+        var metaDir = Path.Combine(stagingDir, "management", "users", ".dm", shortname);
+        Directory.CreateDirectory(metaDir);
+        // A space dump needs its space meta; preserveExisting keeps the live
+        // management space as it is.
+        Directory.CreateDirectory(Path.Combine(stagingDir, "management", ".dm"));
+        await File.WriteAllTextAsync(Path.Combine(stagingDir, "management", ".dm", "meta.space.json"),
+            JsonSerializer.Serialize(new Dictionary<string, object>
+            {
+                ["uuid"] = Guid.NewGuid().ToString(), ["shortname"] = "management",
+                ["is_active"] = true, ["owner_shortname"] = "dmart",
+            }));
+        await File.WriteAllTextAsync(Path.Combine(metaDir, "meta.user.json"), JsonSerializer.Serialize(new Dictionary<string, object>
+        {
+            ["uuid"] = Guid.NewGuid().ToString(), ["shortname"] = shortname, ["is_active"] = true,
+            ["owner_shortname"] = "dmart", ["type"] = "web", ["language"] = "en",
+            ["mailbox"] = mailbox, ["mail_aliases"] = new[] { $"alias-{shortname}@hosted.test" },
+            ["services"] = new[] { "mail" },
+        }));
+        try
+        {
+            var resp = await io.ImportFolderAsync(stagingDir, actor: null,
+                preserveExisting: true, fastUnsafeNoFkCheck: true, fastParallelism: 1, batchSize: 100);
+            resp.Status.ShouldBe(Status.Success, customMessage: $"unexpected error: {resp.Error?.Message}");
+
+            var got = await users.GetByShortnameAsync(shortname);
+            got.ShouldNotBeNull();
+            got!.Mailbox.ShouldBe(mailbox);
+            (await users.FindAddressOwnerAsync(mailbox)).ShouldBe((shortname, "mailbox"));
+            (await users.FindAddressOwnerAsync($"alias-{shortname}@hosted.test")).ShouldBe((shortname, "alias"));
+        }
+        finally
+        {
+            await Dmart.Tests.Infrastructure.TestUserCleanup.DeleteUserAndOwnedAsync(sp, shortname);
+            try { Directory.Delete(stagingDir, recursive: true); } catch { }
+        }
+    }
+
     // Same batched-flush path as the test above, but on the DEFAULT (non --fast)
     // session, so it runs without the session_replication_role privilege that
     // gates the --fast variant. Both sessions share the scratch

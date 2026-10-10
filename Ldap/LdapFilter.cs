@@ -7,20 +7,35 @@ namespace Dmart.Ldap;
 // against an LdapEntry.
 //
 // Evaluation is three-valued, as the RFC requires: a comparison on an
-// attribute the entry does not carry, or with a matching rule the face does not
-// implement, is Undefined rather than False. The difference is visible —
-// `(!(fooBar=1))` matches nothing, not everything — and a client that relies on
-// it would otherwise get entries it never asked for.
+// attribute the face does not know (LdapSubschema), or with a matching rule it
+// does not implement, is Undefined rather than False. The difference is
+// visible: `(!(fooBar=1))` matches nothing, not everything, and a client that
+// relies on it would otherwise get entries it never asked for. A KNOWN
+// attribute the entry happens not to carry is plain False, so
+// `(!(mailAlias=x))` matches a user without aliases.
 internal abstract record LdapFilter
 {
     // Nested and/or/not past this depth is refused. Real filters nest two or
     // three deep; the limit exists because the decoder recurses, and a crafted
     // filter is otherwise a stack-depth attack on an unauthenticated socket.
     public const int MaxDepth = 32;
+    // And past this many nodes in all: a flat OR of thousands of terms is
+    // evaluated against every candidate entry, and real filters have a dozen.
+    public const int MaxNodes = 256;
+    // An OR anchored on more values than this is answered by a scan under the
+    // scan budget instead of one point lookup per value.
+    public const int MaxAnchors = 64;
 
-    public static LdapFilter Decode(AsnReader reader, int messageId, int depth = 0)
+    public static LdapFilter Decode(AsnReader reader, int messageId)
+    {
+        var nodes = 0;
+        return Decode(reader, messageId, 0, ref nodes);
+    }
+
+    private static LdapFilter Decode(AsnReader reader, int messageId, int depth, ref int nodes)
     {
         if (depth > MaxDepth) throw new LdapProtocolException("filter nested too deeply", messageId);
+        if (++nodes > MaxNodes) throw new LdapProtocolException($"filter has more than {MaxNodes} terms", messageId);
         var tag = reader.PeekTag();
         if (tag.TagClass != TagClass.ContextSpecific)
             throw new LdapProtocolException("filter is not a context-specific CHOICE", messageId);
@@ -32,7 +47,7 @@ internal abstract record LdapFilter
             {
                 var set = reader.ReadSetOf(skipSortOrderValidation: true, new Asn1Tag(TagClass.ContextSpecific, tag.TagValue, isConstructed: true));
                 var children = new List<LdapFilter>();
-                while (set.HasData) children.Add(Decode(set, messageId, depth + 1));
+                while (set.HasData) children.Add(Decode(set, messageId, depth + 1, ref nodes));
                 return tag.TagValue == 0 ? new AndFilter(children) : new OrFilter(children);
             }
             case 2:
@@ -40,7 +55,7 @@ internal abstract record LdapFilter
                 // `not [2] Filter` — a CHOICE cannot be implicitly tagged, so
                 // this is an explicit wrapper around exactly one filter.
                 var inner = reader.ReadSequence(new Asn1Tag(TagClass.ContextSpecific, 2, isConstructed: true));
-                var child = Decode(inner, messageId, depth + 1);
+                var child = Decode(inner, messageId, depth + 1, ref nodes);
                 inner.ThrowIfNotEmpty();
                 return new NotFilter(child);
             }
@@ -126,13 +141,16 @@ internal abstract record LdapFilter
     // carrying only those of its values then matches exactly when the full
     // entry would, which lets the face skip loading a large multi-valued
     // attribute (a group's `member` list) that the filter only probes for
-    // named values. Un-negated matters: with a value missing, a test reads
-    // Undefined where the full entry reads False, which AND and OR treat
-    // alike but NOT does not.
+    // named values. Un-negated, conservatively: a NOT is rare in these
+    // filters, and loading the whole list for one is always correct.
     public abstract bool TestsOnlyByEquality(string attribute, List<string> values);
 
     private protected static bool Names(string filterAttribute, string attribute)
         => LdapSchema.Canonical(filterAttribute).Equals(attribute, StringComparison.OrdinalIgnoreCase);
+
+    // A test of an attribute the entry does not carry.
+    private protected static Tri Absent(string attribute)
+        => LdapSubschema.IsKnownAttribute(attribute) ? Tri.False : Tri.Undefined;
 }
 
 internal enum Tri { False, True, Undefined }
@@ -188,6 +206,7 @@ internal sealed record OrFilter(IReadOnlyList<LdapFilter> Children) : LdapFilter
         {
             if (c.Anchors(indexed) is not { } a) return null;
             all.AddRange(a);
+            if (all.Count > MaxAnchors) return null;
         }
         return all;
     }
@@ -221,7 +240,7 @@ internal sealed record ComparisonFilter(FilterKind Kind, string Attribute, strin
     public override Tri Evaluate(LdapEntry entry)
     {
         var values = entry.Get(Attribute);
-        if (values is null) return Tri.Undefined;
+        if (values is null) return Absent(Attribute);
         var wanted = LdapSchema.NormalizeValue(Attribute, Value);
         foreach (var v in values)
         {
@@ -272,7 +291,7 @@ internal sealed record SubstringFilter(string Attribute, string? Initial, IReadO
     public override Tri Evaluate(LdapEntry entry)
     {
         var values = entry.Get(Attribute);
-        if (values is null) return Tri.Undefined;
+        if (values is null) return Absent(Attribute);
         foreach (var v in values)
             if (Matches(LdapSchema.NormalizeValue(Attribute, v))) return Tri.True;
         return Tri.False;

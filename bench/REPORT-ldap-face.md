@@ -49,6 +49,9 @@ the AOT binary.
 | Add, modify, delete, modify-DN, compare, password modify | `unwillingToPerform` (53). Users change through dmart |
 | StartTLS, LDAPS | With `LDAP_TLS_CERT_FILE`/`LDAP_TLS_KEY_FILE`; `LDAPS_PORT` for implicit TLS. The files are re-read when they change. A cleartext password bind from outside `LDAP_TRUSTED_PEERS` is then refused with `confidentialityRequired` (13) |
 | SASL | `authMethodNotSupported` (7) |
+| Service accounts | Bots only, bound as `cn=<name>,ou=services` and only from `LDAP_TRUSTED_PEERS`; `uid=<name>,ou=people` names nobody |
+| Connections | 512 in all, 32 per address (an IPv6 /64) outside the trusted peers. Before a bind, an untrusted connection may send 64 KB messages and idles out after 30 s; every message must complete within 30 s of its first byte and every answer be read within 60 s. A bound connection's account is read again every 5 minutes and dropped to anonymous once unusable |
+| Filters | At most 256 terms and 32 levels; an OR over more than 64 values is scanned under the budget rather than looked up value by value. A known attribute the entry lacks is False, an unknown one Undefined (RFC 4511 §4.5.1.7) |
 
 The tree:
 
@@ -67,7 +70,7 @@ A user entry has:
 
 | LDAP | dmart user |
 |---|---|
-| `mail` | `mailbox`, else the contact `email` |
+| `mail` | `mailbox`, else the contact `email` once verified |
 | `mailAlias` | `mail_aliases` |
 | `authorizedService` | `services` |
 | `memberOf` | `groups` |
@@ -313,7 +316,8 @@ run's details are in this file's git history.
 4. ~~**Password self-service.**~~ Done: dmart's change and reset flows
    replace SSP. A reset may name the account by its hosted mailbox; the code
    goes to the contact channel. See `docs/user-directory-fields.md`.
-   Not done: importing `{SSHA}` hashes from OpenLDAP.
+   ~~Not done: importing `{SSHA}` hashes from OpenLDAP.~~ Done:
+   `dmart import-ldif` keeps them until each owner's first sign-in.
 5. ~~**Per-service delegation.**~~ Done: `USER_SERVICE_GRANTERS`.
 6. ~~**cxb, SDKs and query grammar**~~ Done. tsdmart's types wait on a
    release of that package.

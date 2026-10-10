@@ -41,15 +41,30 @@ internal sealed class LdapServer(
     private readonly TimeProvider _clock = clock ?? TimeProvider.System;
 
     // Bind and search requests are a few hundred bytes. Anything near this is
-    // not a client this face serves.
+    // not a client this face serves; before a bind, far less is.
     private const int MaxMessageBytes = 1 << 20;
+    private const int PreBindMaxMessageBytes = 64 << 10;
     private const int MaxConnections = 512;
+    // Open connections from one address (an IPv6 /64) outside
+    // LDAP_TRUSTED_PEERS, so one host cannot take every slot.
+    private const int MaxConnectionsPerAddress = 32;
     // Dovecot and Postfix hold connections open between lookups; a connection
-    // idle this long is closed and they reconnect on next use.
+    // idle this long is closed and they reconnect on next use. One that has
+    // not bound, from outside the trusted peers, gets far less.
     private static readonly TimeSpan IdleTimeout = TimeSpan.FromMinutes(15);
+    private static readonly TimeSpan PreBindIdleTimeout = TimeSpan.FromSeconds(30);
+    // From a message's first byte to its last, and for each response write:
+    // a client that trickles a request or stops reading its results gives
+    // its slot back.
+    private static readonly TimeSpan FrameTimeout = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan WriteTimeout = TimeSpan.FromSeconds(60);
+    // How long a bind is taken on trust before the account is read again: a
+    // pooled connection outlives a deactivation by at most this.
+    private static readonly TimeSpan RecheckBindEvery = TimeSpan.FromMinutes(5);
 
     private readonly SemaphoreSlim _slots = new(MaxConnections, MaxConnections);
     private readonly ConcurrentDictionary<Guid, Task> _connections = new();
+    private readonly ConcurrentDictionary<IPAddress, int> _perAddress = new();
 
     public IPEndPoint? BoundEndpoint { get; private set; }
     public IPEndPoint? BoundTlsEndpoint { get; private set; }
@@ -110,9 +125,32 @@ internal sealed class LdapServer(
         {
             while (!stoppingToken.IsCancellationRequested)
             {
-                var client = await listener.AcceptTcpClientAsync(stoppingToken);
+                TcpClient client;
+                try
+                {
+                    client = await listener.AcceptTcpClientAsync(stoppingToken);
+                }
+                catch (SocketException ex)
+                {
+                    // A connection reset before it was accepted, or a burst
+                    // past the descriptor limit: that one connection is lost,
+                    // not the listener.
+                    log.LogInformation("LDAP accept failed: {Error}", ex.SocketErrorCode);
+                    continue;
+                }
+                var address = (client.Client.RemoteEndPoint as IPEndPoint)?.Address;
+                var key = address is null || guard.IsTrusted(address) ? null : LdapBindGuard.Subscriber(address);
+                if (key is not null && _perAddress.AddOrUpdate(key, 1, (_, n) => n + 1) > MaxConnectionsPerAddress)
+                {
+                    Release(key);
+                    log.LogWarning("LDAP connection from {Peer} refused: {Max} connections open from that address",
+                        client.Client.RemoteEndPoint, MaxConnectionsPerAddress);
+                    client.Dispose();
+                    continue;
+                }
                 if (!_slots.Wait(0, CancellationToken.None))
                 {
+                    if (key is not null) Release(key);
                     log.LogWarning("LDAP connection from {Peer} refused: {Max} connections open",
                         client.Client.RemoteEndPoint, MaxConnections);
                     client.Dispose();
@@ -125,6 +163,7 @@ internal sealed class LdapServer(
                     finally
                     {
                         _slots.Release();
+                        if (key is not null) Release(key);
                         _connections.TryRemove(id, out _);
                     }
                 }, CancellationToken.None);
@@ -135,9 +174,28 @@ internal sealed class LdapServer(
         }
     }
 
+    private void Release(IPAddress key)
+    {
+        // Decrement, and drop the entry at zero so the table holds only
+        // addresses with connections open.
+        while (_perAddress.TryGetValue(key, out var n))
+        {
+            if (n <= 1 ? _perAddress.TryRemove(new KeyValuePair<IPAddress, int>(key, n))
+                       : _perAddress.TryUpdate(key, n - 1, n))
+                return;
+        }
+    }
+
     private sealed class Session : IAsyncDisposable
     {
-        public LdapPrincipal Principal { get; set; } = LdapPrincipal.Anonymous;
+        private LdapPrincipal _principal = LdapPrincipal.Anonymous;
+        public LdapPrincipal Principal
+        {
+            get => _principal;
+            set { _principal = value; CheckedAt = DateTime.UtcNow; }
+        }
+        // When the bound account was last read and found usable.
+        public DateTime CheckedAt { get; set; } = DateTime.UtcNow;
         private PagedSearch? _paged;
         public PagedSearch? Paged => _paged;
 
@@ -153,18 +211,35 @@ internal sealed class LdapServer(
         public ValueTask DisposeAsync() => SetPagedAsync(null);
     }
 
-    // A paged search in progress: the cookie handed to the client, and the
-    // streaming search it resumes. One per connection — a new paged search
-    // replaces it, which is what every client does anyway.
-    private sealed record PagedSearch(byte[] Cookie, LdapDirectory.Search Search, IAsyncEnumerator<LdapEntry?> Results);
+    // A paged search in progress: the cookie handed to the client, the
+    // request it answers, and the streaming search it resumes. One per
+    // connection — a new paged search replaces it, which is what every client
+    // does anyway.
+    private sealed record PagedSearch(
+        byte[] Cookie, string Request, LdapDirectory.Search Search, IAsyncEnumerator<LdapEntry?> Results);
+
+    // RFC 2696: a continuation repeats the original request, cookie aside.
+    private static string RequestKey(LdapSearchRequest s)
+        => string.Join('\0', s.BaseDn, ((int)s.Scope).ToString(System.Globalization.CultureInfo.InvariantCulture),
+            s.Filter.ToString(), string.Join(',', s.Attributes), s.TypesOnly ? "1" : "0");
 
     // One client connection. The stream is replaced when StartTLS upgrades it.
-    private sealed class Connection(string peer, IPAddress? address, Stream stream)
+    private sealed class Connection(string peer, IPAddress? address, bool trusted, Stream stream)
     {
         public string Peer { get; } = peer;
         public IPAddress? Address { get; } = address;
+        public bool Trusted { get; } = trusted;
         public Stream Stream { get; set; } = stream;
         public bool Secure => Stream is SslStream;
+
+        // Every response goes through here: a client that stops reading loses
+        // the connection after WriteTimeout instead of holding it forever.
+        public async Task WriteAsync(byte[] message, CancellationToken ct)
+        {
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeout.CancelAfter(WriteTimeout);
+            await Stream.WriteAsync(message, timeout.Token);
+        }
     }
 
     private async Task ServeAsync(TcpClient client, bool implicitTls, CancellationToken stop)
@@ -172,7 +247,8 @@ internal sealed class LdapServer(
         using var _ = client;
         client.NoDelay = true;
         var endpoint = client.Client.RemoteEndPoint as IPEndPoint;
-        var conn = new Connection(endpoint?.ToString() ?? "?", endpoint?.Address, client.GetStream());
+        var conn = new Connection(endpoint?.ToString() ?? "?", endpoint?.Address,
+            endpoint is not null && guard.IsTrusted(endpoint.Address), client.GetStream());
         await using var session = new Session();
 
         try
@@ -181,22 +257,25 @@ internal sealed class LdapServer(
             while (!stop.IsCancellationRequested)
             {
                 byte[]? frame;
-                using (var idle = CancellationTokenSource.CreateLinkedTokenSource(stop))
-                {
-                    idle.CancelAfter(IdleTimeout);
-                    frame = await LdapCodec.ReadFrameAsync(conn.Stream, MaxMessageBytes, idle.Token);
-                }
-                if (frame is null) return;
-
+                // Until a bind succeeds, a connection from outside the
+                // trusted peers is held to small messages and a short idle.
+                var established = conn.Trusted || session.Principal.Kind != PrincipalKind.Anonymous;
                 LdapRequest req;
                 try
                 {
+                    using (var idle = CancellationTokenSource.CreateLinkedTokenSource(stop))
+                    {
+                        idle.CancelAfter(established ? IdleTimeout : PreBindIdleTimeout);
+                        frame = await LdapCodec.ReadFrameAsync(conn.Stream,
+                            established ? MaxMessageBytes : PreBindMaxMessageBytes, FrameTimeout, idle.Token, stop);
+                    }
+                    if (frame is null) return;
                     req = LdapCodec.Decode(frame);
                 }
                 catch (LdapProtocolException ex)
                 {
                     log.LogInformation("LDAP protocol error from {Peer}: {Error}", conn.Peer, ex.Message);
-                    await conn.Stream.WriteAsync(LdapCodec.NoticeOfDisconnection(LdapResult.ProtocolError, ex.Message), stop);
+                    await conn.WriteAsync(LdapCodec.NoticeOfDisconnection(LdapResult.ProtocolError, ex.Message), stop);
                     return;
                 }
 
@@ -226,8 +305,8 @@ internal sealed class LdapServer(
     // connection is finished.
     private async Task<bool> StartTlsAsync(LdapExtendedRequest e, Connection conn, Session session, CancellationToken ct)
     {
-        async Task Reply(int code, string message)
-            => await conn.Stream.WriteAsync(LdapCodec.Extended(e.MessageId, code, message, LdapOid.StartTls), ct);
+        Task Reply(int code, string message)
+            => conn.WriteAsync(LdapCodec.Extended(e.MessageId, code, message, LdapOid.StartTls), ct);
 
         if (!tls.Configured)
         {
@@ -260,7 +339,13 @@ internal sealed class LdapServer(
     private async Task DispatchAsync(LdapRequest req, Session session, Connection conn, CancellationToken ct)
     {
         var peer = conn.Peer;
-        Task Send(byte[] message) => conn.Stream.WriteAsync(message, ct).AsTask();
+        Task Send(byte[] message) => conn.WriteAsync(message, ct);
+
+        // A connection bound long ago answers as that account only while the
+        // account is still usable.
+        if (req is not LdapBindRequest && session.Principal.Kind != PrincipalKind.Anonymous
+            && DateTime.UtcNow - session.CheckedAt > RecheckBindEvery)
+            await RecheckAsync(session, conn, ct);
 
         // A critical control the face does not implement must fail the
         // operation (RFC 4511 §4.1.11). Paged results is the one it does.
@@ -307,6 +392,23 @@ internal sealed class LdapServer(
             };
             await Send(LdapCodec.Result(req.MessageId, opTag, LdapResult.OperationsError, "internal error"));
         }
+    }
+
+    private async Task RecheckAsync(Session session, Connection conn, CancellationToken ct)
+    {
+        var p = session.Principal;
+        var u = await directory.FindUserAsync(p.Shortname!, ct);
+        var still = u is { IsUsable: true }
+            && (p.Kind != PrincipalKind.Service || u.Type == Models.Enums.UserType.Bot);
+        if (still)
+        {
+            session.CheckedAt = DateTime.UtcNow;
+            return;
+        }
+        log.LogInformation("LDAP connection from {Peer}: {Shortname} is no longer usable; the connection is anonymous now",
+            conn.Peer, p.Shortname);
+        session.Principal = LdapPrincipal.Anonymous;
+        await session.SetPagedAsync(null);
     }
 
     private static byte[] Unsupported(int messageId, int opTag, LdapControl control)
@@ -360,26 +462,64 @@ internal sealed class LdapServer(
         // be a lie a mail client shows the user as a wrong password.
         if (!index.ReplicaSynced)
             return Reply(LdapResult.Unavailable, "this directory replica has not completed its first sync with the primary");
+        if (index.ReplicaStale)
+        {
+            log.LogWarning("LDAP bind from {Peer} as {Dn} refused: this replica last synced at {SyncedAt:u}, over {Hours} h ago",
+                peer, b.Name, index.ReplicaSyncedAt, index.ReplicaMaxStaleness.TotalHours);
+            return Reply(LdapResult.Unavailable, "this directory replica has not reached its primary for too long to vouch for a password");
+        }
 
         var principal = directory.ClassifyBindDn(b.Name);
         try
         {
+            // The account the DN names, by its stored shortname: uid is
+            // case-insensitive (uid=Alice binds as 'alice'). A service
+            // account is a service only under ou=services; under ou=people it
+            // names nobody, so its read-everything credential cannot pass as
+            // a person's.
+            var refusal = "no such account";
+            if (principal.Kind == PrincipalKind.User)
+            {
+                var named = await directory.FindUserAsync(principal.Shortname!, ct);
+                principal = named is null || directory.IsServiceAccount(named.Shortname)
+                    ? LdapPrincipal.Anonymous
+                    : new LdapPrincipal(PrincipalKind.User, named.Shortname);
+            }
+            // A service account reads every user; it binds only from the
+            // deployment's own hosts.
+            else if (principal.Kind == PrincipalKind.Service && !guard.IsTrusted(conn.Address))
+            {
+                principal = LdapPrincipal.Anonymous;
+                refusal = "service accounts bind from LDAP_TRUSTED_PEERS only";
+            }
+
             if (principal.Kind == PrincipalKind.Anonymous)
             {
                 // A DN that names nobody costs what a wrong password costs.
                 _ = await hasher.VerifyAsync(password, hasher.DecoyHash, ct);
                 guard.RecordFailure(conn.Address);
-                log.LogInformation("LDAP bind from {Peer} as {Dn} failed: no such account", peer, b.Name);
+                log.LogInformation("LDAP bind from {Peer} as {Dn} failed: {Reason}", peer, b.Name, refusal);
                 return Reply(LdapResult.InvalidCredentials);
             }
 
             var shortname = principal.Shortname!;
             var repeated = guard.IsRepeatedFailure(shortname, password);
-            var user = await userService.VerifyDirectoryBindAsync(shortname, password, countFailure: !repeated, ct);
-            if (user is null)
+            var result = await userService.VerifyDirectoryBindAsync(shortname, password, countFailure: !repeated, ct);
+            // A service account must be a bot: a person's account listed in
+            // LDAP_SERVICE_ACCOUNTS by mistake would read the whole directory.
+            if (result.User is { } svc && principal.Kind == PrincipalKind.Service
+                && svc.Type != Models.Enums.UserType.Bot)
+            {
+                log.LogWarning("LDAP bind from {Peer} as {Dn} refused: {Shortname} is listed in LDAP_SERVICE_ACCOUNTS but is not a bot",
+                    peer, b.Name, svc.Shortname);
+                return Reply(LdapResult.InvalidCredentials);
+            }
+            if (result.User is null)
             {
                 guard.RecordFailure(conn.Address);
-                guard.RememberFailure(shortname, password);
+                // Only a password that was checked and was wrong: one sent to a
+                // locked or deactivated account proves nothing about staleness.
+                if (result.WrongPassword) guard.RememberFailure(shortname, password);
                 log.LogInformation("LDAP bind from {Peer} as {Dn} failed{Repeat}", peer, b.Name,
                     repeated ? " (the same password as a recent failure; not counted toward the lockout again)" : "");
                 return Reply(LdapResult.InvalidCredentials);
@@ -389,6 +529,13 @@ internal sealed class LdapServer(
         catch (PasswordHashingCapacityException ex)
         {
             return Reply(LdapResult.Busy, $"password hashing is at capacity; retry in {ex.RetryAfterSeconds}s");
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // A bind that errors is charged like a failed one, or a request
+            // that reliably errors would be a free guess.
+            guard.RecordFailure(conn.Address);
+            throw;
         }
 
         session.Principal = principal;
@@ -452,13 +599,29 @@ internal sealed class LdapServer(
             return;
         }
 
-        var (size, cookie) = LdapCodec.ReadPagedControl(pagedControl.Value, s.MessageId);
+        int size;
+        byte[] cookie;
+        try
+        {
+            (size, cookie) = LdapCodec.ReadPagedControl(pagedControl.Value, s.MessageId);
+        }
+        catch (LdapProtocolException ex)
+        {
+            log.LogInformation("LDAP search with a malformed paged results control: {Error}", ex.Message);
+            await send(Done(LdapResult.ProtocolError, ex.Message));
+            return;
+        }
         PagedSearch paged;
         if (cookie.Length > 0)
         {
             if (session.Paged is not { } current || !CryptographicOperations.FixedTimeEquals(cookie, current.Cookie))
             {
                 await send(Done(LdapResult.UnwillingToPerform, "unknown paged results cookie"));
+                return;
+            }
+            if (!string.Equals(current.Request, RequestKey(s), StringComparison.Ordinal))
+            {
+                await send(Done(LdapResult.UnwillingToPerform, "a paged results continuation must repeat the search that began it"));
                 return;
             }
             paged = current;
@@ -473,7 +636,7 @@ internal sealed class LdapServer(
         else
         {
             var search = directory.Start(s, session.Principal);
-            paged = new PagedSearch(RandomNumberGenerator.GetBytes(16), search, search.Results.GetAsyncEnumerator(ct));
+            paged = new PagedSearch(RandomNumberGenerator.GetBytes(16), RequestKey(s), search, search.Results.GetAsyncEnumerator(ct));
             await session.SetPagedAsync(paged);
         }
 

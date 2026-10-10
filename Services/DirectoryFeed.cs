@@ -44,8 +44,13 @@ public sealed class DirectoryFeedService(
 {
     public const int MaxPage = 1000;
 
-    public bool MayRead(string? actor)
-        => actor is not null && settings.Value.ParseDirectoryFeedReaders().Contains(actor, StringComparer.Ordinal);
+    // A listed bot account. Listing is not enough on its own: a person who
+    // was given a listed shortname (or took one freed by a delete) must not
+    // read every password hash.
+    public async Task<bool> MayReadAsync(string? actor, CancellationToken ct)
+        => actor is not null
+           && settings.Value.ParseDirectoryFeedReaders().Contains(actor, StringComparer.Ordinal)
+           && await users.GetByShortnameAsync(actor, ct) is { Type: Models.Enums.UserType.Bot, IsUsable: true };
 
     public async Task<DirectoryFeedPage> FullAsync(string? after, int limit, CancellationToken ct)
     {
@@ -93,5 +98,22 @@ public sealed class DirectoryFeedService(
         };
     }
 
-    private static DirectoryFeedUser Carry(User u) => new(u, u.Password);
+    // What a replica needs to answer LDAP and binds, and no more: not the
+    // payload, admin notes, social-login links, device or login history.
+    // A deleted row carries only its name and the flag.
+    private static DirectoryFeedUser Carry(User u) => new(u with
+    {
+        Payload = null,
+        Notes = null,
+        GoogleId = null,
+        FacebookId = null,
+        AppleId = null,
+        SocialAvatarUrl = null,
+        DeviceId = null,
+        LastLogin = null,
+        AttemptCount = null,
+        LastFailedLogin = null,
+        Acl = null,
+        Relationships = null,
+    }, u.Password);
 }

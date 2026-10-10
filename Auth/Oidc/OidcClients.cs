@@ -10,7 +10,10 @@ namespace Dmart.Auth.Oidc;
 
 // One relying party in OidcClientsFile (docs/oidc-provider.md). `set`, not
 // `init`: with init-only properties the source-generated reader drops the
-// initializers (ModelDefaultsTests).
+// initializers (ModelDefaultsTests). An unknown key is an error, not ignored:
+// `redirect_uri` for `redirect_uris`, or `service` for `services`, would
+// otherwise load as a client with no redirect URIs, or with no service gate.
+[System.Text.Json.Serialization.JsonUnmappedMemberHandling(System.Text.Json.Serialization.JsonUnmappedMemberHandling.Disallow)]
 public sealed record OidcClientConfig
 {
     public string ClientId { get; set; } = "";
@@ -25,6 +28,7 @@ public sealed record OidcClientConfig
     public List<string> Services { get; set; } = [];
 }
 
+[System.Text.Json.Serialization.JsonUnmappedMemberHandling(System.Text.Json.Serialization.JsonUnmappedMemberHandling.Disallow)]
 public sealed record OidcClientsDocument
 {
     public List<OidcClientConfig> Clients { get; set; } = [];
@@ -76,7 +80,9 @@ public sealed partial class OidcClients(IOptions<DmartSettings> settings, ILogge
                 _stamp = stamp;
                 log.LogInformation("OIDC: {Count} relying part(ies) from {File}", _clients.Count, path);
             }
-            catch (Exception ex) when (_clients is not null && ex is IOException or JsonException or InvalidDataException)
+            // Anything at all: a reload that fails must leave the clients in
+            // service, not take the sign-in page down with it.
+            catch (Exception ex) when (_clients is not null)
             {
                 log.LogError(ex, "OIDC: {File} did not load; keeping the previous {Count} client(s)", path, _clients.Count);
             }
@@ -89,16 +95,19 @@ public sealed partial class OidcClients(IOptions<DmartSettings> settings, ILogge
         var doc = JsonSerializer.Deserialize(File.ReadAllText(path), DmartJsonContext.Default.OidcClientsDocument)
             ?? throw new InvalidDataException("the clients file is empty");
         var result = new Dictionary<string, OidcClientConfig>(StringComparer.Ordinal);
-        foreach (var c in doc.Clients)
+        // An explicit null deserializes as null whatever the initializer says.
+        foreach (var c in doc.Clients ?? throw new InvalidDataException("clients is required"))
         {
-            if (!ClientIdPattern().IsMatch(c.ClientId))
+            if (c is null) throw new InvalidDataException("a client entry is null");
+            if (c.ClientId is null || !ClientIdPattern().IsMatch(c.ClientId))
                 throw new InvalidDataException($"client_id '{c.ClientId}' must be 1-128 of letters, digits, '.', '_' and '-'");
             if (!result.TryAdd(c.ClientId, c))
                 throw new InvalidDataException($"client_id '{c.ClientId}' is listed twice");
             if (c.ClientSecret is { Length: < 16 })
                 throw new InvalidDataException($"{c.ClientId}: client_secret must be at least 16 characters, or absent for a public client");
-            if (c.RedirectUris.Count == 0)
+            if (c.RedirectUris is not { Count: > 0 })
                 throw new InvalidDataException($"{c.ClientId}: redirect_uris is required");
+            c.Services ??= [];
             foreach (var uri in c.RedirectUris)
             {
                 // Exact-match only, and never somewhere a code would leak to:

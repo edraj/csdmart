@@ -259,7 +259,7 @@ public static class ProfileHandler
                 });
             }
             if (!string.IsNullOrEmpty(email)
-                && await users.GetByEmailAsync(email, ct) is not null)
+                && (await users.GetByEmailAsync(email, ct) is not null || await users.IsAnotherUsersAddressAsync(email, null, ct)))
             {
                 return Response.Ok(attributes: new()
                 {

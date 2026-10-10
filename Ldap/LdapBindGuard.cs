@@ -69,12 +69,12 @@ internal sealed class LdapBindGuard : IDisposable
     // True when an untrusted address has no failed binds left this minute.
     public bool IsThrottled(IPAddress? peer)
         => peer is not null && !IsTrusted(peer)
-           && _failures.GetStatistics(Canonical(peer)) is { CurrentAvailablePermits: <= 0 };
+           && _failures.GetStatistics(Subscriber(peer)) is { CurrentAvailablePermits: <= 0 };
 
     public void RecordFailure(IPAddress? peer)
     {
         if (peer is null || IsTrusted(peer)) return;
-        using var _ = _failures.AttemptAcquire(Canonical(peer));
+        using var _ = _failures.AttemptAcquire(Subscriber(peer));
     }
 
     // Whether `password` is one this account recently failed with.
@@ -117,6 +117,18 @@ internal sealed class LdapBindGuard : IDisposable
 
     // An IPv4 client on a dual-stack listener arrives as ::ffff:a.b.c.d.
     private static IPAddress Canonical(IPAddress ip) => ip.IsIPv4MappedToIPv6 ? ip.MapToIPv4() : ip;
+
+    // The unit a limit applies to: an IPv4 address, or an IPv6 /64, which is
+    // what one subscriber is handed; counting single IPv6 addresses would give
+    // each client 2^64 fresh allowances.
+    internal static IPAddress Subscriber(IPAddress ip)
+    {
+        ip = Canonical(ip);
+        if (ip.AddressFamily != System.Net.Sockets.AddressFamily.InterNetworkV6) return ip;
+        var bytes = ip.GetAddressBytes();
+        Array.Clear(bytes, 8, 8);
+        return new IPAddress(bytes);
+    }
 
     public void Dispose() => _failures.Dispose();
 }

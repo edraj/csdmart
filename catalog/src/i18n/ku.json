@@ -2293,7 +2293,14 @@
     "google_id": "ناسنامەی Google",
     "facebook_id": "ناسنامەی Facebook",
     "apple_id": "ناسنامەی Apple",
-    "social_avatar_url": "ناونیشانی وێنەی پرۆفایلی کۆمەڵایەتی"
+    "social_avatar_url": "ناونیشانی وێنەی پرۆفایلی کۆمەڵایەتی",
+    "mail_and_services": "ئیمەیڵ و خزمەتگوزارییەکان",
+    "mailbox": "سندوقی ئیمەیڵی میوانکراو",
+    "mailbox_help": "ئەو ناونیشانەی ئەم سیستەمە بۆ بەکارهێنەر میوانداری دەکات و LDAP وەک mail پێشکەشی دەکات. ئیمەیڵی پەیوەندی نییە.",
+    "mail_aliases": "ناونیشانە جێگرەوەکانی ئیمەیڵ",
+    "mail_aliases_help": "هەر ناونیشانێک لە دێڕێکدا. ئیمەیڵی هەر یەکێکیان دەگاتە سندوقی ئیمەیڵەکە.",
+    "services": "خزمەتگوزارییەکان",
+    "services_help": "بە کۆما جیاکراونەتەوە، بۆ نموونە mail و matrix و gitea. LDAP وەک authorizedService پێشکەشیان دەکات."
   },
   "notifications_page": {
     "connection": {

@@ -40,24 +40,22 @@ public sealed class OidcSigningKey(IOptions<DmartSettings> settings, ILogger<Oid
             if (_rsa is not null) return;
             var path = settings.Value.OidcSigningKeyFile;
             var rsa = RSA.Create();
-            if (File.Exists(path))
-            {
-                rsa.ImportFromPem(File.ReadAllText(path));
-            }
-            else
-            {
-                rsa.KeySize = 2048;
-                // CreateNew: two hosts starting at once must not both write
-                // a key; the loser fails here and reads the winner's on retry.
-                var options = new FileStreamOptions { Mode = FileMode.CreateNew, Access = FileAccess.Write };
-                if (!OperatingSystem.IsWindows()) options.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
-                using (var file = new FileStream(path, options))
-                using (var writer = new StreamWriter(file))
-                    writer.Write(rsa.ExportPkcs8PrivateKeyPem());
+            if (!File.Exists(path) && Create(rsa, path))
                 log.LogInformation("OIDC: created a new signing key in {File}", path);
-            }
+            else
+                rsa.ImportFromPem(File.ReadAllText(path));
             if (rsa.KeySize < 2048)
                 throw new CryptographicException($"the OIDC signing key in {path} is {rsa.KeySize} bits; 2048 is the minimum");
+            // A public key alone loads without complaint and fails the first
+            // sign-in; say so now.
+            try { _ = rsa.ExportParameters(includePrivateParameters: true); }
+            catch (CryptographicException ex)
+            {
+                throw new CryptographicException($"{path} holds no RSA private key; the OIDC provider signs with it", ex);
+            }
+            if (!OperatingSystem.IsWindows()
+                && (File.GetUnixFileMode(path) & (UnixFileMode.GroupRead | UnixFileMode.OtherRead)) != 0)
+                log.LogWarning("OIDC: the signing key {File} is readable by other users; chmod 600 it", path);
 
             var p = rsa.ExportParameters(includePrivateParameters: false);
             _n = Base64Url(p.Modulus!);
@@ -65,6 +63,33 @@ public sealed class OidcSigningKey(IOptions<DmartSettings> settings, ILogger<Oid
             // RFC 7638: the required members, lexicographically, no whitespace.
             _kid = Base64Url(SHA256.HashData(Encoding.UTF8.GetBytes($$"""{"e":"{{_e}}","kty":"RSA","n":"{{_n}}"}""")));
             _rsa = rsa;
+        }
+    }
+
+    // Writes a new key to `path`, whole or not at all: to a private temporary
+    // file first, then renamed into place. False when another process got
+    // there first (two hosts starting at once); the caller reads its key.
+    private static bool Create(RSA rsa, string path)
+    {
+        rsa.KeySize = 2048;
+        var temp = $"{path}.{Guid.NewGuid():N}.tmp";
+        var options = new FileStreamOptions { Mode = FileMode.CreateNew, Access = FileAccess.Write };
+        if (!OperatingSystem.IsWindows()) options.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+        try
+        {
+            using (var file = new FileStream(temp, options))
+            using (var writer = new StreamWriter(file))
+                writer.Write(rsa.ExportPkcs8PrivateKeyPem());
+            File.Move(temp, path, overwrite: false);
+            return true;
+        }
+        catch (IOException) when (File.Exists(path))
+        {
+            return false;
+        }
+        finally
+        {
+            File.Delete(temp);
         }
     }
 
@@ -92,17 +117,16 @@ public sealed class OidcSigningKey(IOptions<DmartSettings> settings, ILogger<Oid
         {
             using var header = JsonDocument.Parse(FromBase64Url(parts[0]));
             var h = header.RootElement;
-            if (h.ValueKind != JsonValueKind.Object
-                || !h.TryGetProperty("alg", out var alg) || alg.GetString() != "RS256"
-                || !h.TryGetProperty("kid", out var kid) || kid.GetString() != _kid
-                || !h.TryGetProperty("typ", out var typ) || typ.GetString() != type)
+            static bool Is(JsonElement o, string name, string? expected)
+                => o.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String && v.GetString() == expected;
+            if (h.ValueKind != JsonValueKind.Object || !Is(h, "alg", "RS256") || !Is(h, "kid", _kid) || !Is(h, "typ", type))
                 return null;
             if (!_rsa!.VerifyData(Encoding.ASCII.GetBytes(parts[0] + "." + parts[1]), FromBase64Url(parts[2]),
                     HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1))
                 return null;
             return JsonDocument.Parse(FromBase64Url(parts[1]));
         }
-        catch (Exception ex) when (ex is FormatException or JsonException)
+        catch (Exception ex) when (ex is FormatException or JsonException or CryptographicException)
         {
             return null;
         }

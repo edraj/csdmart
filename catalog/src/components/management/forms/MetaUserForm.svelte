@@ -25,6 +25,11 @@
     apple_id?: string | null;
     social_avatar_url?: string | null;
     attempt_count?: unknown;
+    // The directory fields (docs/user-directory-fields.md): the hosted
+    // mailbox, its aliases, and the services LDAP serves as authorizedService.
+    mailbox?: string | null;
+    mail_aliases?: string[];
+    services?: string[];
   }
 </script>
 
@@ -75,6 +80,8 @@
 
     let isRolesOpen = $state(false);
     let isSocialOpen = $state(false);
+    // Open from the start for a user who already has any of them.
+    let isMailOpen = $state(!!(formData.mailbox || formData.mail_aliases?.length || formData.services?.length));
 
     // Read the counter BEFORE it is stripped below. It is the account lockout:
     // the lock leaves is_active set, so this is the only thing that says an
@@ -105,6 +112,9 @@
         facebook_id: formData.facebook_id || null,
         apple_id: formData.apple_id || null,
         social_avatar_url: formData.social_avatar_url || null,
+        mailbox: formData.mailbox || null,
+        mail_aliases: formData.mail_aliases || [],
+        services: formData.services || [],
         // Same reasoning as the passwords above, different risk. attempt_count IS
         // the account lockout, and this form round-trips whatever the API
         // returned — echoing it back on an ordinary save would write a value read
@@ -117,6 +127,20 @@
     // The lists the pickers edit; the normalization above has made them arrays.
     const roles = $derived(formData.roles ?? []);
     const groups = $derived(formData.groups ?? []);
+
+    // Aliases are edited one per line and services comma-separated; both are
+    // sent as arrays. Blank entries are dropped here; case and duplicates are
+    // the server's to fold.
+    let aliasesText = $state((formData.mail_aliases ?? []).join("\n"));
+    let servicesText = $state((formData.services ?? []).join(", "));
+    const splitList = (text: string, separator: RegExp) =>
+        text.split(separator).map((s) => s.trim()).filter((s) => s.length > 0);
+    $effect(() => {
+        formData.mail_aliases = splitList(aliasesText, /\r?\n/);
+    });
+    $effect(() => {
+        formData.services = splitList(servicesText, /,/);
+    });
 
     // The unlock gesture. Deliberately NOT is_active: a locked account is still
     // active (the lock is counter-only), and this form emits is_active on every
@@ -150,7 +174,8 @@
                 limit: 100,
             });
             if (rolesResponse) {
-                availableRoles = rolesResponse.records;
+                // The server strips empty arrays: no roles means no `records`.
+                availableRoles = rolesResponse.records ?? [];
                 updateFilteredRoles();
             }
         } catch (error) {
@@ -170,7 +195,8 @@
                 limit: 100,
             });
             if (groupsResponse) {
-                availableGroups = groupsResponse.records;
+                // The server strips empty arrays: no groups means no `records`.
+                availableGroups = groupsResponse.records ?? [];
                 updateFilteredGroups();
             }
         } catch (error) {
@@ -522,6 +548,40 @@
                                     {/if}
                                 </div>
                             {/if}
+                        </div>
+                    </div>
+                {/if}
+            </div>
+
+            <div class="accordion">
+                <button
+                    type="button"
+                    class="accordion-header"
+                    aria-expanded={isMailOpen}
+                    onclick={() => (isMailOpen = !isMailOpen)}
+                >
+                    <span class="accordion-title">{$_("meta_user_form.mail_and_services")}</span>
+                    <svg class="accordion-icon" class:rotated={isMailOpen} viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                        <path d="M19 9l-7 7-7-7" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+                    </svg>
+                </button>
+
+                {#if isMailOpen}
+                    <div class="accordion-content">
+                        <div class="field-group">
+                            <label for="mailbox" class="field-label">{$_("meta_user_form.mailbox")}</label>
+                            <input id="mailbox" type="email" class="input-field" dir="ltr" placeholder="user@example.org" bind:value={formData.mailbox} />
+                            <p class="field-help">{$_("meta_user_form.mailbox_help")}</p>
+                        </div>
+                        <div class="field-group">
+                            <label for="mail_aliases" class="field-label">{$_("meta_user_form.mail_aliases")}</label>
+                            <textarea id="mail_aliases" class="textarea-field" dir="ltr" rows={3} bind:value={aliasesText}></textarea>
+                            <p class="field-help">{$_("meta_user_form.mail_aliases_help")}</p>
+                        </div>
+                        <div class="field-group">
+                            <label for="services" class="field-label">{$_("meta_user_form.services")}</label>
+                            <input id="services" class="input-field" dir="ltr" placeholder="mail, matrix, gitea" bind:value={servicesText} />
+                            <p class="field-help">{$_("meta_user_form.services_help")}</p>
                         </div>
                     </div>
                 {/if}

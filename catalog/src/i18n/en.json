@@ -2293,7 +2293,14 @@
     "google_id": "Google ID",
     "facebook_id": "Facebook ID",
     "apple_id": "Apple ID",
-    "social_avatar_url": "Social profile image URL"
+    "social_avatar_url": "Social profile image URL",
+    "mail_and_services": "Mail and services",
+    "mailbox": "Hosted mailbox",
+    "mailbox_help": "The address this deployment hosts for the user, which LDAP serves as mail. Not the contact email.",
+    "mail_aliases": "Mail aliases",
+    "mail_aliases_help": "One address per line. Mail to each is delivered into the mailbox.",
+    "services": "Services",
+    "services_help": "Comma-separated, for example mail, matrix, gitea. LDAP serves them as authorizedService."
   },
   "notifications_page": {
     "connection": {

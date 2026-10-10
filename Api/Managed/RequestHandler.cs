@@ -600,6 +600,10 @@ public static class RequestHandler
         var (dirMailbox, dirAliases, dirServices) = ParseDirectoryFields(attrs, existing: null);
         if (await directoryFields.ValidateAsync(rec.Shortname, dirMailbox, dirAliases, dirServices, ct) is { } dirError)
             return (Response.Fail(InternalErrorCode.INVALID_DATA, dirError, ErrorTypes.Request), rec);
+        if (attrs.TryGetValue("email", out var contactAttr) && ConvertToString(contactAttr) is { } contact
+            && await users.IsAnotherUsersAddressAsync(contact, rec.Shortname, ct))
+            return (Response.Fail(InternalErrorCode.DATA_SHOULD_BE_UNIQUE,
+                $"Entry properties should be unique: @email:{contact} ", ErrorTypes.Request), rec);
         if (await directoryFields.CheckServiceGrantsAsync(actor, [], dirServices, ct) is { } grantError)
             return (Response.Fail(InternalErrorCode.NOT_ALLOWED, grantError, ErrorTypes.Request), rec);
 
@@ -943,6 +947,10 @@ public static class RequestHandler
                 if (!string.Equals(updEmail, existing.Email, StringComparison.Ordinal)
                     && regexConfig.ValidateEmailFormat(updEmail) is { } updateEmailErr)
                     return (Response.Fail(InternalErrorCode.INVALID_DATA, updateEmailErr, ErrorTypes.Request), rec, null);
+                if (!string.Equals(updEmail, existing.Email, StringComparison.OrdinalIgnoreCase)
+                    && await users.IsAnotherUsersAddressAsync(updEmail, existing.Shortname, ct))
+                    return (Response.Fail(InternalErrorCode.DATA_SHOULD_BE_UNIQUE,
+                        $"Entry properties should be unique: @email:{updEmail} ", ErrorTypes.Request), rec, null);
                 var updMsisdn = attrs.TryGetValue("msisdn", out var um) ? ConvertToString(um) : null;
                 if (!string.Equals(updMsisdn, existing.Msisdn, StringComparison.Ordinal)
                     && regexConfig.ValidateMsisdnFormat(updMsisdn) is { } updateMsisdnErr)

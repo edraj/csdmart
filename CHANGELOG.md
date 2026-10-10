@@ -14,8 +14,17 @@
   ID and access tokens are RS256, from a key created on first start. The
   access token reads userinfo and nothing else; it is not a dmart session.
   Clients are listed in `OIDC_CLIENTS_FILE`, and each may require a
-  directory service (the `authorizedService` gate Dex applied). See
-  `docs/oidc-provider.md`.
+  directory service (the `authorizedService` gate Dex applied). An account
+  on a temporary password, or a bot, signs in to no application, through
+  the form or single sign-on. Codes live in memory, so one instance serves
+  the provider. See `docs/oidc-provider.md`.
+- **`dmart import-ldif` moves an LDAP directory into dmart**, from what
+  `slapcat` prints. People become users, with `mail` as the hosted mailbox
+  (or the contact email when `USER_MAIL_DOMAINS` does not list its domain),
+  `mailAlias`, `authorizedService` and groups; `ou=services` entries become
+  bots. `{SSHA}`, `{SHA}`, `{SSHA256}`, `{SSHA512}` and `{ARGON2}` hashes
+  are kept, so passwords keep working, and each is replaced with Argon2id
+  at its owner's first sign-in or bind. A dry run unless `--apply`.
 - **The website's home page explains dmart in 30 seconds.** A new `explainer`
   section kind plays an animated figure one scene at a time, captioned by
   the section's items. The built-in figure covers modelling a space and its
@@ -44,8 +53,12 @@
   `USER_SERVICE_GRANTERS` (`service:role` pairs) says which roles may grant
   which service. Anyone who is not a global admin may change only those
   services.
-  - Search them with `@mailbox:`, `@mail_aliases:` and `@services:`.
-  - cxb's user form edits them under "Mail and services".
+  - Search them with `@mailbox:`, `@mail_aliases:` and `@services:`;
+    `@services:*` finds users with any service.
+  - The user forms in cxb and in the catalog's User Management edit them
+    under "Mail and services".
+  - One address cannot be one user's contact email and another user's
+    mailbox or alias.
   - The hosted mailbox signs in with a password (as over IMAP), and names
     the account in a password reset. The reset code goes to the phone or
     contact email, never to the mailbox being recovered. One-time-code login
@@ -75,6 +88,13 @@
     the account locked.
   - A subschema entry for schema-aware clients, time limits honoured, and
     group searches that load member lists only when the answer needs them.
+  - Service accounts (`LDAP_SERVICE_ACCOUNTS`) must be bots, bind only as
+    `cn=<name>,ou=services` and only from `LDAP_TRUSTED_PEERS`.
+  - `uid` and group names match whatever their case. A user's `mail` is the
+    hosted mailbox, or the contact email once verified.
+  - One address may hold 32 connections; a connection that has not bound
+    may send only small messages and idles out after 30 seconds; every
+    message must arrive, and every answer be read, within a time limit.
 - **Directory replicas.** A dmart with `DIRECTORY_REPLICA_OF` keeps a
   read-only copy of another dmart's users and groups, password hashes
   included, and serves it over LDAP. A mail host can then authenticate and
@@ -83,6 +103,11 @@
     `DIRECTORY_FEED_READERS`; it is off by default.
   - The replica walks the feed in full first, then polls for changes and
     deletions. It answers `unavailable` until its first sync completes.
+  - A restart serves the copy it had. After
+    `DIRECTORY_REPLICA_MAX_STALENESS_HOURS` (24) without a sync, binds
+    answer `unavailable` and `/health/ready` says 503; lookups keep
+    answering.
+  - The primary and the replica may run different databases.
   - A soft delete now stamps `updated_at`, and a rename stamps it with the
     host's clock rather than PostgreSQL's, so `updated_at` is a complete
     change log.
@@ -93,6 +118,16 @@
 
 ### Fixed
 
+- **The MCP authorization page completes in Chromium-based browsers.** Its
+  policy allowed the form to post only to dmart, and Chromium applies that
+  to the redirect that follows, so it blocked the hand-off of the code to
+  the client after a successful sign-in. The client's origin is now allowed
+  too, and a Playwright test drives the flow.
+- **`dmart passwd` and the legacy-lockout repair stamp `updated_at`**, as
+  every other change to a user does.
+- **The catalog's user form loads when there are no groups or roles.** The
+  server leaves an empty list out of the response, and the form read the
+  missing list as one.
 - **The release's frontend SBOM step inventories only the workspaces the
   binary embeds.** It built every yarn workspace, and the `e2e` workspace
   (the Playwright suite) has no build and never ships, which failed the

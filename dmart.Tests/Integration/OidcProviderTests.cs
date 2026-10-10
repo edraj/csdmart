@@ -29,6 +29,7 @@ public sealed partial class OidcProviderTests(OidcProviderTests.Fixture fx) : IC
     private const string RpSecret = "rp-secret-0123456789";
     private const string RpCallback = "https://rp.test/cb";
     private const string SpaCallback = "http://127.0.0.1:9999/cb";
+    private const string Verifier = "a-verifier-that-is-long-enough-to-satisfy-rfc-7636-abcdefghij";
 
     public sealed class Fixture : IAsyncLifetime
     {
@@ -38,6 +39,8 @@ public sealed partial class OidcProviderTests(OidcProviderTests.Fixture fx) : IC
         private static readonly string Suffix = Guid.NewGuid().ToString("N")[..6];
         public string Alice { get; } = "oidcalice_" + Suffix;   // holds `matrix`
         public string Bob { get; } = "oidcbob_" + Suffix;       // does not
+        public string Carol { get; } = "oidccarol_" + Suffix;   // on a temporary password
+        public string Robo { get; } = "oidcrobo_" + Suffix;     // a bot
         public string AliceMailbox => $"{Alice}@hosted.test";
 
         public async Task InitializeAsync()
@@ -63,11 +66,13 @@ public sealed partial class OidcProviderTests(OidcProviderTests.Fixture fx) : IC
 
             var users = Host.Services.GetRequiredService<UserRepository>();
             var hash = await Host.Services.GetRequiredService<PasswordHasher>().HashAsync(Password);
-            foreach (var (name, services) in new[] { (Alice, new List<string> { "matrix" }), (Bob, new List<string>()) })
+            foreach (var (name, services) in new[]
+                     { (Alice, new List<string> { "matrix" }), (Bob, new List<string>()), (Carol, []), (Robo, []) })
                 await users.UpsertAsync(new User
                 {
                     Uuid = Guid.NewGuid().ToString(), Shortname = name, SpaceName = "management", Subpath = "/users",
-                    OwnerShortname = name, IsActive = true, Password = hash, Type = UserType.Web, Language = Language.En,
+                    OwnerShortname = name, IsActive = true, Password = hash, Language = Language.En,
+                    Type = name == Robo ? UserType.Bot : UserType.Web, ForcePasswordChange = name == Carol,
                     Displayname = new Translation(En: "Alice Example"), Groups = ["staff"], Roles = new(),
                     Mailbox = name == Alice ? AliceMailbox : null, Services = services,
                     CreatedAt = TimeUtils.Now(), UpdatedAt = TimeUtils.Now(),
@@ -83,7 +88,7 @@ public sealed partial class OidcProviderTests(OidcProviderTests.Fixture fx) : IC
         {
             if (Host is not null)
             {
-                foreach (var u in new[] { Alice, Bob }) await TestUserCleanup.DeleteUserAndOwnedAsync(Host.Services, u);
+                foreach (var u in new[] { Alice, Bob, Carol, Robo }) await TestUserCleanup.DeleteUserAndOwnedAsync(Host.Services, u);
                 await Host.DisposeAsync();
             }
             await ((IAsyncLifetime)_factory).DisposeAsync();
@@ -278,5 +283,78 @@ public sealed partial class OidcProviderTests(OidcProviderTests.Fixture fx) : IC
         var signIn = await SignInAsync(browser, AuthorizeUrl("rp", RpCallback, "s", "n"), fx.Alice, Password);
         (await TokenAsync(Query(signIn.Headers.Location!)["code"], RpCallback, "rp", "wrong-secret-0123456789"))
             .GetProperty("error").GetString().ShouldBe("invalid_client");
+    }
+
+    [FactIfPg]
+    public async Task Discovery_Declines_Request_Objects()
+    {
+        using var http = fx.Host.CreateClient();
+        var d = JsonDocument.Parse(await http.GetStringAsync("/.well-known/openid-configuration")).RootElement;
+        // Both default to true when absent.
+        d.GetProperty("request_parameter_supported").GetBoolean().ShouldBeFalse();
+        d.GetProperty("request_uri_parameter_supported").GetBoolean().ShouldBeFalse();
+    }
+
+    // Chromium applies form-action to the redirect that follows the form's
+    // submission; the page must admit the relying party's origin, or the user
+    // signs in and the final 302 is blocked.
+    [FactIfPg]
+    public async Task The_Sign_In_Form_Admits_The_Clients_Origin_As_A_Form_Action()
+    {
+        using var browser = fx.Browser();
+        var html = WebUtility.HtmlDecode(await browser.GetStringAsync(AuthorizeUrl("rp", RpCallback, "s", "n")));
+        html.ShouldContain("form-action 'self' https://rp.test;");
+    }
+
+    // A temporary password is for changing: the form refuses it, and so does
+    // the session that sign-in opened, when the next application asks.
+    [FactIfPg]
+    public async Task A_Temporary_Password_Opens_No_Application_Not_Even_Through_Single_Sign_On()
+    {
+        using var browser = fx.Browser();
+        var signIn = await SignInAsync(browser, AuthorizeUrl("spa", SpaCallback, "s", "n", Challenge(Verifier)), fx.Carol, Password);
+        signIn.StatusCode.ShouldBe(HttpStatusCode.Forbidden);
+        var sso = await browser.GetAsync(AuthorizeUrl("spa", SpaCallback, "s2", "n2", Challenge(Verifier)));
+        sso.StatusCode.ShouldBe(HttpStatusCode.Forbidden);
+        sso.Headers.Location.ShouldBeNull();
+
+        // And a code issued before the flag was set redeems nothing after it.
+        var users = fx.Host.Services.GetRequiredService<UserRepository>();
+        using var other = fx.Browser();
+        var code = Query((await SignInAsync(other, AuthorizeUrl("spa", SpaCallback, "s", "n", Challenge(Verifier)), fx.Bob, Password))
+            .Headers.Location!)["code"];
+        var bob = (await users.GetByShortnameAsync(fx.Bob))!;
+        await users.UpsertAsync(bob with { ForcePasswordChange = true });
+        try
+        {
+            (await TokenAsync(code, SpaCallback, "spa", null, Verifier)).GetProperty("error").GetString().ShouldBe("invalid_grant");
+        }
+        finally
+        {
+            await users.UpsertAsync(bob with { ForcePasswordChange = false });
+        }
+    }
+
+    [FactIfPg]
+    public async Task A_Bot_Signs_In_To_No_Application()
+    {
+        using var browser = fx.Browser();
+        var signIn = await SignInAsync(browser, AuthorizeUrl("spa", SpaCallback, "s", "n", Challenge(Verifier)), fx.Robo, Password);
+        signIn.StatusCode.ShouldBe(HttpStatusCode.OK);
+        (await signIn.Content.ReadAsStringAsync()).ShouldContain("Sign-in failed");
+        signIn.Headers.TryGetValues("Set-Cookie", out var cookies);
+        (cookies ?? []).ShouldNotContain(c => c.StartsWith("auth_token=", StringComparison.Ordinal), "no browser session");
+    }
+
+    // A client that sends a verifier meant to use PKCE; a code issued without
+    // a challenge means its authorization request was not the one that
+    // arrived (RFC 9700 §2.1.1).
+    [FactIfPg]
+    public async Task A_Verifier_For_A_Code_Issued_Without_A_Challenge_Is_Refused()
+    {
+        using var browser = fx.Browser();
+        var signIn = await SignInAsync(browser, AuthorizeUrl("rp", RpCallback, "s", "n"), fx.Alice, Password);
+        var code = Query(signIn.Headers.Location!)["code"];
+        (await TokenAsync(code, RpCallback, "rp", RpSecret, Verifier)).GetProperty("error").GetString().ShouldBe("invalid_grant");
     }
 }

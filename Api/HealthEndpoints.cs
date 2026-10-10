@@ -30,7 +30,7 @@ public static class HealthEndpoints
         // Injected as IDbConnectionFactory, not Db: under DATABASE_DRIVER=sqlite
         // the PostgreSQL factory is registered but unconfigured, so probing it
         // would report the node unready while it is serving fine.
-        app.MapGet("/health/ready", async (IDbConnectionFactory db, CancellationToken ct) =>
+        app.MapGet("/health/ready", async (IDbConnectionFactory db, DirectoryIndexStatus directory, CancellationToken ct) =>
         {
             if (!db.IsConfigured)
                 return NotReady("database not configured");
@@ -46,6 +46,19 @@ public static class HealthEndpoints
             catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
             {
                 return NotReady("database unreachable");
+            }
+
+            // A directory replica is ready once its copy can answer binds:
+            // synced at least once, and not past its staleness limit.
+            if (directory.IsReplica)
+            {
+                if (!directory.ReplicaSynced) return NotReady("directory replica has not completed its first sync");
+                if (directory.ReplicaStale)
+                    return NotReady($"directory replica last synced at {directory.ReplicaSyncedAt:u}, past its staleness limit");
+                return Results.Json(Response.Ok(attributes: new()
+                {
+                    ["directory_replica_synced_at"] = directory.ReplicaSyncedAt?.ToString("u", System.Globalization.CultureInfo.InvariantCulture) ?? "",
+                }), DmartJsonContext.Default.Response);
             }
 
             return Results.Json(Response.Ok(), DmartJsonContext.Default.Response);

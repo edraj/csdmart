@@ -60,12 +60,14 @@ internal static class LegacyLockoutBackfill
         await using var conn = await db.OpenAsync(ct);
         await using var cmd = conn.Command("""
             UPDATE users
-               SET is_active = $1, attempt_count = 0, last_failed_login = NULL
+               SET is_active = $1, attempt_count = 0, last_failed_login = NULL, updated_at = $4
              WHERE is_active = $2 AND attempt_count >= $3
             """);
         DbParams.Add(cmd, true);
         DbParams.Add(cmd, false);
         DbParams.Add(cmd, maxFailedLoginAttempts);
+        // Reactivation is a change a directory replica must see.
+        DbParams.Add(cmd, Utils.TimeUtils.Now());
         return await cmd.ExecuteNonQueryAsync(ct);
     }
 }

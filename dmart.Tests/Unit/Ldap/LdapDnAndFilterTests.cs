@@ -191,6 +191,36 @@ public sealed class LdapDnAndFilterTests
         Parse(F.And(F.Eq("employeeNumber", "1"), F.Eq("uid", "bob"))).Evaluate(Alice()).ShouldBe(Tri.False);
     }
 
+    // RFC 4511 §4.5.1.7: Undefined is for what the server cannot judge. An
+    // attribute it knows, absent from the entry, simply does not match.
+    [Fact]
+    public void A_Known_Attribute_The_Entry_Lacks_Is_False_And_Its_Negation_Matches()
+    {
+        Parse(F.Eq("mailAlias", "a@example.org")).Evaluate(Alice()).ShouldBe(Tri.False);
+        Parse(F.Not(F.Eq("mailAlias", "a@example.org"))).Evaluate(Alice()).ShouldBe(Tri.True);
+        Parse(F.Not(F.Eq("rfc822Mailbox", "x@example.org"))).Evaluate(Alice()).ShouldBe(Tri.True);
+        LdapSubschema.IsKnownAttribute("commonName").ShouldBeTrue();
+        LdapSubschema.IsKnownAttribute("userid").ShouldBeTrue();
+        LdapSubschema.IsKnownAttribute("employeeNumber").ShouldBeFalse();
+    }
+
+    [Fact]
+    public void A_Filter_With_Too_Many_Terms_Is_Refused()
+    {
+        var terms = Enumerable.Range(0, LdapFilter.MaxNodes).Select(i => F.Eq("uid", "u" + i)).ToArray();
+        Should.Throw<LdapProtocolException>(() => Parse(F.Or(terms)));
+        Parse(F.Or(terms[..^1])).ShouldNotBeNull();
+    }
+
+    [Fact]
+    public void An_Or_Over_Too_Many_Values_Is_Not_Anchored()
+    {
+        bool Indexed(string a) => a == "uid";
+        var many = Enumerable.Range(0, LdapFilter.MaxAnchors + 1).Select(i => F.Eq("uid", "u" + i)).ToArray();
+        Parse(F.Or(many)).Anchors(Indexed).ShouldBeNull();
+        Parse(F.Or(many[..^1])).Anchors(Indexed)!.Count.ShouldBe(LdapFilter.MaxAnchors);
+    }
+
     [Fact]
     public void Disabled_Users_Fail_The_IsActive_Clause()
     {

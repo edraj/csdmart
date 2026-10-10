@@ -507,8 +507,11 @@ public static class OtpHandler
                 var collision = isEmail
                     ? await users.GetByEmailAsync(dest, ct)
                     : await users.GetByMsisdnAsync(dest, ct);
-                if (collision is not null
-                    && !string.Equals(collision.Shortname, user.Shortname, StringComparison.Ordinal))
+                // An email that is another account's hosted mailbox or alias is
+                // taken too (UserRepository.IsAnotherUsersAddressAsync).
+                if ((collision is not null
+                     && !string.Equals(collision.Shortname, user.Shortname, StringComparison.Ordinal))
+                    || (isEmail && await users.IsAnotherUsersAddressAsync(dest, user.Shortname, ct)))
                     return Response.Fail(InternalErrorCode.DATA_SHOULD_BE_UNIQUE,
                         $"Entry properties should be unique: @{(isEmail ? "email" : "msisdn")}:{dest} ",
                         ErrorTypes.Request);

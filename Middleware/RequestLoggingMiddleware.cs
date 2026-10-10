@@ -38,6 +38,9 @@ public static class RequestLoggingMiddleware
         "access_token", "refresh_token", "firebase_token", "auth_token", "token",
         "apple_client_secret", "google_client_secret", "facebook_client_secret",
         "mail_password",
+        // The OIDC provider's: tokens in the token response, and what a
+        // relying party authenticates or proves itself with.
+        "id_token", "client_secret", "code_verifier", "form_token",
     };
 
     public static IApplicationBuilder UseRequestLogging(this IApplicationBuilder app)

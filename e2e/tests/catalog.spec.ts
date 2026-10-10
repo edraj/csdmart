@@ -94,6 +94,51 @@ test.describe("catalog (dashboard)", () => {
     await expect(page.getByText(/Failed to load users/)).toHaveCount(0);
   });
 
+  test("a user's mailbox, aliases and services are edited in User Management", async ({ page }) => {
+    // Cookie-authenticated API calls need the CSRF signal a browser fetch sends.
+    const api = (path: string, data: object) =>
+      page.request.post(path, { headers: { "X-Requested-With": "XMLHttpRequest" }, data });
+    const sn = `catmail${Date.now() % 100000}`;
+    const created = await api("/managed/request", {
+      space_name: "management", request_type: "create",
+      records: [{ resource_type: "user", subpath: "users", shortname: sn, attributes: { is_active: true } }],
+    });
+    expect(created.ok()).toBeTruthy();
+    try {
+      await page.goto("/cat/dashboard/admin/users");
+      const search = page.getByPlaceholder("Search users...");
+      await search.fill(sn);
+      await search.press("Enter");
+      await page.getByRole("button", { name: `Edit user ${sn}` }).click();
+      await page.getByRole("button", { name: "Mail and services" }).click();
+      await page.getByLabel("Hosted mailbox").fill(`${sn}@Example.ORG`);
+      await page.getByLabel("Mail aliases").fill(`help-${sn}@example.org\n\npostmaster-${sn}@Example.org`);
+      await page.getByLabel("Services").fill("mail, Matrix");
+      await page.getByRole("button", { name: "Update user" }).click();
+
+      // Stored as the server normalizes them: folded, blank lines dropped.
+      await expect(async () => {
+        const res = await api("/managed/query", {
+          space_name: "management", type: "search", subpath: "users", filter_types: ["user"], filter_shortnames: [sn],
+        });
+        const attrs = (await res.json()).records?.[0]?.attributes ?? {};
+        expect(attrs.mailbox).toBe(`${sn}@example.org`);
+        expect(attrs.mail_aliases).toEqual([`help-${sn}@example.org`, `postmaster-${sn}@example.org`]);
+        expect(attrs.services).toEqual(["mail", "matrix"]);
+      }).toPass({ timeout: 10_000 });
+
+      // Reopened, the section starts open, since the user now has them.
+      await page.getByRole("button", { name: `Edit user ${sn}` }).click();
+      await expect(page.getByLabel("Hosted mailbox")).toHaveValue(`${sn}@example.org`);
+      await expect(page.getByLabel("Services")).toHaveValue("mail, matrix");
+    } finally {
+      await api("/managed/request", {
+        space_name: "management", request_type: "delete",
+        records: [{ resource_type: "user", subpath: "users", shortname: sn, attributes: {} }],
+      });
+    }
+  });
+
   test("the admin space page filters by type without raw keys", async ({ page }) => {
     await page.goto("/cat/dashboard/admin/management");
     await expect(page.getByRole("heading", { level: 1, name: "Management" })).toBeVisible();

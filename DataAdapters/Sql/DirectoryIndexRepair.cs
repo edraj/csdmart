@@ -9,16 +9,54 @@ namespace Dmart.DataAdapters.Sql;
 public sealed class DirectoryIndexStatus
 {
     private volatile bool _ready = true;
-    private volatile bool _replicaSynced = true;
     public bool Ready => _ready;
     internal void Set(bool ready) => _ready = ready;
 
-    // On a directory replica (Services/DirectoryReplica): false until its
-    // first sync with the primary completes. Until then the local users are
-    // whatever an earlier run left, or none, so EVERY lookup and bind answers
-    // `unavailable`, not just the index-backed ones. True everywhere else.
-    public bool ReplicaSynced => _replicaSynced;
-    internal void SetReplicaSynced(bool synced) => _replicaSynced = synced;
+    // A directory replica's sync state (Services/DirectoryReplica), as UTC
+    // ticks of its last complete sync: -1 on anything that is not a replica,
+    // 0 on a replica that has never completed one.
+    private long _replicaSyncedAt = -1;
+    private long _replicaMaxStaleness;   // ticks; 0 = no limit
+
+    // False on a replica that has never completed a sync with its primary.
+    // Its local users are then whatever an earlier run left, or none, so
+    // EVERY lookup and bind answers `unavailable`, not just the index-backed
+    // ones. True everywhere else, and on a replica restarted with a synced
+    // copy on disk.
+    public bool ReplicaSynced => Interlocked.Read(ref _replicaSyncedAt) != 0;
+
+    // A synced replica whose last sync is older than its limit
+    // (DIRECTORY_REPLICA_MAX_STALENESS_HOURS). Its copy may still hold a
+    // password the primary has since changed, or an account it has deleted,
+    // so binds answer `unavailable` until a sync succeeds. Lookups still
+    // answer: mail keeps flowing to the mailboxes the replica knows.
+    public bool ReplicaStale
+    {
+        get
+        {
+            var at = Interlocked.Read(ref _replicaSyncedAt);
+            var max = Interlocked.Read(ref _replicaMaxStaleness);
+            return at > 0 && max > 0 && DateTime.UtcNow.Ticks - at > max;
+        }
+    }
+
+    public DateTime? ReplicaSyncedAt
+        => Interlocked.Read(ref _replicaSyncedAt) is > 0 and var at ? new DateTime(at, DateTimeKind.Utc) : null;
+
+    public TimeSpan ReplicaMaxStaleness => TimeSpan.FromTicks(Interlocked.Read(ref _replicaMaxStaleness));
+
+    public bool IsReplica => Interlocked.Read(ref _replicaSyncedAt) >= 0;
+
+    // Called before the replica's first await, so nothing reads the "not a
+    // replica" default in between.
+    internal void BeginReplica(TimeSpan maxStaleness)
+    {
+        Interlocked.Exchange(ref _replicaMaxStaleness, Math.Max(0, maxStaleness.Ticks));
+        Interlocked.Exchange(ref _replicaSyncedAt, 0);
+    }
+
+    internal void SetReplicaSyncedAt(DateTime utc)
+        => Interlocked.Exchange(ref _replicaSyncedAt, DateTime.SpecifyKind(utc, DateTimeKind.Utc).Ticks);
 }
 
 // Rebuilds user_addresses / user_services from users when they are empty but

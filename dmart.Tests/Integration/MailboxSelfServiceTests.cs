@@ -78,8 +78,8 @@ public sealed class MailboxSelfServiceTests(DmartFactory factory) : IClassFixtur
 
             // What the LDAP face asks on every bind.
             var svc = factory.Services.GetRequiredService<UserService>();
-            (await svc.VerifyDirectoryBindAsync(sn, NewPassword)).ShouldNotBeNull();
-            (await svc.VerifyDirectoryBindAsync(sn, OldPassword)).ShouldBeNull();
+            (await svc.VerifyDirectoryBindAsync(sn, NewPassword)).User.ShouldNotBeNull();
+            (await svc.VerifyDirectoryBindAsync(sn, OldPassword)).User.ShouldBeNull();
         }
         finally
         {

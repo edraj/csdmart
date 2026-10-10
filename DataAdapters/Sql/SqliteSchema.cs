@@ -417,7 +417,8 @@ public static class SqliteSchema
 
     CREATE TABLE IF NOT EXISTS directory_replica_state (
         id INTEGER PRIMARY KEY CHECK (id = 1),
-        watermark TEXT
+        watermark TEXT,
+        synced_at TEXT
     );
 
     -- ============================================================
@@ -551,6 +552,8 @@ public static class SqliteSchema
     -- block index creation on databases with several such rows.
     CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_lower_unique
         ON users (lower(email)) WHERE email IS NOT NULL AND email <> '';
+    -- LDAP's uid is case-insensitive (UserRepository.GetByShortnameIgnoringCaseAsync).
+    CREATE INDEX IF NOT EXISTS idx_users_shortname_lower ON users (lower(shortname));
     CREATE UNIQUE INDEX IF NOT EXISTS idx_users_msisdn_unique
         ON users (msisdn) WHERE msisdn IS NOT NULL AND msisdn <> '';
     CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_id

@@ -245,11 +245,11 @@ internal sealed class LdapDirectory(
             if (!LdapDn.TryParse(req.BaseDn, out var avas)) break;
             var first = avas.Where(a => a.Rdn == 0).ToList();
             var entry = first.Count == 1 && ParentOf(avas) == normOu
-                ? await LeafAsync(ou, LdapSchema.Canonical(first[0].Type), first[0].Value, ct)
+                ? await LeafAsync(s, req, ou, LdapSchema.Canonical(first[0].Type), first[0].Value, ct)
                 : null;
             if (entry is null)
             {
-                s.Fail(LdapResult.NoSuchObject, "no such entry", ouDn);
+                if (s.Code == LdapResult.Success) s.Fail(LdapResult.NoSuchObject, "no such entry", ouDn);
                 yield break;
             }
             if (scope != LdapScope.SingleLevel && Match(entry)) yield return entry;
@@ -259,7 +259,10 @@ internal sealed class LdapDirectory(
         s.Fail(LdapResult.NoSuchObject, "no such entry", L.Base);
     }
 
-    private async Task<LdapEntry?> LeafAsync(string ou, string type, string name, CancellationToken ct)
+    // Null when there is no such entry, or when its group has more members
+    // than one request may read (`s` then says adminLimitExceeded).
+    private async Task<LdapEntry?> LeafAsync(
+        Search s, LdapSearchRequest req, string ou, string type, string name, CancellationToken ct)
     {
         switch (ou)
         {
@@ -270,8 +273,9 @@ internal sealed class LdapDirectory(
             }
             case "groups" when type.Equals("cn", StringComparison.OrdinalIgnoreCase):
             {
-                var g = await access.GetGroupAsync(name, ct);
-                return g is null ? null : GroupEntry(g, await users.ListShortnamesInGroupAsync(g.Shortname, ct));
+                if ((await GroupsNamedAsync([name], ct)) is not [var g]) return null;
+                var members = await MembersForAsync(s, [g], req.Filter, new AttributeSelection(req.Attributes), ct);
+                return members is null ? null : GroupEntry(g, members[g.Shortname]);
             }
             case "services" when type.Equals("cn", StringComparison.OrdinalIgnoreCase):
             {
@@ -362,12 +366,22 @@ internal sealed class LdapDirectory(
     //     is the login-time question Dex and Gitea ask, (member=<user DN>) for
     //     cn, answered from those users' own rows;
     //   - none, when neither the filter nor the answer involves members.
-    private async Task<Dictionary<string, List<string>>> MembersForAsync(
-        List<Group> groups, LdapFilter f, AttributeSelection selection, CancellationToken ct)
+    // Null, with `s` failed as adminLimitExceeded, when the groups have more
+    // members than LDAP_MAX_SCAN.
+    private async Task<Dictionary<string, List<string>>?> MembersForAsync(
+        Search s, List<Group> groups, LdapFilter f, AttributeSelection selection, CancellationToken ct)
     {
         var named = new List<string>();
         if (groups.Count > 0 && (selection.Includes("member") || !f.TestsOnlyByEquality("member", named)))
-            return await users.ListGroupMembersAsync(groups.Select(g => g.Shortname).ToList(), ct);
+        {
+            var max = settings.Value.LdapMaxScan;
+            var all = await users.ListGroupMembersAsync(groups.Select(g => g.Shortname).ToList(), max, ct);
+            if (all is null)
+                s.Fail(LdapResult.AdminLimitExceeded,
+                    $"these groups have more than {max} members; ask for the groups without `member`, "
+                    + "or for (member=<user DN>), or read the users' memberOf");
+            return all;
+        }
 
         var result = groups.ToDictionary(g => g.Shortname, _ => new List<string>(), StringComparer.Ordinal);
         foreach (var dn in named.Distinct(StringComparer.Ordinal))
@@ -422,24 +436,39 @@ internal sealed class LdapDirectory(
                     ? await users.GetByAddressAsync(alias, "alias", ct)
                     : null;
             case "mobile":
-                return await users.GetByMsisdnAsync(value, ct);
+            {
+                // telephoneNumberMatch ignores spaces and hyphens; dmart stores
+                // msisdns as written, usually bare digits, sometimes with a
+                // leading +. Try as given, then the digits with and without it.
+                if (await users.GetByMsisdnAsync(value, ct) is { } u) return u;
+                var digits = new string(value.Where(char.IsAsciiDigit).ToArray());
+                if (digits.Length == 0) return null;
+                foreach (var candidate in new[] { digits, "+" + digits })
+                    if (candidate != value && await users.GetByMsisdnAsync(candidate, ct) is { } v) return v;
+                return null;
+            }
             default:
                 return null;
         }
     }
 
     // uid is case-insensitive in LDAP; dmart shortnames are stored as written.
-    // An exact hit wins, then the lowercase spelling every UI produces.
-    private async Task<User?> FindUserAsync(string uid, CancellationToken ct)
+    // An exact hit wins, then the one shortname that matches ignoring case.
+    // Binds resolve the DN's uid through this too (LdapServer).
+    internal async Task<User?> FindUserAsync(string uid, CancellationToken ct)
     {
-        var u = await users.GetByShortnameAsync(uid, ct);
-        if (u is null)
-        {
-            var lower = uid.ToLowerInvariant();
-            if (!string.Equals(lower, uid, StringComparison.Ordinal))
-                u = await users.GetByShortnameAsync(lower, ct);
-        }
+        var u = await users.GetByShortnameAsync(uid, ct) ?? await users.GetByShortnameIgnoringCaseAsync(uid, ct);
         return u is { IsDeleted: false } ? u : null;
+    }
+
+    // Groups by cn, which is case-insensitive in LDAP. Groups are few, so the
+    // whole list is read and matched here rather than indexed.
+    private async Task<List<Group>> GroupsNamedAsync(HashSet<string> names, CancellationToken ct)
+    {
+        var exact = await access.GetGroupsAsync(names, ct);
+        if (exact.Count == names.Count) return exact;
+        var wanted = names.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        return (await access.ListGroupsForDirectoryAsync(ct)).Where(g => wanted.Contains(g.Shortname)).ToList();
     }
 
     private async IAsyncEnumerable<LdapEntry?> GroupsAsync(
@@ -465,11 +494,12 @@ internal sealed class LdapDirectory(
                 if (p.Kind != PrincipalKind.User) continue;
                 if (await FindUserAsync(p.Shortname!, ct) is { } member) names.UnionWith(member.Groups);
             }
-            groups = names.Count == 0 ? [] : await access.GetGroupsAsync(names, ct);
+            groups = names.Count == 0 ? [] : await GroupsNamedAsync(names, ct);
         }
 
         var ordered = groups.OrderBy(g => g.Shortname, StringComparer.Ordinal).ToList();
-        var members = await MembersForAsync(ordered, f, new AttributeSelection(req.Attributes), ct);
+        if (await MembersForAsync(s, ordered, f, new AttributeSelection(req.Attributes), ct) is not { } members)
+            yield break;
         foreach (var g in ordered)
         {
             var e = GroupEntry(g, members[g.Shortname]);
@@ -536,7 +566,9 @@ internal sealed class LdapDirectory(
             .Add("displayName", name)
             // The hosted mailbox; a user without one is reachable at their
             // contact email, which Dex and Gitea need as the account's email.
-            .Add("mail", u.Mailbox ?? u.Email)
+            // Verified only: Postfix routes by `mail`, and an unverified
+            // address in a hosted domain would claim that domain's mail.
+            .Add("mail", u.Mailbox ?? (u.IsEmailVerified ? u.Email : null))
             .AddRange("mailAlias", u.MailAliases)
             .Add("mobile", u.Msisdn)
             .Add("isActive", u.IsUsable ? "TRUE" : "FALSE")

@@ -72,6 +72,22 @@ public sealed class UserRepository(
         return await reader.ReadAsync(ct) ? Hydrate(reader) : null;
     }
 
+    // The one user whose shortname matches `shortname` ignoring case, or null
+    // when none does or several do ('Bob' and 'bob' both existing): LDAP's uid
+    // is case-insensitive, dmart's shortname is not. idx_users_shortname_lower
+    // serves it. lower() folds ASCII only on SQLite, and Unicode on PostgreSQL;
+    // shortnames outside ASCII are in scripts without case.
+    public async Task<User?> GetByShortnameIgnoringCaseAsync(string shortname, CancellationToken ct = default)
+    {
+        await using var conn = await db.OpenAsync(ct);
+        await using var cmd = conn.Command($"{SelectAllColumns} WHERE lower(shortname) = lower($1) LIMIT 2");
+        DbParams.Add(cmd, shortname);
+        await using var reader = await cmd.ExecuteReaderAsync(ct);
+        if (!await reader.ReadAsync(ct)) return null;
+        var user = Hydrate(reader);
+        return await reader.ReadAsync(ct) ? null : user;
+    }
+
     // WHERE fragments for the identifier lookups below, named so
     // UserLookupIndexPlanTests can EXPLAIN-verify each one stays usable by
     // its partial index in SqlSchema (idx_users_email_lower_unique /
@@ -274,18 +290,36 @@ public sealed class UserRepository(
         // clashing address rolls the whole write back rather than leaving a user
         // whose mailbox is stored but not indexed (docs/user-directory-fields.md).
         await using var tx = await conn.BeginTransactionAsync(ct);
-        await using var cmd = conn.CreateCommand();
-        cmd.Transaction = tx;
-        var tuple = BindUserRow(cmd, u);
-        cmd.CommandText = $"{UserInsertColumns}\nVALUES {tuple}\n{UserConflictClause}";
-
-        await cmd.ExecuteNonQueryAsync(ct);
-        await SyncDirectoryIndexAsync(conn, tx, [u.Shortname], ct);
+        await WriteUserAsync(u, conn, tx, ct);
         await tx.CommitAsync(ct);
         // user.roles / groups may have changed — evict only THIS user's bundle:
         // a global clear sent every active actor back to the database at once.
         refresher.Evict(u.Shortname);
         EvictAuth(u.Shortname);
+    }
+
+    // The same write on a connection whose transaction the caller already
+    // opened: `import --fast` holds one for the whole run, and PostgreSQL has
+    // no nested BEGIN. Npgsql enlists these commands in it. The caller commits,
+    // and wraps the call in a savepoint if a clash must not abort the rest.
+    public async Task UpsertInOpenTransactionAsync(User u, DbConnection conn, CancellationToken ct = default)
+    {
+        u = u with { QueryPolicies = Utils.QueryPolicies.Generate(u) };
+        await WriteUserAsync(u, conn, null, ct);
+        refresher.Evict(u.Shortname);
+        EvictAuth(u.Shortname);
+    }
+
+    private static async Task WriteUserAsync(User u, DbConnection conn, DbTransaction? tx, CancellationToken ct)
+    {
+        await using (var cmd = conn.CreateCommand())
+        {
+            cmd.Transaction = tx;
+            var tuple = BindUserRow(cmd, u);
+            cmd.CommandText = $"{UserInsertColumns}\nVALUES {tuple}\n{UserConflictClause}";
+            await cmd.ExecuteNonQueryAsync(ct);
+        }
+        await SyncDirectoryIndexAsync(conn, tx, [u.Shortname], ct);
     }
 
     // A directory replica's write of its primary's row (Services/
@@ -315,7 +349,7 @@ public sealed class UserRepository(
         {
             DbParams.Add(exact, u.Shortname);
             DbParams.Add(exact, (object?)u.Password ?? DBNull.Value);
-            DbParams.Add(exact, u.Uuid);
+            DbParams.Add(exact, Guid.Parse(u.Uuid));   // PostgreSQL's uuid has no = text
             await exact.ExecuteNonQueryAsync(ct);
         }
         await SyncDirectoryIndexAsync(conn, tx, [u.Shortname], ct);
@@ -1299,15 +1333,22 @@ public sealed class UserRepository(
     ///
     /// Returns the rows affected so the caller can tell "upgraded" from "the
     /// row vanished underneath us" without a second query.
+    ///
+    /// <paramref name="touchUpdatedAt"/> is for replacing a hash imported from
+    /// LDAP (an {SSHA}): that one a directory replica should pick up rather
+    /// than keep the weak hash until the user next changes. An ordinary rehash
+    /// stays invisible to anything watching the row for change.
     /// </remarks>
     public async Task<int> UpdatePasswordHashOnlyAsync(
-        string shortname, string passwordHash, CancellationToken ct = default)
+        string shortname, string passwordHash, CancellationToken ct = default, bool touchUpdatedAt = false)
     {
         await using var conn = await db.OpenAsync(ct);
-        await using var cmd = conn.Command(
-            "UPDATE users SET password = $2 WHERE shortname = $1");
+        await using var cmd = conn.Command(touchUpdatedAt
+            ? "UPDATE users SET password = $2, updated_at = $3 WHERE shortname = $1"
+            : "UPDATE users SET password = $2 WHERE shortname = $1");
         DbParams.Add(cmd, shortname);
         DbParams.Add(cmd, passwordHash);
+        if (touchUpdatedAt) DbParams.Add(cmd, TimeUtils.Now());
         return await cmd.ExecuteNonQueryAsync(ct);
     }
 
@@ -1690,7 +1731,7 @@ public sealed class UserRepository(
     // row included — rolls back. UserService pre-checks for a readable
     // message; this is what makes the race between two writers safe.
     private static async Task SyncDirectoryIndexAsync(
-        DbConnection conn, DbTransaction tx, string[] shortnames, CancellationToken ct)
+        DbConnection conn, DbTransaction? tx, string[] shortnames, CancellationToken ct)
     {
         if (shortnames.Length == 0) return;
         var sqlite = conn is Microsoft.Data.Sqlite.SqliteConnection;
@@ -1822,6 +1863,15 @@ public sealed class UserRepository(
         return await reader.ReadAsync(ct) ? (reader.GetString(0), reader.GetString(1)) : null;
     }
 
+    // Whether `email` is the mailbox or an alias of a live user other than
+    // `shortname` (null: of anyone). A contact email must not be: LDAP's
+    // `mail` would match two people, and a login or reset by that address
+    // would reach the contact, not the mailbox's owner.
+    public async Task<bool> IsAnotherUsersAddressAsync(string? email, string? shortname, CancellationToken ct = default)
+        => DirectoryFields.NormalizeAddress(email) is { } address
+           && await FindAddressOwnerAsync(address, ct) is { } owner
+           && !string.Equals(owner.Shortname, shortname, StringComparison.Ordinal);
+
     // The user whose mailbox (kind "mailbox") or alias (kind "alias") is
     // `address`, through the user_addresses primary key.
     public async Task<User?> GetByAddressAsync(string address, string kind, CancellationToken ct = default)
@@ -1855,37 +1905,29 @@ public sealed class UserRepository(
 
     // ----- directory support (used by Ldap/LdapDirectory) -----
 
-    // One page of live users for the LDAP face's unanchored searches, in
-    // shortname order. Keyset rather than OFFSET: a scan resumes after the last
+    // `shortname` in byte order on both engines (idx_users_shortname_bytes on
+    // PostgreSQL): the order of every keyset walk a replica and its primary
+    // must agree on, whichever engine each runs.
+    private static string BytewiseShortname(DbConnection conn)
+        => conn is Microsoft.Data.Sqlite.SqliteConnection ? "shortname" : "shortname COLLATE \"C\"";
+
+    // One page of live users for the LDAP face's unanchored searches and the
+    // directory feed's full walk, in bytewise shortname order. Keyset rather than OFFSET: a scan resumes after the last
     // shortname it saw, so page N costs the same as page 1 instead of re-reading
     // every row before it — the difference between linear and quadratic over a
     // multi-million-row table.
     public async Task<List<User>> ListForDirectoryAsync(string? after, int limit, CancellationToken ct = default)
     {
         await using var conn = await db.OpenAsync(ct);
+        var name = BytewiseShortname(conn);
         await using var cmd = conn.Command(after is null
-            ? $"{SelectAllColumns} WHERE is_deleted = false ORDER BY shortname LIMIT $1"
-            : $"{SelectAllColumns} WHERE is_deleted = false AND shortname > $2 ORDER BY shortname LIMIT $1");
+            ? $"{SelectAllColumns} WHERE is_deleted = false ORDER BY {name} LIMIT $1"
+            : $"{SelectAllColumns} WHERE is_deleted = false AND {name} > $2 ORDER BY {name} LIMIT $1");
         DbParams.Add(cmd, limit);
         if (after is not null) DbParams.Add(cmd, after);
         await using var reader = await cmd.ExecuteReaderAsync(ct);
         var list = new List<User>();
         while (await reader.ReadAsync(ct)) list.Add(Hydrate(reader));
-        return list;
-    }
-
-    // Shortnames of the live users whose `groups` array holds `group` — the
-    // `member` values of a group entry in the LDAP face.
-    public async Task<List<string>> ListShortnamesInGroupAsync(string group, CancellationToken ct = default)
-    {
-        await using var conn = await db.OpenAsync(ct);
-        await using var cmd = conn.CreateCommand();
-        var contains = QueryHelper.DialectFor(db)
-            .JsonArrayContainsAny("groups", [group], (v, k) => DbParams.Add(cmd, v, k));
-        cmd.CommandText = $"SELECT shortname FROM users WHERE is_deleted = false AND {contains} ORDER BY shortname";
-        await using var reader = await cmd.ExecuteReaderAsync(ct);
-        var list = new List<string>();
-        while (await reader.ReadAsync(ct)) list.Add(reader.GetString(0));
         return list;
     }
 
@@ -1909,12 +1951,15 @@ public sealed class UserRepository(
     }
 
     // Shortnames of users hard-deleted (or renamed away) at or after `since`,
-    // from the tombstones every delete and rename records.
+    // from the tombstones every delete and rename records. A name taken again
+    // since is left out: its current row arrives with the changes, and a
+    // replica that removed it first would refuse its binds until then.
     public async Task<List<string>> ListDeletedSinceAsync(DateTime since, CancellationToken ct = default)
     {
         await using var conn = await db.OpenAsync(ct);
         await using var cmd = conn.Command(
-            "SELECT DISTINCT shortname FROM deletions WHERE table_name = 'users' AND deleted_at >= $1 ORDER BY shortname");
+            "SELECT DISTINCT shortname FROM deletions WHERE table_name = 'users' AND deleted_at >= $1 "
+            + "AND shortname NOT IN (SELECT shortname FROM users) ORDER BY shortname");
         DbParams.Add(cmd, since);
         await using var reader = await cmd.ExecuteReaderAsync(ct);
         var list = new List<string>();
@@ -1933,14 +1978,16 @@ public sealed class UserRepository(
         return await cmd.ExecuteScalarAsync(ct) as string;
     }
 
-    // Live shortnames in (after, upTo] (upTo null: to the end), in order: the
-    // replica's full walk reconciles each page of the primary against them.
+    // Live shortnames in (after, upTo] (upTo null: to the end), in bytewise
+    // order: the replica's full walk reconciles each page of the primary
+    // against them, so the range must mean what it means on the primary.
     public async Task<List<string>> ListShortnamesBetweenAsync(string after, string? upTo, CancellationToken ct = default)
     {
         await using var conn = await db.OpenAsync(ct);
+        var name = BytewiseShortname(conn);
         await using var cmd = conn.Command(upTo is null
-            ? "SELECT shortname FROM users WHERE shortname > $1 ORDER BY shortname"
-            : "SELECT shortname FROM users WHERE shortname > $1 AND shortname <= $2 ORDER BY shortname");
+            ? $"SELECT shortname FROM users WHERE is_deleted = false AND {name} > $1 ORDER BY {name}"
+            : $"SELECT shortname FROM users WHERE is_deleted = false AND {name} > $1 AND {name} <= $2 ORDER BY {name}");
         DbParams.Add(cmd, after);
         if (upTo is not null) DbParams.Add(cmd, upTo);
         await using var reader = await cmd.ExecuteReaderAsync(ct);
@@ -1959,21 +2006,37 @@ public sealed class UserRepository(
         return value is null or DBNull ? null : Convert.ToDateTime(value, System.Globalization.CultureInfo.InvariantCulture);
     }
 
-    public async Task SetReplicaWatermarkAsync(DateTime? watermark, CancellationToken ct = default)
+    // Records a complete walk: the primary's clock at its start (the next
+    // watermark) and this host's clock now (how fresh the copy is).
+    public async Task SetReplicaWatermarkAsync(DateTime? watermark, DateTime syncedAt, CancellationToken ct = default)
     {
         await using var conn = await db.OpenAsync(ct);
         await using var cmd = conn.Command(
-            "INSERT INTO directory_replica_state (id, watermark) VALUES (1, $1) "
-            + "ON CONFLICT (id) DO UPDATE SET watermark = $1");
+            "INSERT INTO directory_replica_state (id, watermark, synced_at) VALUES (1, $1, $2) "
+            + "ON CONFLICT (id) DO UPDATE SET watermark = $1, synced_at = $2");
         DbParams.Add(cmd, (object?)watermark ?? DBNull.Value);
+        DbParams.Add(cmd, syncedAt);
         await cmd.ExecuteNonQueryAsync(ct);
     }
 
-    // Members of several groups in one query: the LDAP face's group listing,
-    // which on SQLite would otherwise scan the users table once per group.
-    // Every requested group is a key, members in shortname order.
-    public async Task<Dictionary<string, List<string>>> ListGroupMembersAsync(
-        IReadOnlyCollection<string> groups, CancellationToken ct = default)
+    // When this replica last completed a walk, by its own clock; null before
+    // the first one.
+    public async Task<DateTime?> GetReplicaSyncedAtAsync(CancellationToken ct = default)
+    {
+        await using var conn = await db.OpenAsync(ct);
+        await using var cmd = conn.Command("SELECT synced_at FROM directory_replica_state WHERE id = 1");
+        var value = await cmd.ExecuteScalarAsync(ct);
+        return value is null or DBNull ? null : Convert.ToDateTime(value, System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    // Members of several groups in one query: the `member` values of the LDAP
+    // face's group entries, which on SQLite would otherwise scan the users
+    // table once per group. Every requested group is a key, members in
+    // shortname order. Null when more than `maxUsers` users are members of
+    // any of them: the LDAP face's scan limit, which a group of every user
+    // would otherwise turn into one multi-million-row answer.
+    public async Task<Dictionary<string, List<string>>?> ListGroupMembersAsync(
+        IReadOnlyCollection<string> groups, int maxUsers, CancellationToken ct = default)
     {
         var result = groups.Distinct(StringComparer.Ordinal).ToDictionary(g => g, _ => new List<string>(), StringComparer.Ordinal);
         if (result.Count == 0) return result;
@@ -1981,10 +2044,13 @@ public sealed class UserRepository(
         await using var cmd = conn.CreateCommand();
         var contains = QueryHelper.DialectFor(db)
             .JsonArrayContainsAny("groups", result.Keys.ToList(), (v, k) => DbParams.Add(cmd, v, k));
-        cmd.CommandText = $"SELECT shortname, groups FROM users WHERE is_deleted = false AND {contains} ORDER BY shortname";
+        var limit = DbParams.Add(cmd, maxUsers + 1);
+        cmd.CommandText = $"SELECT shortname, groups FROM users WHERE is_deleted = false AND {contains} ORDER BY shortname LIMIT {limit}";
         await using var reader = await cmd.ExecuteReaderAsync(ct);
+        var rows = 0;
         while (await reader.ReadAsync(ct))
         {
+            if (++rows > maxUsers) return null;
             var shortname = reader.GetString(0);
             foreach (var g in JsonbHelpers.FromListString(reader.IsDBNull(1) ? null : reader.GetString(1)) ?? [])
                 if (result.TryGetValue(g, out var members)) members.Add(shortname);

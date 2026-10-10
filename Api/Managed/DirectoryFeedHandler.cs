@@ -9,6 +9,7 @@ namespace Dmart.Api.Managed;
 // primary (docs/directory-replica.md). It hands out every user's password
 // hash, so beyond the managed group's authentication it answers only the bot
 // accounts listed in DIRECTORY_FEED_READERS, and nobody when that is empty.
+// Rows carry what a replica serves, not the payload or login history.
 //
 //   ?mode=full[&after=<shortname>][&limit=n]
 //   ?mode=changes&since=<time>[&after_time=<time>&after=<shortname>][&limit=n]
@@ -20,7 +21,7 @@ public static class DirectoryFeedHandler
             ILogger<DirectoryFeedService> log, CancellationToken ct) =>
         {
             var actor = http.Actor();
-            if (!feed.MayRead(actor))
+            if (!await feed.MayReadAsync(actor, ct))
                 return Results.Json(Response.Fail(InternalErrorCode.NOT_ALLOWED,
                     "not a directory feed reader", ErrorTypes.Auth), DmartJsonContext.Default.Response, statusCode: 403);
 

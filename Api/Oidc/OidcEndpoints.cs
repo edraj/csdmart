@@ -10,6 +10,7 @@ using Dmart.Models.Api;
 using Dmart.Models.Core;
 using Dmart.Models.Enums;
 using Dmart.Services;
+using Dmart.Utils;
 using Microsoft.Extensions.Options;
 using DmartUser = Dmart.Models.Core.User;
 
@@ -33,7 +34,7 @@ namespace Dmart.Api.Oidc;
 // whenever OidcIssuer is set, whatever EnableMcp says.
 public static class OidcEndpoints
 {
-    private const string FormCookie = "dmart_oidc_form";
+    private const string FormCookieName = "dmart_oidc_form";
     private static readonly string[] SupportedScopes = ["openid", "profile", "email", "phone", "groups"];
     private static readonly string[] SupportedClaims =
     [
@@ -47,7 +48,8 @@ public static class OidcEndpoints
         app.MapGet("/.well-known/openid-configuration", Discovery).WithTags("OIDC");
         var g = app.MapGroup("/oidc").WithTags("OIDC");
         g.MapGet("/jwks", (OidcSigningKey key) => Json(w => key.WriteJwks(w)));
-        g.MapGet("/authorize", AuthorizeGetAsync);
+        // Public, but every request may mint a code: metered per address.
+        g.MapGet("/authorize", AuthorizeGetAsync).RequireRateLimiting("public-by-ip");
         // A sign-in attempt, rate-limited like /user/login.
         g.MapPost("/authorize", AuthorizePostAsync).RequireRateLimiting("auth-by-ip");
         g.MapPost("/token", TokenAsync);
@@ -56,7 +58,11 @@ public static class OidcEndpoints
         return app;
     }
 
-    private static string Issuer(DmartSettings s) => s.OidcIssuer.TrimEnd('/');
+    // The issuer exactly as configured: what `iss` must equal, character for
+    // character, in discovery, tokens and responses (OpenID Connect Discovery
+    // §4.3). Endpoint URLs are built from it without its trailing slash.
+    private static string Issuer(DmartSettings s) => s.OidcIssuer;
+    private static string BaseUrl(DmartSettings s) => s.OidcIssuer.TrimEnd('/');
 
     // ---- discovery ----------------------------------------------------------
 
@@ -66,11 +72,12 @@ public static class OidcEndpoints
         return Json(w =>
         {
             w.WriteStartObject();
+            var url = BaseUrl(settings.Value);
             w.WriteString("issuer", iss);
-            w.WriteString("authorization_endpoint", iss + "/oidc/authorize");
-            w.WriteString("token_endpoint", iss + "/oidc/token");
-            w.WriteString("userinfo_endpoint", iss + "/oidc/userinfo");
-            w.WriteString("jwks_uri", iss + "/oidc/jwks");
+            w.WriteString("authorization_endpoint", url + "/oidc/authorize");
+            w.WriteString("token_endpoint", url + "/oidc/token");
+            w.WriteString("userinfo_endpoint", url + "/oidc/userinfo");
+            w.WriteString("jwks_uri", url + "/oidc/jwks");
             Array(w, "response_types_supported", "code");
             Array(w, "response_modes_supported", "query");
             Array(w, "grant_types_supported", "authorization_code");
@@ -81,6 +88,10 @@ public static class OidcEndpoints
             Array(w, "code_challenge_methods_supported", "S256");
             Array(w, "claims_supported", SupportedClaims);
             w.WriteBoolean("authorization_response_iss_parameter_supported", true);
+            // Both default to true when absent, which would promise request
+            // objects this provider does not read.
+            w.WriteBoolean("request_parameter_supported", false);
+            w.WriteBoolean("request_uri_parameter_supported", false);
             w.WriteEndObject();
         });
     }
@@ -159,12 +170,16 @@ public static class OidcEndpoints
         // again, unless the client insists (prompt=login) or the sign-in is
         // older than it accepts (max_age).
         var session = r.Prompts.Contains("login") ? null : await SessionAsync(http, jwt, users, s, ct);
+        // A session whose sign-in time is unknown is as old as any max_age.
         if (session is { } live && r.MaxAge is not null
-            && DateTimeOffset.UtcNow.ToUnixTimeSeconds() - live.AuthTime > long.Parse(r.MaxAge))
+            && (live.AuthTime is not { } at || DateTimeOffset.UtcNow.ToUnixTimeSeconds() - at > long.Parse(r.MaxAge)))
             session = null;
 
         if (session is { } signedIn)
-            return Grant(ok, signedIn.User, signedIn.AuthTime, codes, s);
+        {
+            if (signedIn.User.ForcePasswordChange) return MustChangePassword();
+            return Grant(ok, signedIn.User, signedIn.AuthTime ?? DateTimeOffset.UtcNow.ToUnixTimeSeconds(), codes, s);
+        }
         if (r.Prompts.Contains("none"))
             return Redirect(r.RedirectUri!, s, r.State, error: "login_required", description: "no signed-in session");
         return SignInForm(http, ok, s, error: null);
@@ -182,7 +197,8 @@ public static class OidcEndpoints
         // page elsewhere cannot post someone else's credentials through this
         // browser and sign it in as them (login CSRF).
         var formToken = form["form_token"].FirstOrDefault();
-        var cookieToken = http.Request.Cookies[FormCookie];
+        var (cookieName, cookieOptions) = FormCookie(s);
+        var cookieToken = http.Request.Cookies[cookieName];
         if (string.IsNullOrEmpty(formToken) || cookieToken is null
             || !CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(formToken), Encoding.UTF8.GetBytes(cookieToken)))
             return SignInForm(http, ok, s, error: "The form expired. Please sign in again.");
@@ -197,8 +213,16 @@ public static class OidcEndpoints
         var request = username.Contains('@')
             ? new UserLoginRequest(Shortname: null, Email: username, Msisdn: null, Password: password)
             : new UserLoginRequest(Shortname: username, Email: null, Msisdn: null, Password: password);
-        var result = await userService.LoginAsync(request, requestHeaders: null, ct);
-        if (!result.IsOk)
+        // The headers /user/login records with last_login, less credentials.
+        var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var h in http.Request.Headers)
+            if (!h.Key.Equals("authorization", StringComparison.OrdinalIgnoreCase)
+                && !h.Key.Equals("cookie", StringComparison.OrdinalIgnoreCase))
+                headers[h.Key] = h.Value.ToString();
+        var result = await userService.LoginAsync(request, headers, ct);
+        // A bot's credential is a machine's; it signs in to no application.
+        // Same message as a wrong password, and no browser session.
+        if (!result.IsOk || result.Value.User.Type == UserType.Bot)
             // One message for every failure, as /user/login gives one code.
             return SignInForm(http, ok, s, error: "Sign-in failed. Check your username and password.");
 
@@ -213,14 +237,35 @@ public static class OidcEndpoints
             MaxAge = TimeSpan.FromSeconds(s.JwtAccessExpires),
             Path = "/",
         });
-        http.Response.Cookies.Delete(FormCookie, new CookieOptions { Path = "/oidc" });
+        http.Response.Cookies.Delete(cookieName, cookieOptions);
 
-        // A temporary password set by an administrator is for changing, not
-        // for signing in to every other application with.
-        if (user.ForcePasswordChange)
-            return Page(403, "Change your password first",
-                "Your password was set by an administrator. Sign in to dmart and choose your own, then try again.");
+        if (user.ForcePasswordChange) return MustChangePassword();
         return Grant(ok, user, DateTimeOffset.UtcNow.ToUnixTimeSeconds(), codes, s);
+    }
+
+    // A temporary password set by an administrator is for changing, not for
+    // signing in to every other application with: not through the form, and
+    // not through a session opened with it either.
+    private static WithHeader MustChangePassword() => Page(403, "Change your password first",
+        "Your password was set by an administrator. Sign in to dmart and choose your own, then try again.");
+
+    // The sign-in form's anti-CSRF cookie. Over HTTPS (the issuer's scheme,
+    // which is what the browser sees behind a proxy) a __Host- cookie: Secure,
+    // Path=/, no Domain, so nothing on a sibling host can set or shadow it.
+    // Over plain HTTP, scoped to the provider's path as the browser sees it,
+    // which is the issuer's: a proxy may mount dmart under a prefix.
+    private static (string Name, CookieOptions Options) FormCookie(DmartSettings s)
+    {
+        var https = s.OidcIssuer.StartsWith("https://", StringComparison.OrdinalIgnoreCase);
+        var path = https ? "/"
+            : (Uri.TryCreate(s.OidcIssuer, UriKind.Absolute, out var u) ? u.AbsolutePath.TrimEnd('/') : "") + "/oidc";
+        return (https ? "__Host-" + FormCookieName : FormCookieName, new CookieOptions
+        {
+            HttpOnly = true,
+            Secure = https,
+            SameSite = SameSiteMode.Strict,
+            Path = path,
+        });
     }
 
     // The user is signed in: hand the client a code, or tell it no.
@@ -231,6 +276,9 @@ public static class OidcEndpoints
             return Redirect(r.RedirectUri!, s, r.State, error: "access_denied",
                 description: "this account is not granted this service");
         var code = codes.Issue(user.Shortname, ok.Client.ClientId, r.RedirectUri!, ok.Scope, r.Nonce, r.CodeChallenge, authTime);
+        if (code is null)
+            return Redirect(r.RedirectUri!, s, r.State, error: "temporarily_unavailable",
+                description: "too many sign-ins in progress; try again shortly");
         return Redirect(r.RedirectUri!, s, r.State, code: code);
     }
 
@@ -240,7 +288,8 @@ public static class OidcEndpoints
     // it). Read directly rather than through the bearer middleware, whose
     // cookie CSRF rule refuses cross-site requests, and every request here
     // arrives from another site by design.
-    private static async Task<(DmartUser User, long AuthTime)?> SessionAsync(
+    // AuthTime is the session token's iat, or null if it has none.
+    private static async Task<(DmartUser User, long? AuthTime)?> SessionAsync(
         HttpContext http, JwtIssuer jwt, UserRepository users, DmartSettings s, CancellationToken ct)
     {
         var token = http.Request.Cookies["auth_token"];
@@ -253,8 +302,7 @@ public static class OidcEndpoints
             : await users.IsSessionValidAsync(shortname, token, ct);
         if (!live) return null;
         using var payload = JsonDocument.Parse(OidcSigningKey.FromBase64Url(token.Split('.')[1]));
-        var iat = payload.RootElement.TryGetProperty("iat", out var v) && v.TryGetInt64(out var t)
-            ? t : DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        long? iat = payload.RootElement.TryGetProperty("iat", out var v) && v.TryGetInt64(out var t) ? t : null;
         return (user, iat);
     }
 
@@ -308,7 +356,8 @@ public static class OidcEndpoints
         // Everything that admitted the user at /oidc/authorize may have changed
         // in the code's minute: deactivation, deletion, the service grant.
         var user = await users.GetByShortnameAsync(grant.UserShortname, ct);
-        if (user is not { IsUsable: true } || !OidcClients.Admits(client, user.Services))
+        if (user is not { IsUsable: true } || user.Type == UserType.Bot || user.ForcePasswordChange
+            || !OidcClients.Admits(client, user.Services))
             return TokenError(400, "invalid_grant", "the account can no longer sign in here");
 
         var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
@@ -336,7 +385,7 @@ public static class OidcEndpoints
             w.WriteStartObject();
             w.WriteString("iss", Issuer(s));
             w.WriteString("sub", user.Uuid);
-            w.WriteString("aud", Issuer(s) + "/oidc/userinfo");
+            w.WriteString("aud", BaseUrl(s) + "/oidc/userinfo");
             w.WriteString("client_id", client.ClientId);
             w.WriteString("scope", grant.Scope);
             w.WriteNumber("iat", now);
@@ -381,17 +430,17 @@ public static class OidcEndpoints
         using var doc = token is null ? null : key.Verify(token, "at+jwt");
         var claims = doc?.RootElement;
         if (claims is not { } c
-            || !c.TryGetProperty("iss", out var iss) || iss.GetString() != Issuer(s)
-            || !c.TryGetProperty("aud", out var aud) || aud.GetString() != Issuer(s) + "/oidc/userinfo"
+            || !c.TryGetProperty("iss", out var iss) || iss.ValueKind != JsonValueKind.String || iss.GetString() != Issuer(s)
+            || !c.TryGetProperty("aud", out var aud) || aud.ValueKind != JsonValueKind.String || aud.GetString() != BaseUrl(s) + "/oidc/userinfo"
             || !c.TryGetProperty("exp", out var exp) || !exp.TryGetInt64(out var e) || e < DateTimeOffset.UtcNow.ToUnixTimeSeconds()
-            || !c.TryGetProperty("sub", out var sub) || sub.GetString() is not { } uuid)
+            || !c.TryGetProperty("sub", out var sub) || sub.ValueKind != JsonValueKind.String || sub.GetString() is not { } uuid)
             return BearerError();
 
         var user = await users.GetShortnameByUuidAsync(uuid, ct) is { } shortname
             ? await users.GetByShortnameAsync(shortname, ct) : null;
         if (user is not { IsUsable: true }) return BearerError();
 
-        var scopes = (c.TryGetProperty("scope", out var sc) ? sc.GetString() ?? "" : "")
+        var scopes = (c.TryGetProperty("scope", out var sc) && sc.ValueKind == JsonValueKind.String ? sc.GetString() ?? "" : "")
             .Split(' ', StringSplitOptions.RemoveEmptyEntries).ToHashSet(StringComparer.Ordinal);
         http.Response.Headers.CacheControl = "no-store";
         return Json(w =>
@@ -514,14 +563,9 @@ public static class OidcEndpoints
     {
         var r = ok.Request;
         var formToken = OidcSigningKey.Base64Url(RandomNumberGenerator.GetBytes(24));
-        http.Response.Cookies.Append(FormCookie, formToken, new CookieOptions
-        {
-            HttpOnly = true,
-            Secure = http.Request.IsHttps,
-            SameSite = SameSiteMode.Strict,
-            MaxAge = TimeSpan.FromMinutes(15),
-            Path = "/oidc",
-        });
+        var (cookieName, cookieOptions) = FormCookie(s);
+        cookieOptions.MaxAge = TimeSpan.FromMinutes(15);
+        http.Response.Cookies.Append(cookieName, formToken, cookieOptions);
 
         var app = ok.Client.Name is { Length: > 0 } n ? n : ok.Client.ClientId;
         var host = Uri.TryCreate(r.RedirectUri, UriKind.Absolute, out var u) ? u.Host : "";
@@ -546,13 +590,15 @@ public static class OidcEndpoints
             .Append("<label for=\"password\">Password</label>")
             .Append("<input id=\"password\" name=\"password\" type=\"password\" autocomplete=\"current-password\" required>")
             .Append("<button type=\"submit\">Sign in</button></form>");
-        return HtmlPage(200, "Sign in", body.ToString());
+        return HtmlPage(200, "Sign in", body.ToString(), r.RedirectUri);
     }
 
     private static WithHeader Page(int status, string title, string message)
         => HtmlPage(status, title, $"<h1>{Html(title)}</h1><p class=\"sub\">{Html(message)}</p>");
 
-    private static WithHeader HtmlPage(int status, string title, string body)
+    // `redirectUri`: where the page's form ends up on success, which its
+    // form-action must admit (Utils/FormActionCsp).
+    private static WithHeader HtmlPage(int status, string title, string body, string? redirectUri = null)
     {
         var html = $$"""
             <!doctype html>
@@ -560,7 +606,7 @@ public static class OidcEndpoints
             <head>
             <meta charset="utf-8">
             <meta name="viewport" content="width=device-width,initial-scale=1">
-            <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'">
+            <meta http-equiv="Content-Security-Policy" content="{{Html(FormActionCsp.For(redirectUri))}}">
             <meta name="referrer" content="no-referrer">
             <title>{{Html(title)}} · dmart</title>
             <style>

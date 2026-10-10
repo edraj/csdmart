@@ -168,6 +168,43 @@ public sealed class UserDirectoryFieldsTests(DmartFactory factory) : IClassFixtu
         }
     }
 
+    // The reverse of the rule above: a contact email that is another account's
+    // hosted mailbox or alias. A login or reset by that address would reach
+    // the contact's account, and LDAP's `mail` would name two people.
+    [FactIfPg]
+    public async Task A_Contact_Email_Cannot_Be_Another_Users_Mailbox_Or_Alias()
+    {
+        var admin = await factory.CreateLoggedInUserAsync();
+        var holder = Unique("dfm");
+        var other = Unique("dfn");
+        try
+        {
+            (await ManagedAsync(admin.Client, "create", holder, $$"""
+                {"mailbox":"{{holder}}@example.org","mail_aliases":["a-{{holder}}@example.org"]}
+                """)).Ok.ShouldBeTrue();
+
+            (await ManagedAsync(admin.Client, "create", other, $$"""{"email":"{{holder.ToUpperInvariant()}}@example.org"}"""))
+                .Raw.ShouldContain("@email:");
+            (await ManagedAsync(admin.Client, "create", other, $$"""{"email":"a-{{holder}}@example.org"}"""))
+                .Raw.ShouldContain("@email:");
+            (await Users.GetByShortnameAsync(other)).ShouldBeNull();
+
+            (await ManagedAsync(admin.Client, "create", other, $$"""{"email":"{{other}}@elsewhere.org"}""")).Ok.ShouldBeTrue();
+            (await ManagedAsync(admin.Client, "update", other, $$"""{"email":"{{holder}}@example.org"}"""))
+                .Raw.ShouldContain("@email:");
+            (await Users.GetByShortnameAsync(other))!.Email.ShouldBe($"{other}@elsewhere.org");
+
+            // The holder may use their own mailbox as their contact email.
+            (await ManagedAsync(admin.Client, "update", holder, $$"""{"email":"{{holder}}@example.org"}""")).Ok.ShouldBeTrue();
+        }
+        finally
+        {
+            await TestUserCleanup.DeleteUserAndOwnedAsync(factory.Services, holder);
+            await TestUserCleanup.DeleteUserAndOwnedAsync(factory.Services, other);
+            await admin.Cleanup();
+        }
+    }
+
     [FactIfPg]
     public async Task The_Rules_Refuse_Malformed_Requests()
     {

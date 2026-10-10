@@ -25,7 +25,7 @@ The authorization code flow (OIDC Core §3.1), with PKCE:
 |---|---|
 | `GET /.well-known/openid-configuration` | discovery |
 | `GET /oidc/jwks` | the public signing key |
-| `GET /oidc/authorize` | single sign-on, or the sign-in form |
+| `GET /oidc/authorize` | single sign-on, or the sign-in form; rate-limited like other public endpoints (`PUBLIC_RATE_LIMIT_PER_MINUTE`) |
 | `POST /oidc/authorize` | the form's submission, rate-limited like `/user/login` |
 | `POST /oidc/token` | code to tokens |
 | `GET`/`POST /oidc/userinfo` | claims for an access token |
@@ -54,7 +54,12 @@ OIDC_TOKEN_SECONDS=3600
 
 - **The issuer** must be https, except on a loopback address. It may carry a
   path when a reverse proxy mounts dmart under one. dmart serves its routes
-  at its own root, and discovery advertises them under the issuer.
+  at its own root, and discovery advertises them under the issuer. It is
+  used exactly as written as `iss`, so write it as relying parties will
+  (with or without a trailing slash, consistently).
+- **One instance.** Authorization codes live in the process's memory for 60
+  seconds, so the instance that issued a code must redeem it. Run the
+  provider on one instance, or route `/oidc/*` to one.
 - **The signing key** is RSA, as PKCS#8 PEM. It is created with mode 0600 on
   first start if the file is missing. Keep it with the database backups:
   - its key id is its RFC 7638 thumbprint;
@@ -117,11 +122,33 @@ others read them from the token.
   (RFC 6749 §4.1.2.1). Every other error goes back to the client with
   `state` and `iss` (RFC 9207).
 - **Login CSRF.** The form's submission must carry a token matching a cookie
-  set with the form (`SameSite=Strict`, path `/oidc`). Credentials posted
-  from another site cannot sign this browser in as someone else.
+  set with the form (`SameSite=Strict`). Over https it is a `__Host-`
+  cookie; over http it is scoped to the issuer's path plus `/oidc`.
+  Credentials posted from another site cannot sign this browser in as
+  someone else.
+- **The form's CSP admits the client.** Chromium applies `form-action` to
+  the redirect that follows a form submission, so the sign-in page allows
+  `'self'` and the redirect URI's origin, and nothing else
+  (`Utils/FormActionCsp`). `'self'` alone signed the user in and then
+  blocked the redirect; `e2e/tests/handoff.spec.ts` drives it in Chromium.
 - **Temporary passwords.** An account flagged `force_password_change` is
   stopped with a page asking the user to change their password in dmart
-  first.
+  first, whether it signs in through the form or arrives with a session
+  (single sign-on), and a code issued before the flag was set redeems
+  nothing.
+- **Bots** sign in to no application: the form answers as for a wrong
+  password and opens no session, and the token endpoint refuses their codes.
+- **PKCE downgrade.** A `code_verifier` sent for a code issued without a
+  challenge is refused (RFC 9700 §2.1.1).
+- **No request objects.** Discovery says `request_parameter_supported` and
+  `request_uri_parameter_supported` are false; both default to true when
+  absent.
+- **The clients file is strict.** An unknown key (`redirect_uri` for
+  `redirect_uris`) or a null where a value belongs fails the load, instead of
+  loading a client without its redirect URIs or its service gate.
+- **The signing key** is written to a temporary file and renamed into place,
+  so a crash never leaves half a key. A file without the private key stops
+  startup; one other users can read is logged as a warning.
 
 ## Replacing Dex in matrix-deploy
 
@@ -176,7 +203,12 @@ gitea admin auth add-oauth --name dmart --provider openidConnect \
   - the service gate;
   - public clients and PKCE, including a wrong verifier spending the code;
   - unknown clients and redirect URIs answered with a page, never a redirect;
-  - `prompt=none`, login CSRF, and a wrong client secret.
+  - `prompt=none`, login CSRF, and a wrong client secret;
+  - temporary passwords through the form, single sign-on and the token
+    endpoint; bots; a PKCE downgrade; the form's CSP.
+- **Playwright** (`e2e/tests/handoff.spec.ts`): the form, and the MCP
+  authorization form, hand their code to another origin in Chromium. With
+  `form-action 'self'` alone it fails with Chromium's CSP error.
 - **Unit tests**:
   - the key: created 0600, a stable id, and rejecting tampering, a foreign
     key and the wrong `typ`;
