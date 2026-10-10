@@ -452,6 +452,7 @@
   "destination_space": "Destination space",
   "destination_subpath": "Destination subpath",
   "diagram": "Diagram",
+  "diagram_error": "This diagram could not be drawn",
   "download_all": "Download all",
   "download_diagram": "Download diagram",
   "download_file": "Download {name}",

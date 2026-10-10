@@ -62,6 +62,26 @@ test.describe("cxb", () => {
       await expect(page).toHaveURL(/\/cxb\/management\/profile/);
     });
 
+    // A ```mermaid fence is drawn, not shown as its source; mermaid is a lazy
+    // chunk of cxb itself, since the CSP takes scripts from 'self' only. The
+    // page (5 KB of markdown) is also longer than the 4096 characters the
+    // editor's textarea used to cap, which let nobody type into it.
+    test("the markdown preview draws mermaid diagrams, and a long page stays editable", async ({ page }) => {
+      await page.goto("/cxb/management/content/website/pages/features/content");
+      await page.getByRole("tab", { name: /Form/ }).click();
+
+      const source = page.locator("#markdown-source");
+      await source.press("ControlOrMeta+End");
+      await source.pressSequentially("\n\nadded in the e2e run");
+      await expect(source).toHaveValue(/added in the e2e run$/);
+
+      await page.getByRole("tab", { name: "Preview" }).click();
+      const diagrams = page.locator("figure.md-diagram[data-rendered] svg");
+      await expect(diagrams).toHaveCount(3);
+      await expect(diagrams.first()).toContainText("Space: Project/Business");
+      await expect(page.locator(".md-diagram-error")).toHaveCount(0);
+    });
+
     test("tools pages render", async ({ page }) => {
       await page.goto("/cxb/management/tools");
       await expect(page.getByRole("heading", { level: 1, name: "Tools" })).toBeVisible();
