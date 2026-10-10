@@ -222,6 +222,14 @@ public class QuerySearchFeatureMatrixTests : IClassFixture<DmartFactory>
     [InlineData("-@shortname:[it_a it_c]", new[] { Gamma, Delta })]
     // Reversed bounds are normalised, so this must not return the empty set.
     [InlineData("@shortname:[it_c it_a]", new[] { Alpha, Beta })]
+    // Both selectors apply. The second used to replace the first, so this
+    // was `it_alpha OR NOT it_beta`.
+    [InlineData("@shortname:it_alpha or @shortname:it_beta|it_gamma -@shortname:it_beta", new[] { Alpha, Gamma })]
+    [InlineData("@shortname:it_a* -@shortname:it_alpha", new string[0])]
+    // A number compares numerically and skips non-numeric values on both
+    // engines (no shortname here is a number). It was a 500 on SQLite.
+    [InlineData("@shortname:>5", new string[0])]
+    [InlineData("@shortname:<5", new string[0])]
     public Task ScalarColumns(string search, string[] expected) => AssertSelects(search, expected);
 
     // ── Boolean column ────────────────────────────────────────────────────
@@ -245,6 +253,9 @@ public class QuerySearchFeatureMatrixTests : IClassFixture<DmartFactory>
     // Same field twice accumulates with AND — both tags must be present.
     [InlineData("@tags:red @tags:hot", new[] { Alpha })]
     [InlineData("@tags:red and @tags:blue", new string[0])]
+    // Alternation stays inside its own selector: red AND (hot OR blue).
+    // It used to merge into red OR hot OR blue.
+    [InlineData("@tags:red @tags:hot|blue", new[] { Alpha })]
     public Task JsonbArrayColumn(string search, string[] expected) => AssertSelects(search, expected);
 
     // ── Payload paths: plain / alternation / negation ─────────────────────
@@ -273,6 +284,11 @@ public class QuerySearchFeatureMatrixTests : IClassFixture<DmartFactory>
     [InlineData("@payload.body.price:[10 100]", new[] { Alpha, Beta, Delta })]
     [InlineData("@payload.body.price:[100,10]", new[] { Alpha, Beta, Delta })]
     [InlineData("-@payload.body.price:[10 100]", new[] { Gamma })]
+    // The minus used to be ignored on a comparison: this returned Gamma.
+    [InlineData("-@payload.body.price:>100", new[] { Alpha, Beta, Delta })]
+    // Arabic-Indic digits compare as the number (they were a FormatException).
+    [InlineData("@payload.body.price:>٩٩", new[] { Beta, Gamma })]
+    [InlineData("@payload.body.price:[١٠ ١٠٠]", new[] { Alpha, Beta, Delta })]
     public Task PayloadNumerics(string search, string[] expected) => AssertSelects(search, expected);
 
     // ── Payload booleans ──────────────────────────────────────────────────
@@ -373,8 +389,8 @@ public class QuerySearchFeatureMatrixTests : IClassFixture<DmartFactory>
     [InlineData("()", new[] { Alpha, Beta, Gamma, Delta })]
     [InlineData("or", new[] { Alpha, Beta, Gamma, Delta })]
     [InlineData("and", new[] { Alpha, Beta, Gamma, Delta })]
-    // A selector the parser rejects (bad identifier) is dropped, not fatal.
-    [InlineData("@BadName:x", new[] { Alpha, Beta, Gamma, Delta })]
+    // A bare @word (no colon) is text, not a selector that vanishes.
+    [InlineData("@it_alpha", new string[0])]
     // Dangling operators reduce to the non-empty operand.
     [InlineData("@payload.body.env:prod or", new[] { Alpha, Gamma })]
     [InlineData("or @payload.body.env:prod", new[] { Alpha, Gamma })]
@@ -424,20 +440,14 @@ public class QuerySearchFeatureMatrixTests : IClassFixture<DmartFactory>
             (await RunSearch(query, sn, $"@created_at:[{yesterday},{tomorrow}]")).ShouldBe(all);
             (await RunSearch(query, sn, $"@updated_at:[{yesterday},{tomorrow}]")).ShouldBe(all);
 
-            // FOOTGUN, pinned deliberately. Comparison operators only engage
-            // for NUMERIC values (ComparisonRegex requires it), so
-            // `>2026-01-01` stays the literal value ">2026-01-01" and the
-            // emitted SQL is an EQUALITY: `updated_at = '>2026-01-01'::
-            // timestamptz`. PostgreSQL then parses that literal leniently —
-            // it ignores the leading '>' and yields midnight — so the query
-            // neither errors nor compares: it asks for rows stamped exactly
-            // at 00:00:00 on that date, and matches nothing.
-            //
-            // Use epoch millis for `>`/`<` on a timestamp column, or a range
-            // for ISO bounds. If this ever starts returning rows, the
-            // comparison path changed and the docs need updating with it.
-            (await RunSearch(query, sn, $"@updated_at:>{today}")).ShouldBeEmpty();
+            // A date after `>`/`<` compares. It used to stay the literal
+            // ">2026-01-01" (comparisons engaged for numbers only), an
+            // equality that matched nothing: the footgun this test pinned.
+            (await RunSearch(query, sn, $"@updated_at:>{yesterday}")).ShouldBe(all);
+            (await RunSearch(query, sn, $"@updated_at:<{tomorrow}")).ShouldBe(all);
             (await RunSearch(query, sn, $"@updated_at:>{tomorrow}")).ShouldBeEmpty();
+            (await RunSearch(query, sn, $"@created_at:<={yesterday}")).ShouldBeEmpty();
+            (await RunSearch(query, sn, $"-@created_at:>{yesterday}")).ShouldBeEmpty();
         }
         finally { try { await spaces.DeleteAsync(sn); } catch { } }
     }

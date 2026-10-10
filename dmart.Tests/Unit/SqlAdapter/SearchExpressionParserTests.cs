@@ -77,14 +77,84 @@ public class SearchExpressionParserTests
     }
 
     [Fact]
-    public void Comparison_Operator_On_Numeric_Emits_Cast_Comparison()
+    public void Comparison_Operator_On_Numeric_Emits_Guarded_Numeric_Comparison()
     {
         var parsed = SearchExpressionParser.Parse("@shortname:>5", 0);
 
-        // Scalar ">" path uses ::numeric on the field expr.
-        parsed.Clauses[0].ShouldContain("> @s_0");
-        parsed.Clauses[0].ShouldContain("::numeric");
+        // Through the dialect's guarded compare: only numeric text is cast,
+        // so a non-numeric row is skipped instead of aborting the query.
+        parsed.Clauses[0].ShouldContain("CASE WHEN (shortname::text) ~ ");
+        parsed.Clauses[0].ShouldContain("CAST((shortname::text) AS FLOAT) > CAST(@s_0 AS float)");
+        parsed.Clauses[0].ShouldNotContain("::numeric");
         parsed.Parameters.Count.ShouldBe(1);
+    }
+
+    [Fact]
+    public void Comparison_Operator_On_Sqlite_Has_No_Postgres_Cast()
+    {
+        // `::numeric` was emitted on every backend: SQLite read `::` as a
+        // token error and the query was a 500.
+        var sql = Sql("@shortname:>5", dialect: SqliteSqlDialect.Instance);
+        sql.ShouldNotContain("::");
+        sql.ShouldContain("CAST((shortname) AS REAL) > CAST(@s_0 AS REAL)");
+        sql.ShouldContain("NOT GLOB '*[^0-9.eE+-]*'");
+    }
+
+    [Fact]
+    public void Comparison_On_A_Json_Path_Casts_The_Value_Not_The_Key()
+    {
+        // Appending ::numeric to `displayname::jsonb->>'en'` cast the key
+        // ('en'::numeric). The guarded compare parenthesizes the expression.
+        Sql("@displayname.en:>5").ShouldContain("CAST((displayname::jsonb->>'en') AS FLOAT) > ");
+    }
+
+    [Theory]
+    [InlineData("@shortname:>٥")]   // Arabic-Indic
+    [InlineData("@shortname:>۵")]   // Extended Arabic-Indic (Persian)
+    public void Comparison_Operand_In_Non_Ascii_Digits_Compares_As_That_Number(string expr)
+    {
+        // \d used to accept these, and double.Parse then threw.
+        var parsed = SearchExpressionParser.Parse(expr, 0);
+        parsed.Clauses[0].ShouldContain("> CAST(@s_0 AS float)");
+        parsed.Parameters[0].Value.ShouldBe("5");
+    }
+
+    [Fact]
+    public void Equality_Value_In_Arabic_Indic_Digits_Is_Matched_As_Stored()
+    {
+        // Only comparison and range operands are normalized; an equality
+        // value is text and matches the digits the data actually uses.
+        var parsed = SearchExpressionParser.Parse("@shortname:١٢٣", 0);
+        parsed.Clauses[0].ShouldContain("shortname::text = @s_0");
+        parsed.Parameters[0].Value.ShouldBe("١٢٣");
+    }
+
+    [Fact]
+    public void Date_Comparison_On_A_Timestamp_Column_Compares_Timestamps()
+    {
+        // `>2026-01-01` used to stay the literal ">2026-01-01": an equality
+        // that matched nothing.
+        var parsed = SearchExpressionParser.Parse("@updated_at:>2026-01-01", 0);
+        parsed.Clauses[0].ShouldBe("(updated_at > @s_0::timestamptz)");
+        parsed.Parameters[0].Value.ShouldBe("2026-01-01");
+    }
+
+    [Fact]
+    public void Date_Comparison_On_A_Payload_Field_Compares_Iso_Text()
+    {
+        var sql = Sql("@payload.body.due:<=2026-01-01T10:00");
+        sql.ShouldContain("jsonb_typeof(payload::jsonb->'body'->'due') = 'string' AND payload::jsonb->'body'->>'due' <= @s_0");
+    }
+
+    [Theory]
+    [InlineData("@updated_at:>yesterday")]
+    [InlineData("@created_at:sometime")]
+    [InlineData("@updated_at:[today tomorrow]")]
+    public void A_Timestamp_That_Is_Not_A_Date_Is_A_Request_Error(string expr)
+    {
+        // It used to reach the database as a cast: a 500 on PostgreSQL.
+        Should.Throw<InvalidSearchException>(() => SearchExpressionParser.Parse(expr, 0))
+            .Message.ShouldContain("takes a date");
     }
 
     [Fact]
@@ -992,16 +1062,53 @@ public class SearchExpressionParserTests
     }
 
     [Fact]
-    public void Last_Sign_Wins_Preserved_Within_Leaf_Run()
+    public void Opposite_Signs_On_One_Field_Both_Apply()
     {
-        // `@shortname:x -@shortname:x` — opposite signs on the same field in
-        // one run; the last sign wins → negation. Preserved across the rewrite.
-        var parsed = SearchExpressionParser.Parse("@shortname:dup -@shortname:dup", 0);
+        // `@shortname:tickets -@shortname:why` is two conditions. The second
+        // used to replace the first ("last sign wins"), so
+        // `@shortname:why or @shortname:tickets -@shortname:why` came out as
+        // `why OR NOT why`: every row.
+        var parsed = SearchExpressionParser.Parse("@shortname:tickets -@shortname:why", 0);
 
         var combined = string.Join(" ", parsed.Clauses);
-        combined.ShouldContain("shortname::text != @s_0");
-        combined.ShouldNotContain("shortname::text = @s_0");
-        parsed.Parameters.Count.ShouldBe(1);
+        combined.ShouldBe("(shortname::text = @s_0 AND shortname::text != @s_1)");
+        parsed.Parameters.Select(p => p.Value).ShouldBe(new object[] { "tickets", "why" });
+    }
+
+    [Fact]
+    public void Alternation_On_A_Repeated_Field_Stays_Inside_Its_Own_Selector()
+    {
+        // `@tags:a @tags:b|c` is a AND (b OR c). The values used to be merged
+        // per field, and one `|` turned the whole merge into a OR b OR c.
+        var combined = Sql("@tags:a @tags:b|c");
+        Occurrences(combined, "tags @>").ShouldBe(3);
+        combined.ShouldStartWith("(tags @> ");
+        combined.ShouldContain(" AND (tags @> ");
+        combined.ShouldContain(" OR tags @> ");
+    }
+
+    [Theory]
+    [InlineData("@alice")]
+    [InlineData("-@alice")]
+    public void An_At_Word_Without_A_Colon_Is_Searched_As_Text(string expr)
+    {
+        // It used to be dropped: the query ran as if the word was not there.
+        var parsed = SearchExpressionParser.Parse(expr, 0);
+        parsed.Clauses.Count.ShouldBe(1);
+        parsed.Parameters[0].Value.ShouldBe($"%{expr}%");
+    }
+
+    [Theory]
+    [InlineData("@BadName:x")]
+    [InlineData("-@Bad-Name:x")]
+    [InlineData("@Bad.en:x")]
+    [InlineData("@Weird:*")]
+    public void A_Field_That_Cannot_Be_A_Column_Is_A_Request_Error(string expr)
+    {
+        // These used to be dropped, failing OPEN: the query returned every row,
+        // and a permission filter folded into the same expression was weakened.
+        Should.Throw<InvalidSearchException>(() => SearchExpressionParser.Parse(expr, 0))
+            .Message.ShouldContain("Unknown search field");
     }
 
     // ══════════════════════════════════════════════════════════════════════
@@ -1094,7 +1201,7 @@ public class SearchExpressionParserTests
     public void Scalar_Column_Comparison_Casts_Both_Sides_To_Numeric(string op, string sqlOp)
     {
         Sql($"@shortname:{op}5")
-            .ShouldContain($"shortname::text::numeric {sqlOp} @s_0::numeric");
+            .ShouldContain($"THEN CAST((shortname::text) AS FLOAT) {sqlOp} CAST(@s_0 AS float) ELSE false END");
     }
 
     [Fact]
@@ -1103,7 +1210,7 @@ public class SearchExpressionParserTests
         // `-@k:>5` is NOT(k > 5) rather than `k <= 5`: rows where the cast
         // yields NULL stay excluded either way, and NOT() is what the
         // server emits.
-        Sql("-@shortname:>5").ShouldContain("NOT (shortname::text::numeric > @s_0::numeric)");
+        Sql("-@shortname:>5").ShouldStartWith("(NOT COALESCE(CASE WHEN (shortname::text) ~ ");
     }
 
     [Fact]
@@ -1364,12 +1471,24 @@ public class SearchExpressionParserTests
     }
 
     [Fact]
+    public void Negated_Payload_Comparison_Negates()
+    {
+        // `-@payload.body.price:>5` emitted the POSITIVE comparison: the
+        // minus was ignored. Negated, it is every row the positive form does
+        // not match, rows without the field included.
+        var sql = Sql("-@payload.body.price:>5");
+        sql.ShouldStartWith("(NOT COALESCE((jsonb_typeof(payload::jsonb->'body'->'price') = 'number' AND ");
+        sql.ShouldContain(" > CAST(@s_0 AS float)), FALSE)");
+    }
+
+    [Fact]
     public void User_Meta_Range_Is_Rejected_Rather_Than_Mis_Emitted()
     {
         // msisdn/email are identifier strings; a range over them has no
-        // sensible meaning and the join form can't express one, so the
-        // selector drops out entirely instead of emitting broken SQL.
-        SearchExpressionParser.Parse("@email:[a b]", 0).Clauses.Count.ShouldBe(0);
+        // sensible meaning and the join form can't express one. It used to
+        // drop out entirely, so the query returned every row; now it says so.
+        Should.Throw<InvalidSearchException>(() => SearchExpressionParser.Parse("@email:[a b]", 0));
+        Should.Throw<InvalidSearchException>(() => SearchExpressionParser.Parse("@msisdn:>5", 0));
     }
 
     // ── Payload JSONB paths ───────────────────────────────────────────────
@@ -1666,22 +1785,26 @@ public class SearchExpressionParserTests
     // ── Token-level robustness ────────────────────────────────────────────
 
     [Theory]
-    [InlineData("@shortname")]        // no colon at all
     [InlineData("@shortname:")]       // colon, empty value
     [InlineData("-@shortname:")]      // negated, empty value
-    [InlineData("@Shortname:x")]      // uppercase — fails SafeColumnIdent
-    [InlineData("@1bad:x")]           // leading digit — fails SafeColumnIdent
-    [InlineData("@bad-name:x")]       // hyphen — fails SafeColumnIdent
-    public void Malformed_Selector_Is_Dropped_Without_Throwing(string expr)
+    public void Selector_With_No_Value_Contributes_Nothing(string expr)
     {
-        // Lenient contract: an unusable selector contributes no clause rather
-        // than erroring. Note this WIDENS the result set, which is safe for
-        // user-typed filters but is why permission clauses are never built
-        // from user-controlled field names.
+        // An empty value asks for nothing, so it adds no clause.
         var parsed = SearchExpressionParser.Parse(expr, 0);
 
         parsed.Clauses.Count.ShouldBe(0);
         parsed.Parameters.Count.ShouldBe(0);
+    }
+
+    [Theory]
+    [InlineData("@Shortname:x")]      // uppercase — fails SafeColumnIdent
+    [InlineData("@1bad:x")]           // leading digit — fails SafeColumnIdent
+    [InlineData("@bad-name:x")]       // hyphen — fails SafeColumnIdent
+    public void Malformed_Field_Name_Is_A_Request_Error(string expr)
+    {
+        // These used to be dropped, which WIDENED the result set: the query
+        // ran as if the selector was not there. Now the caller is told.
+        Should.Throw<InvalidSearchException>(() => SearchExpressionParser.Parse(expr, 0));
     }
 
     [Fact]

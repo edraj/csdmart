@@ -562,12 +562,12 @@ SQL: ((created_at BETWEEN @s_0::timestamptz AND @s_1::timestamptz))
   P2: name=@s_1 type=<inferred> value="2026-12-31"
 
 ## search: timestamp-comparison[Positional]
-SQL: (updated_at = $1::timestamptz)
-  P1: name=<positional> type=<inferred> value=">2026-01-01"
+SQL: (updated_at > $1::timestamptz)
+  P1: name=<positional> type=<inferred> value="2026-01-01"
 
 ## search: timestamp-comparison[Named]
-SQL: (updated_at = @s_0::timestamptz)
-  P1: name=@s_0 type=<inferred> value=">2026-01-01"
+SQL: (updated_at > @s_0::timestamptz)
+  P1: name=@s_0 type=<inferred> value="2026-01-01"
 
 ## search: user-meta-email[Positional]
 SQL: (owner_shortname IN (SELECT shortname FROM users WHERE email = $1))

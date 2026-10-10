@@ -68,6 +68,7 @@ Accepted in `search` string. Implementation: `QueryHelper.ParseSearchExpression`
 | Pattern | SQL effect |
 |---|---|
 | `word` | plain text → `ILIKE` across shortname, payload, displayname, description, tags |
+| `@word` (no colon) | plain text, like `word`: only `@name:value` is a selector |
 | `@field:value` | exact match on a column or jsonb path |
 | `@payload.body.k:v` | type-aware jsonb path |
 | `@payload.*:v` | wildcard — `(payload::jsonb)::text ILIKE '%v%'` |
@@ -75,7 +76,7 @@ Accepted in `search` string. Implementation: `QueryHelper.ParseSearchExpression`
 | `-@field:value` | negation — `!=` or `NOT` |
 | `@field:v1\|v2` | OR values — `(field=v1 OR field=v2)` |
 | `-@field:v1\|v2` | negation + OR → DeMorgan'd AND |
-| `@field:>N`, `>=`, `<`, `<=` | numeric comparison on payload values |
+| `@field:>N`, `>=`, `<`, `<=` | comparison — see [Comparisons](#comparisons) |
 | `@field:[min max]` / `[min,max]` | BETWEEN range |
 | `-@field:[min max]` | `NOT BETWEEN` |
 | `@field:*` | existence — `field IS NOT NULL` |
@@ -92,6 +93,41 @@ Type detection on values:
 
 Coverage: 50+ unit tests in `dmart.Tests/Unit/Services/QueryHelperTests.cs`
 pin the emitted SQL shape for every combination.
+
+### Comparisons
+
+`>`, `>=`, `<` and `<=` take a number or a date.
+
+- **A number** compares numerically. Values that are not numbers are
+  skipped, on both backends: `@shortname:<5` does not match `alice`.
+  Arabic-Indic (`٥`) and Persian (`۵`) digits are read as the number.
+- **A date** is ISO 8601: `2026-01-01`, optionally with a time
+  (`2026-01-01T10:00`, seconds, a fraction, `Z` or an offset). On
+  `created_at`, `updated_at` and `timestamp` it compares as a timestamp; a
+  bare date is midnight, so `@updated_at:>2026-01-01` is anything after the
+  start of that day. Elsewhere (a payload field, a column) it compares as
+  text, which orders ISO 8601 correctly when the stored values use it.
+- **Anything else** after `>` or `<` is not a comparison: the value is taken
+  literally, `>abc` included.
+
+On a timestamp column every value must be a date or epoch milliseconds,
+with or without an operator; `@updated_at:>yesterday` is a request error.
+
+`-@field:>v` is every row that does not match `@field:>v`, rows without the
+field included.
+
+### Errors
+
+A selector the parser cannot turn into a condition is a **400**
+(`INVALID_DATA`, type `request`) naming the problem. It is never dropped:
+a dropped selector would return more rows than were asked for.
+
+- a field name that cannot be a column (`@BadName:x`, `@bad-name:x`). A
+  lowercase name that is simply not a column (`@asd:1`) gets the same
+  message from the database's answer. Custom data lives under
+  `@payload.body.<field>`;
+- a timestamp value that is not a date (above);
+- a range or comparison on `@email` / `@msisdn` (they match whole values).
 
 ### Array fields (`@arr[]:v`)
 
@@ -118,17 +154,26 @@ Elements of a scalar array are read as text. A numeric query value is
 therefore compared through a guarded cast — a non-numeric element yields no
 match rather than aborting the query.
 
-### Same-field accumulation
+### Repeated selectors
 
-Repeating a selector for one field accumulates its values rather than
-replacing them: `@dept:sales @dept:ops` is `dept IN (sales, ops)`, not
-`dept = ops`. This is what makes an injected permission clause
-(`filter_fields_values`) compose with a caller's own search on the same
-field — and why the two widen rather than intersect.
+Each `@field:value` is its own condition, AND'd with the rest of its run
+like any other. Repeating a field does not merge or replace anything:
 
-Accumulation is scoped to a single AND-run. Across an `or`, or between paren
-groups, each branch carries its own selectors and a clause in one branch does
-not restrict the other.
+- `@dept:sales @dept:ops` is `dept = sales AND dept = ops`: on a single-valued
+  field, nothing. Use `@dept:sales|ops` for either.
+- `@tags:a @tags:b|c` is `a AND (b OR c)`.
+- `@shortname:x -@shortname:y` keeps both: `= x AND != y`.
+
+(Up to 1.6.4, values were merged per field: one `|` turned the whole merge
+into OR, and when the signs differed only the last selector survived, so
+`@shortname:a or @shortname:b -@shortname:a` matched every row.)
+
+A permission's `filter_fields_values` is applied the same way: the caller's
+search is wrapped in parentheses and AND'd with the permission clause, so
+the two intersect.
+
+Across an `or`, or between paren groups, each branch carries its own
+selectors and a clause in one branch does not restrict the other.
 
 ## sort_by
 
