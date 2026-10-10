@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+### Removed
+
+- **`dmart website build` and the server's `/website` mount.** dmart.cc,
+  the site they were built for, now lives in its own repository
+  ([edraj/website](https://github.com/edraj/website)). That repository builds
+  the site from dmart's public API and has a web server serve the files, so
+  dmart is needed only at build time. The pieces removed:
+  - the generator and its embedded template;
+  - `WebsiteMiddleware`;
+  - the `WEBSITE_URL` and `WEBSITE_DIR` settings;
+  - the site's own CSP;
+  - the Markdig dependency, which only the generator used.
+
+  An install that published with it should move to the same split: build
+  with any static-site tool against `/public/query`, and serve the output
+  from a web server.
+
 ## v1.6.2 — 2026-10-10
 
 ### Fixed

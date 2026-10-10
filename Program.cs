@@ -804,18 +804,6 @@ switch (subcommand)
                              (no flag)   → dry run: print what it would do
                              --apply     → write
                              --update    → also update accounts that exist
-              website        Build the static site from the "website" space,
-                             reading only what an anonymous visitor may see.
-                             The server serves the result under WEBSITE_URL.
-                             Usage: dmart website build [--space <name>]
-                                      [--base <url>] [--mount <path>]
-                                      [--out <dir>] [--template <dir>]
-                             --base      public origin for canonical links and
-                                         sitemap.xml (else site/config base_url)
-                             --mount     URL path links are built for
-                                         (default WEBSITE_URL)
-                             --out       output root (default WEBSITE_DIR)
-                             --template  layout/assets dir (default: built in)
               fix_query_policies
                              Backfill query_policies for rows written before
                              write-time population landed, across all six
@@ -1952,14 +1940,6 @@ switch (subcommand)
         // Move an LDAP directory (slapcat output) into dmart's users, with
         // their password hashes — see Cli/ImportLdifCommand.cs.
         Environment.ExitCode = await Dmart.Cli.ImportLdifCommand.RunAsync(serverArgs, dotenvPath, dotenvValues);
-        return;
-    }
-
-    case "website":
-    {
-        // Generate the static site from the website space — see
-        // Cli/WebsiteCommand.cs and docs/website.md.
-        Environment.ExitCode = await Dmart.Cli.WebsiteCommand.RunAsync(serverArgs, dotenvPath, dotenvValues);
         return;
     }
 
@@ -3488,20 +3468,9 @@ static PathString NormalizedPrefix(string? raw, string fallback)
 var appSettings = app.Services.GetRequiredService<IOptions<DmartSettings>>().Value;
 var cxbPath = NormalizedPrefix(appSettings.CxbUrl, "/cxb");
 var catPath = NormalizedPrefix(appSettings.CatUrl, "/cat");
-// The website is served from disk ahead of routing, so it cannot share the
-// root with the API: WEBSITE_URL "/" (or empty) turns serving off rather than
-// shadowing every route. PathString.Empty is the "off" value downstream.
-var websitePath = NormalizedPrefix(appSettings.WebsiteUrl, "/website");
-if (websitePath == "/")
-{
-    app.Logger.LogWarning(
-        "WEBSITE_URL is the root path; the generated website is not served (it would shadow the API). "
-        + "Use a prefix such as /website and map the host's root onto it in a reverse proxy.");
-    websitePath = PathString.Empty;
-}
 
 // CORS + security headers + OPTIONS preflight
-app.UseDmartResponseHeaders(cxbPath, catPath, websitePath);
+app.UseDmartResponseHeaders(cxbPath, catPath);
 
 // Channel-auth gate (Python parity: utils/middleware.py::ChannelMiddleware).
 // No-op when ENABLE_CHANNEL_AUTH=false. Placed after the response-headers
@@ -3545,9 +3514,6 @@ app.UseChannelAuth();
         if (counter.BytesWritten > 0) return;
         if (ctx.Request.Path.StartsWithSegments(cxbPath)) return;
         if (ctx.Request.Path.StartsWithSegments(catPath)) return;
-        // A missing page under the website answers with the site's own 404
-        // page; with no build yet, a plain 404 — never the API's JSON envelope.
-        if (websitePath.HasValue && ctx.Request.Path.StartsWithSegments(websitePath)) return;
 
         // Wrap empty-body request-side errors in the canonical envelope so
         // every dmart response shape is uniform. Auth (401/403), rate-limit
@@ -3616,8 +3582,6 @@ app.UseChannelAuth();
 // Embedded SPAs (CXB at /cxb, Catalog at /cat by default).
 app.UseCxb();
 app.UseCatalog();
-// The site `dmart website build` generates (WEBSITE_URL, default /website).
-if (websitePath.HasValue) app.UseWebsite(websitePath);
 
 app.UseAuthentication();
 
