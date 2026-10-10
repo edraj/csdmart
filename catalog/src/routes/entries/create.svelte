@@ -1,5 +1,6 @@
 <script lang="ts">
   import { log } from "@/lib/logger";
+  import { diagrams } from "@/lib/diagrams";
   import { goto as gotoStore, params } from "@roxi/routify";
   import HtmlEditor from "@/components/editors/HtmlEditor.svelte";
   import {
@@ -1745,7 +1746,7 @@
               <h3 class="template-preview-title">
                 {$_("create_entry.template.preview_title")}
               </h3>
-              <div class="template-preview markdown-preview">
+              <div class="template-preview markdown-preview" use:diagrams={generateContentFromSchemaTemplate()}>
                 {@html renderMarkdown(generateContentFromSchemaTemplate())}
               </div>
             </div>
@@ -1891,7 +1892,7 @@
                   <h2>Preview</h2>
                 </div>
                 <div class="section-content">
-                  <div class="template-preview markdown-preview">
+                  <div class="template-preview markdown-preview" use:diagrams={generateContentFromSchemaTemplate()}>
                     {@html renderMarkdown(generateContentFromSchemaTemplate())}
                   </div>
                 </div>

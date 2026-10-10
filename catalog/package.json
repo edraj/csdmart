@@ -46,6 +46,7 @@
     "flowbite": "^4.0.2",
     "flowbite-svelte": "^1.33.1",
     "flowbite-svelte-icons": "^3.1.0",
+    "mermaid": "^12.1.0",
     "typewriter-editor": "^0.12.9"
   },
   "spank": {

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { goto as gotoStore, params } from "@roxi/routify";
+  import { diagrams } from "@/lib/diagrams";
   import { onMount } from "svelte";
   import { sanitizeHtml } from "@/lib/utils/sanitize";
   import {
@@ -534,7 +535,7 @@
         {/if}
 
         <!-- Content -->
-        <div class="entry-content prose max-w-none">
+        <div class="entry-content prose max-w-none" use:diagrams={entity}>
           {#if isTemplateEntry}
             {#if isLoadingTemplate}
               <LoadingState label={$_("entry_detail.template.loading")} />

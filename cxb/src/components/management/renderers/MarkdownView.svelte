@@ -1,7 +1,7 @@
 <script lang="ts">
     import LoadingState from "@/components/ui/LoadingState.svelte";
     import { renderMarkdown } from "@/utils/markdown";
-    import { renderDiagrams } from "@/utils/diagrams";
+    import { renderDiagrams } from "@shared/diagrams";
     import { theme } from "@/stores/theme.svelte";
     import { _ } from "@/i18n";
 
@@ -53,11 +53,10 @@
         overflow-x: auto;
     }
 
-    .markdown-view :global(figure.md-diagram[data-rendered]) {
-        text-align: center;
-    }
-
+    /* Tailwind's preflight makes an svg a block, so text-align cannot centre it. */
     .markdown-view :global(figure.md-diagram svg) {
+        display: block;
+        margin-inline: auto;
         max-width: 100%;
         height: auto;
     }
@@ -67,7 +66,7 @@
     }
 
     .markdown-view :global(.md-diagram-error) {
-        margin: 0 0 0.5em;
+        margin: 0.5em 0 0;
         white-space: pre-wrap;
         font-size: 0.875em;
         color: var(--color-danger);

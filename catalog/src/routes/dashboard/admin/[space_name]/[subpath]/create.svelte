@@ -1,5 +1,6 @@
 <script lang="ts">
   import { setTitle } from "@/lib/title";
+  import { diagrams } from "@/lib/diagrams";
   import { log } from "@/lib/logger";
   import { onMount } from "svelte";
   import { renderMarkdown } from "@/lib/markdown";
@@ -417,7 +418,7 @@
         <div>
           <h4>{$_("template_generator.rendered_markdown")}</h4>
           {#if previewContent}
-            <div class="markdown-preview">
+            <div class="markdown-preview" use:diagrams={previewContent}>
               {@html renderMarkdown(previewContent)}
             </div>
           {:else}

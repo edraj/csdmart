@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { diagrams } from "@/lib/diagrams";
+
   // Rendered Markdown (already sanitized by lib/markdown) with one set of
   // token-based styles, shared by the entry body, its description and
   // template-based entries. Dark mode follows the tokens; direction follows
@@ -17,7 +19,7 @@
 </script>
 
 {#if html}
-  <div class="md-body {compact ? 'md-compact' : ''} {className}" dir="auto">
+  <div class="md-body {compact ? 'md-compact' : ''} {className}" dir="auto" use:diagrams={html}>
     <!-- eslint-disable-next-line svelte/no-at-html-tags -- sanitized in lib/markdown -->
     {@html html}
   </div>
@@ -151,7 +153,8 @@
     white-space: pre;
   }
 
-  /* A fenced diagram (```mermaid) is shown as its source with a caption. */
+  /* A fenced diagram (```mermaid) shows its source with a caption until
+     lib/diagrams.ts has drawn it, and again if it cannot be drawn. */
   .md-body :global(figure.md-diagram) {
     margin: 1em 0;
   }
@@ -171,6 +174,11 @@
     border-end-start-radius: var(--radius-card);
     border-end-end-radius: var(--radius-card);
     padding: 0.375rem 0.75rem;
+  }
+
+  .md-body :global(figure.md-diagram > figcaption.md-diagram-error) {
+    color: var(--color-danger);
+    white-space: pre-wrap;
   }
 
   .md-body :global(blockquote) {

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { log } from "@/lib/logger";
+  import { diagrams } from "@/lib/diagrams";
   import { _ } from "@/i18n";
   import { renderMarkdown } from "@/lib/markdown";
   import { Dmart } from "@edraj/tsdmart";
@@ -520,7 +521,7 @@
         class="tab-panel {activeTab === 'preview' ? 'active' : ''}"
         data-panel="preview"
       >
-        <div class="markdown-preview">
+        <div class="markdown-preview" use:diagrams={content}>
           {@html renderMarkdown(content)}
         </div>
       </div>

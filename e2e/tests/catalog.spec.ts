@@ -60,6 +60,20 @@ test.describe("catalog (public pages)", () => {
     await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
   });
 
+  // ```mermaid fences are drawn, by mermaid bundled into the catalog (the CSP
+  // takes scripts from 'self' only), and drawn again when the theme changes.
+  test("a post's mermaid diagrams are drawn and follow the theme", async ({ page }) => {
+    await page.goto("/cat/catalogs/website/pages/features/content");
+    const drawn = page.locator("figure.md-diagram[data-rendered] svg");
+    await expect(drawn).toHaveCount(3);
+    await expect(drawn.first()).toContainText("Space: Project/Business");
+    await expect(page.locator(".md-diagram-error")).toHaveCount(0);
+    await catalogChooseMenuItem(page, /Change theme/, /^Dark$/);
+    await expect(page.locator('figure.md-diagram[data-rendered="dark"] svg')).toHaveCount(3);
+    await catalogChooseMenuItem(page, /Change theme/, /^Light$/);
+    await expect(page.locator('figure.md-diagram[data-rendered="light"] svg')).toHaveCount(3);
+  });
+
   test("unknown route shows the 404 page, not a blank screen", async ({ page }) => {
     await page.goto("/cat/no/such/page");
     await expect(page.getByText(/could not be found/)).toBeVisible();
@@ -164,6 +178,12 @@ test.describe("catalog (dashboard)", () => {
     await page.goto("/cat/entries/create");
     await expect(page.getByRole("heading", { level: 1, name: /Create/ })).toBeVisible();
     await expect(page.getByText("[object Object]")).toHaveCount(0);
+  });
+
+  test("the entry view draws mermaid diagrams", async ({ page }) => {
+    await page.goto("/cat/entries/website/pages/features/content");
+    await expect(page.locator("figure.md-diagram[data-rendered] svg")).toHaveCount(3);
+    await expect(page.locator(".md-diagram-error")).toHaveCount(0);
   });
 
   test("notifications, messaging, polls and surveys render their empty states", async ({ page }) => {

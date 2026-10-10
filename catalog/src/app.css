@@ -589,6 +589,24 @@ dialog[open] {
   :focus-visible { outline-width: 3px; }
 }
 
+/* ─── Markdown diagrams (lib/diagrams.ts) ─── */
+figure.md-diagram[data-rendered] {
+  overflow-x: auto;
+}
+
+/* Tailwind's preflight makes an svg a block, so text-align cannot centre it. */
+figure.md-diagram svg {
+  display: block;
+  margin-inline: auto;
+  max-width: 100%;
+  height: auto;
+}
+
+figure.md-diagram > figcaption.md-diagram-error {
+  color: var(--color-danger);
+  white-space: pre-wrap;
+}
+
 /* ─── Reduced Motion ─── */
 @media (prefers-reduced-motion: reduce) {
   *,

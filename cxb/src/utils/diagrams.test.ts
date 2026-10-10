@@ -11,7 +11,7 @@ const engine = vi.hoisted(() => ({
 }));
 vi.mock("mermaid", () => ({ default: engine }));
 
-import { renderDiagrams } from "./diagrams";
+import { renderDiagrams } from "@shared/diagrams";
 
 const options = { dark: false, errorLabel: "This diagram could not be drawn" };
 
@@ -42,7 +42,7 @@ describe("renderDiagrams", () => {
         expect(root.firstElementChild).toBe(figure);
         expect(figure.querySelector("svg")).not.toBeNull();
         expect(figure.querySelector("pre")).toBeNull();
-        expect((figure as HTMLElement).dataset.rendered).toBe("");
+        expect((figure as HTMLElement).dataset.rendered).toBe("light");
         expect(engine.initialize).toHaveBeenCalledWith(expect.objectContaining({ securityLevel: "strict", theme: "default" }));
     });
 
@@ -74,6 +74,13 @@ describe("renderDiagrams", () => {
         });
         await renderDiagrams(root, options);
         expect(figure.querySelector("svg")).toBeNull();
+    });
+
+    it("skips a figure already drawn in the current theme", async () => {
+        const root = article("graph TD\n  A --> B");
+        await renderDiagrams(root, options);
+        await renderDiagrams(root, options);
+        expect(engine.render).toHaveBeenCalledTimes(1);
     });
 
     it("does not load mermaid for markdown without a diagram", async () => {
