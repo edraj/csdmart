@@ -166,6 +166,11 @@ internal sealed class LdapDirectory(
             s.Fail(LdapResult.InsufficientAccessRights, "bind before searching");
             yield break;
         }
+        if (!index.ReplicaSynced)
+        {
+            s.Fail(LdapResult.Unavailable, "this directory replica has not completed its first sync with the primary");
+            yield break;
+        }
         if (nb != L.NormBase && !nb.EndsWith("," + L.NormBase, StringComparison.Ordinal))
         {
             s.Fail(LdapResult.NoSuchObject, "outside the naming context");

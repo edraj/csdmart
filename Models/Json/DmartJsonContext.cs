@@ -72,6 +72,7 @@ namespace Dmart.Models.Json;
 [JsonSerializable(typeof(Entry))]
 [JsonSerializable(typeof(Attachment))]
 [JsonSerializable(typeof(User))]
+[JsonSerializable(typeof(DirectoryFeedPage))]
 [JsonSerializable(typeof(Role))]
 [JsonSerializable(typeof(Permission))]
 [JsonSerializable(typeof(Space))]

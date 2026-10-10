@@ -402,6 +402,13 @@ public static class SqlSchema
         floor_at  TIMESTAMP NOT NULL
     );
 
+    -- A directory replica's watermark in its primary's feed (Services/
+    -- DirectoryReplica). One row, absent on anything that is not a replica.
+    CREATE TABLE IF NOT EXISTS directory_replica_state (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        watermark TIMESTAMP
+    );
+
     -- ============================================================
     -- INCREMENTAL SCAN INDEXES  (§5.1)
     -- ============================================================
@@ -409,6 +416,8 @@ public static class SqlSchema
     -- of these columns was indexed, so that scan was a seq scan on every table
     -- it touched — a prerequisite for the feature, not an optimization.
     CREATE INDEX IF NOT EXISTS idx_entries_updated_at ON entries (updated_at);
+    -- The directory feed's changes walk: (updated_at, shortname) keyset.
+    CREATE INDEX IF NOT EXISTS idx_users_updated_at ON users (updated_at, shortname);
     CREATE INDEX IF NOT EXISTS idx_attachments_updated_at ON attachments (updated_at);
     -- histories is append-only, so its `timestamp` is the equivalent column.
     -- idx_histories_lookup leads with space_name and cannot serve a scan keyed

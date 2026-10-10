@@ -63,6 +63,19 @@
     the account locked.
   - A subschema entry for schema-aware clients, time limits honoured, and
     group searches that load member lists only when the answer needs them.
+- **Directory replicas.** A dmart with `DIRECTORY_REPLICA_OF` keeps a
+  read-only copy of another dmart's users and groups, password hashes
+  included, and serves it over LDAP. A mail host can then authenticate and
+  route mail while the primary is down.
+  - The primary serves `/managed/directory-feed` only to the bots listed in
+    `DIRECTORY_FEED_READERS`; it is off by default.
+  - The replica walks the feed in full first, then polls for changes and
+    deletions. It answers `unavailable` until its first sync completes.
+  - A soft delete now stamps `updated_at`, and a rename stamps it with the
+    host's clock rather than PostgreSQL's, so `updated_at` is a complete
+    change log.
+
+  See `docs/directory-replica.md`.
 
   `bench/REPORT-ldap-face.md` has the interop and scale measurements.
 

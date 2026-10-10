@@ -2948,6 +2948,14 @@ builder.Services.AddHostedService<LegacyLockoutRepair>();
 // Same ordering requirement: the index tables come from the schema initializers.
 builder.Services.AddSingleton<DirectoryIndexStatus>();
 builder.Services.AddHostedService<DirectoryIndexRepair>();
+// Directory replication (docs/directory-replica.md). The feed is the primary's
+// half; the replica's half is registered unconditionally and idles unless
+// DIRECTORY_REPLICA_OF is set. It starts before the LDAP listener, so an
+// unsynced replica never answers a lookup it cannot know.
+builder.Services.AddSingleton<DirectoryFeedService>();
+builder.Services.AddHttpClient(DirectoryReplica.HttpClientName);
+builder.Services.AddSingleton<DirectoryReplica>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<DirectoryReplica>());
 
 // IP-based rate limiter for authentication endpoints. Account lockout (on the
 // user row) limits attempts per-account; this limits attempts per-IP so an

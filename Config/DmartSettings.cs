@@ -231,6 +231,27 @@ public sealed class DmartSettings
     // page and resumes on the next request, so a full listing still completes.
     public int LdapMaxScan { get; set; } = 100_000;
 
+    // ---- Directory replication (docs/directory-replica.md) ----
+    // On a PRIMARY: comma-separated bot shortnames that may read
+    // /managed/directory-feed, which hands out every user's password hash so a
+    // replica can answer binds on its own. Empty (the default) turns the feed
+    // off.
+    public string DirectoryFeedReaders { get; set; } = "";
+    // On a REPLICA: the primary's base URL (e.g. "http://10.77.0.2:8282", over
+    // WireGuard, or an https URL). Set, this instance keeps its users and
+    // groups in step with the primary's and serves them over LDAP, answering
+    // `unavailable` until its first sync completes. Empty: not a replica.
+    public string DirectoryReplicaOf { get; set; } = "";
+    // The bot account the replica signs in to the primary as; it must be
+    // listed in the primary's DirectoryFeedReaders.
+    public string DirectoryReplicaShortname { get; set; } = "";
+    public string DirectoryReplicaPassword { get; set; } = "";
+    // Seconds between polls of the primary.
+    public int DirectoryReplicaIntervalSeconds { get; set; } = 30;
+
+    public string[] ParseDirectoryFeedReaders() => SplitList(DirectoryFeedReaders);
+    public bool IsDirectoryReplica => DirectoryReplicaOf.Length > 0;
+
     public string[] ParseLdapServiceAccounts() => SplitList(LdapServiceAccounts);
     public string[] ParseLdapExtraUserObjectClasses() => SplitList(LdapExtraUserObjectClasses);
     public bool LdapTlsConfigured => LdapTlsCertFile.Length > 0 && LdapTlsKeyFile.Length > 0;

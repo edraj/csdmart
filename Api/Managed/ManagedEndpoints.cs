@@ -19,6 +19,7 @@ public static class ManagedEndpoints
         ExecuteTaskHandler.Map(g);
         AlterationHandler.Map(g);
         ShortLinkHandler.Map(g);
+        DirectoryFeedHandler.Map(g);
         return g;
     }
 }

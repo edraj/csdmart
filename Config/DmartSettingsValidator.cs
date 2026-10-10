@@ -47,6 +47,20 @@ internal sealed class DmartSettingsValidator : IValidateOptions<DmartSettings>
                 failures.Add($"LdapTrustedPeers has entries that are not an address or CIDR range: {string.Join(", ", badPeers)}");
         }
 
+        // A replica polls its primary from startup on; a URL or credential it
+        // cannot use would only surface as a warning in the log, while LDAP
+        // answers `unavailable` forever.
+        if (s.IsDirectoryReplica)
+        {
+            if (!Uri.TryCreate(s.DirectoryReplicaOf, UriKind.Absolute, out var primary)
+                || primary.Scheme is not ("http" or "https"))
+                failures.Add($"DirectoryReplicaOf must be an absolute http(s) URL (got '{s.DirectoryReplicaOf}')");
+            if (s.DirectoryReplicaShortname.Length == 0 || s.DirectoryReplicaPassword.Length == 0)
+                failures.Add("DirectoryReplicaOf needs DirectoryReplicaShortname and DirectoryReplicaPassword");
+            if (s.DirectoryReplicaIntervalSeconds < 1)
+                failures.Add($"DirectoryReplicaIntervalSeconds must be >= 1 (got {s.DirectoryReplicaIntervalSeconds})");
+        }
+
         // Directory fields: a service name the write path would reject can
         // never be granted, so a typo here should stop startup instead.
         var offered = s.ParseUserServices();

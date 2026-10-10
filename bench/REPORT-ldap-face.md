@@ -294,7 +294,11 @@ run's details are in this file's git history.
 1. ~~**TLS.**~~ Done: LDAPS and StartTLS, checked with libldap, Postfix,
    Dovecot and Dex (Go's TLS) in the interop run.
 2. ~~**Per-IP bind rate limiting.**~~ Done, with the stale-password rule below.
-3. **Replication.** i7 authenticates mail against a *local* replica so mail
+3. ~~**Replication.**~~ Done in dmart: a read-only replica polls the
+   primary's directory feed, credentials included, and serves LDAP from its
+   own copy. See `docs/directory-replica.md`. Not deployed: i7 has no dmart
+   with the LDAP face yet. The original reasoning:
+   i7 authenticates mail against a *local* replica so mail
    survives i1 or the home link being down.
    - dmart cannot feed syncrepl.
    - The federated-sync design (PR #331) does **not** cover this: it is for

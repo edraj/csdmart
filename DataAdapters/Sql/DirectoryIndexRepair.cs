@@ -9,8 +9,16 @@ namespace Dmart.DataAdapters.Sql;
 public sealed class DirectoryIndexStatus
 {
     private volatile bool _ready = true;
+    private volatile bool _replicaSynced = true;
     public bool Ready => _ready;
     internal void Set(bool ready) => _ready = ready;
+
+    // On a directory replica (Services/DirectoryReplica): false until its
+    // first sync with the primary completes. Until then the local users are
+    // whatever an earlier run left, or none, so EVERY lookup and bind answers
+    // `unavailable`, not just the index-backed ones. True everywhere else.
+    public bool ReplicaSynced => _replicaSynced;
+    internal void SetReplicaSynced(bool synced) => _replicaSynced = synced;
 }
 
 // Rebuilds user_addresses / user_services from users when they are empty but

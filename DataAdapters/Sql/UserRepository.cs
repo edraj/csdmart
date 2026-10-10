@@ -288,6 +288,42 @@ public sealed class UserRepository(
         EvictAuth(u.Shortname);
     }
 
+    // A directory replica's write of its primary's row (Services/
+    // DirectoryReplica): the row exactly as the primary has it, which the
+    // ordinary upsert deliberately is not. It keeps the primary's updated_at
+    // (LDAP's modifyTimestamp, and how the replica knows a row is unchanged);
+    // writes the password hash as given, so a password the primary removed is
+    // removed here too instead of surviving the COALESCE; takes the primary's
+    // uuid; and revives a local copy that was soft-deleted, since the primary
+    // says the account is live.
+    public async Task UpsertReplicatedAsync(User u, CancellationToken ct = default)
+    {
+        u = u with { QueryPolicies = Utils.QueryPolicies.Generate(u) };
+        await using var conn = await db.OpenAsync(ct);
+        await using var tx = await conn.BeginTransactionAsync(ct);
+        await using (var cmd = conn.CreateCommand())
+        {
+            cmd.Transaction = tx;
+            var tuple = BindUserRow(cmd, u, keepUpdatedAt: true);
+            cmd.CommandText = $"{UserInsertColumns}\nVALUES {tuple}\n{UserConflictClause}";
+            await cmd.ExecuteNonQueryAsync(ct);
+        }
+        // The uuid too: the conflict clause resolves on shortname and keeps the
+        // local one, and a replica's own bootstrap admin was minted locally.
+        await using (var exact = conn.Command(
+            "UPDATE users SET password = $2, uuid = $3, is_deleted = false, deleted_at = NULL WHERE shortname = $1", tx))
+        {
+            DbParams.Add(exact, u.Shortname);
+            DbParams.Add(exact, (object?)u.Password ?? DBNull.Value);
+            DbParams.Add(exact, u.Uuid);
+            await exact.ExecuteNonQueryAsync(ct);
+        }
+        await SyncDirectoryIndexAsync(conn, tx, [u.Shortname], ct);
+        await tx.CommitAsync(ct);
+        refresher.Evict(u.Shortname);
+        EvictAuth(u.Shortname);
+    }
+
     /// <summary>
     /// Binds one user's 43 columns and returns the VALUES tuple that reads them.
     /// </summary>
@@ -304,7 +340,7 @@ public sealed class UserRepository(
     /// hardcoded as $1..$38, which is what lets the same binding serve row N of
     /// a multi-row INSERT.
     /// </remarks>
-    private static string BindUserRow(DbCommand cmd, User u)
+    private static string BindUserRow(DbCommand cmd, User u, bool keepUpdatedAt = false)
     {
         var p = new string[43];
         var i = 0;
@@ -320,8 +356,10 @@ public sealed class UserRepository(
         p[i++] = DbParams.Add(cmd, u.CreatedAt == default ? TimeUtils.Now() : u.CreatedAt);
         // updated_at is stamped NOW, not carried from the model — existing
         // behaviour, preserved deliberately so the batch path is not a
-        // behavioural change smuggled in alongside a performance one.
-        p[i++] = DbParams.Add(cmd, TimeUtils.Now());
+        // behavioural change smuggled in alongside a performance one. The one
+        // exception is a directory replica mirroring its primary's row
+        // (UpsertReplicatedAsync), whose timestamp IS the data.
+        p[i++] = DbParams.Add(cmd, keepUpdatedAt && u.UpdatedAt != default ? u.UpdatedAt : TimeUtils.Now());
         p[i++] = DbParams.Add(cmd, u.OwnerShortname);
         p[i++] = DbParams.Add(cmd, (object?)u.OwnerGroupShortname ?? DBNull.Value);
         p[i++] = AddJsonb(cmd, JsonbHelpers.ToJsonb(u.Payload));
@@ -969,9 +1007,15 @@ public sealed class UserRepository(
             DbParams.Add(upd, newOwner);
             DbParams.Add(upd, Utils.QueryPolicies.Generate(space, subpath, "user", isActive, newOwner, ownerGroup, null).ToArray(),
                 SqlValueKind.TextArray);
+            // The host's clock, bound, never the database's NOW(): every other
+            // write stamps updated_at with it, and PostgreSQL's NOW() is in the
+            // server's timezone, so on a UTC server with a +03 host a renamed
+            // user would land hours behind an incremental reader's watermark
+            // (see Tombstones.RecordAsync).
+            var renamedAt = DbParams.Add(upd, TimeUtils.Now());
             upd.CommandText = $"""
                 UPDATE users
-                   SET shortname = $2, owner_shortname = $3, query_policies = $4, updated_at = {NowExpr(upd)}
+                   SET shortname = $2, owner_shortname = $3, query_policies = $4, updated_at = {renamedAt}
                  WHERE shortname = $1
                 """;
             await upd.ExecuteNonQueryAsync(ct);
@@ -1845,6 +1889,83 @@ public sealed class UserRepository(
         return list;
     }
 
+    // The directory feed's changes walk (Services/DirectoryFeed): users whose
+    // row changed at or after `since`, soft-deleted ones included, in
+    // (updated_at, shortname) order after the (since, after) keyset position.
+    // idx_users_updated_at serves it.
+    public async Task<List<User>> ListChangedSinceAsync(DateTime since, string after, int limit, CancellationToken ct = default)
+    {
+        await using var conn = await db.OpenAsync(ct);
+        await using var cmd = conn.Command(
+            $"{SelectAllColumns} WHERE updated_at > $1 OR (updated_at = $1 AND shortname > $2) "
+            + "ORDER BY updated_at, shortname LIMIT $3");
+        DbParams.Add(cmd, since);
+        DbParams.Add(cmd, after);
+        DbParams.Add(cmd, limit);
+        await using var reader = await cmd.ExecuteReaderAsync(ct);
+        var list = new List<User>();
+        while (await reader.ReadAsync(ct)) list.Add(Hydrate(reader));
+        return list;
+    }
+
+    // Shortnames of users hard-deleted (or renamed away) at or after `since`,
+    // from the tombstones every delete and rename records.
+    public async Task<List<string>> ListDeletedSinceAsync(DateTime since, CancellationToken ct = default)
+    {
+        await using var conn = await db.OpenAsync(ct);
+        await using var cmd = conn.Command(
+            "SELECT DISTINCT shortname FROM deletions WHERE table_name = 'users' AND deleted_at >= $1 ORDER BY shortname");
+        DbParams.Add(cmd, since);
+        await using var reader = await cmd.ExecuteReaderAsync(ct);
+        var list = new List<string>();
+        while (await reader.ReadAsync(ct)) list.Add(reader.GetString(0));
+        return list;
+    }
+
+    public async Task<string?> GetShortnameByUuidAsync(string uuid, CancellationToken ct = default)
+    {
+        await using var conn = await db.OpenAsync(ct);
+        await using var cmd = conn.Command("SELECT shortname FROM users WHERE uuid = $1");
+        DbParams.Add(cmd, uuid);
+        return await cmd.ExecuteScalarAsync(ct) as string;
+    }
+
+    // Live shortnames in (after, upTo] (upTo null: to the end), in order: the
+    // replica's full walk reconciles each page of the primary against them.
+    public async Task<List<string>> ListShortnamesBetweenAsync(string after, string? upTo, CancellationToken ct = default)
+    {
+        await using var conn = await db.OpenAsync(ct);
+        await using var cmd = conn.Command(upTo is null
+            ? "SELECT shortname FROM users WHERE shortname > $1 ORDER BY shortname"
+            : "SELECT shortname FROM users WHERE shortname > $1 AND shortname <= $2 ORDER BY shortname");
+        DbParams.Add(cmd, after);
+        if (upTo is not null) DbParams.Add(cmd, upTo);
+        await using var reader = await cmd.ExecuteReaderAsync(ct);
+        var list = new List<string>();
+        while (await reader.ReadAsync(ct)) list.Add(reader.GetString(0));
+        return list;
+    }
+
+    // A replica's position in its primary's directory feed: the primary's clock
+    // at the start of the last complete walk, or null before the first one.
+    public async Task<DateTime?> GetReplicaWatermarkAsync(CancellationToken ct = default)
+    {
+        await using var conn = await db.OpenAsync(ct);
+        await using var cmd = conn.Command("SELECT watermark FROM directory_replica_state WHERE id = 1");
+        var value = await cmd.ExecuteScalarAsync(ct);
+        return value is null or DBNull ? null : Convert.ToDateTime(value, System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    public async Task SetReplicaWatermarkAsync(DateTime? watermark, CancellationToken ct = default)
+    {
+        await using var conn = await db.OpenAsync(ct);
+        await using var cmd = conn.Command(
+            "INSERT INTO directory_replica_state (id, watermark) VALUES (1, $1) "
+            + "ON CONFLICT (id) DO UPDATE SET watermark = $1");
+        DbParams.Add(cmd, (object?)watermark ?? DBNull.Value);
+        await cmd.ExecuteNonQueryAsync(ct);
+    }
+
     // Members of several groups in one query: the LDAP face's group listing,
     // which on SQLite would otherwise scan the users table once per group.
     // Every requested group is a key, members in shortname order.
@@ -2035,6 +2156,9 @@ public sealed class UserRepository(
             UPDATE users SET
                 is_deleted = true,
                 deleted_at = $2,
+                -- A change like any other: an incremental reader keyed on
+                -- updated_at (the directory feed) must see the account go.
+                updated_at = $2,
                 email = NULL,
                 msisdn = NULL,
                 password = NULL,

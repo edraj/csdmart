@@ -7,6 +7,7 @@ using System.Security.Cryptography;
 using System.Text;
 using Dmart.Auth;
 using Dmart.Config;
+using Dmart.DataAdapters.Sql;
 using Dmart.Services;
 using Microsoft.Extensions.Options;
 
@@ -32,6 +33,7 @@ internal sealed class LdapServer(
     PasswordHasher hasher,
     LdapTls tls,
     LdapBindGuard guard,
+    DirectoryIndexStatus index,
     ILogger<LdapServer> log,
     // For tests; the host leaves it to the system clock.
     TimeProvider? clock = null) : BackgroundService
@@ -353,6 +355,11 @@ internal sealed class LdapServer(
             log.LogInformation("LDAP bind from {Peer} as {Dn} refused: too many failed binds from this address", peer, b.Name);
             return Reply(LdapResult.Busy, "too many failed binds from this address; try again in a minute");
         }
+
+        // An unsynced replica knows nobody yet; "invalid credentials" would
+        // be a lie a mail client shows the user as a wrong password.
+        if (!index.ReplicaSynced)
+            return Reply(LdapResult.Unavailable, "this directory replica has not completed its first sync with the primary");
 
         var principal = directory.ClassifyBindDn(b.Name);
         try
