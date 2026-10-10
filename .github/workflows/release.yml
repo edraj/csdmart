@@ -439,11 +439,16 @@ jobs:
       # `podman start` it instead of reinstalling the SDK — a 3-5 min save
       # per release. Pruning builder cache + dangling images is enough to
       # reclaim the space without breaking that reuse.
+      #
+      # Under the store lock, exclusively: this job starts in the same second
+      # as the Alpine APK job, and a prune during its SDK pull deleted the
+      # half-pulled image and failed it (v1.6.1, v1.6.4). See
+      # dist/podman-store-lock.sh.
       - name: Reclaim podman storage
         run: |
           df -h ~ || true
-          podman builder prune -af || true
-          podman image prune -f || true
+          dist/podman-store-lock.sh exclusive -- sh -c \
+            'podman builder prune -af || true; podman image prune -f || true' || true
           df -h ~ || true
 
       - name: Build EL9 RPM via podman
@@ -1246,11 +1251,14 @@ jobs:
       #   2. Dangling images (no `-a`) — images with no tag, typically orphans.
       #   3. Old ghcr.io/edraj/csdmart:<version> tags, keeping :latest and
       #      the version we're about to push.
+      #
+      # Under the store lock, exclusively, so no other job's pull is in
+      # flight (dist/podman-store-lock.sh).
       - name: Reclaim podman storage
         run: |
           df -h ~ || true
-          podman builder prune -af || true
-          podman image prune -f || true
+          dist/podman-store-lock.sh exclusive -- sh -c \
+            'podman builder prune -af || true; podman image prune -f || true' || true
           # Delete superseded versioned images of this repo, keep :latest
           # and the incoming version. Safe because the push step tags both.
           KEEP_VER="$(dist/release-version.sh)"
@@ -1287,7 +1295,9 @@ jobs:
           # LIST assembled by the container-manifest job once both arches have
           # pushed — tagging them here would make whichever arch finished last
           # the only one an `podman pull` ever sees.
-          podman build \
+          # Shared store lock: the build pulls its base images, and a prune
+          # elsewhere must not run under them (dist/podman-store-lock.sh).
+          dist/podman-store-lock.sh shared -- podman build \
             -t ghcr.io/${{ github.repository }}:${{ steps.version.outputs.version }}-amd64 \
             -f admin_scripts/docker/Dockerfile \
             --build-arg DMART_VERSION=${{ steps.version.outputs.version }} \

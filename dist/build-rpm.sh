@@ -186,6 +186,9 @@ if [[ "$TARGET" == "el9" || "$TARGET" == "rhel9" ]]; then
         # unshare / system migrate that left stray lock records). Without
         # --replace the run fails with "name already in use" and the script
         # aborts before the SDK gets installed.
+        # Pulled under the store lock first: a pull racing another job's
+        # prune fails (dist/podman-store-lock.sh).
+        CONTAINER_ENGINE="$ENGINE" "$SRCDIR/dist/podman-store-lock.sh" pull almalinux:9
         $ENGINE run -d --replace \
             --name "$CONTAINER_NAME" \
             --userns=keep-id \

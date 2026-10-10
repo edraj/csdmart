@@ -349,6 +349,12 @@ else
 	HOST_NUGET_CACHE="${HOME}/.nuget/packages"
 	mkdir -p "$HOST_NUGET_CACHE"
 
+	# Pulled under the store lock first: a pull racing another job's prune
+	# fails (dist/podman-store-lock.sh). A cross-arch run pulls its own.
+	if [ -z "$PLATFORM_FLAG" ]; then
+		CONTAINER_ENGINE="$ENGINE" "$SRCDIR/dist/podman-store-lock.sh" pull mcr.microsoft.com/dotnet/sdk:10.0-alpine
+	fi
+
 	$ENGINE run --rm $PLATFORM_FLAG \
 		--network=host \
 		-v "${SRCDIR}:/src:z" \
