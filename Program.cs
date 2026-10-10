@@ -3084,6 +3084,11 @@ builder.Services.AddSingleton<Dmart.Auth.OAuth.OAuthUserResolver>();
 // bound DmartSettings); OAuthStoreSweeper stands down against the same
 // binding. The stores themselves are inert when nothing can reach them.
 builder.Services.AddSingleton<Dmart.Auth.OAuthCodeStore>();
+// The OIDC provider (docs/oidc-provider.md). Registered whether or not it is
+// on: only its routes depend on OidcIssuer, never what their handlers need.
+builder.Services.AddSingleton<Dmart.Auth.Oidc.OidcSigningKey>();
+builder.Services.AddSingleton<Dmart.Auth.Oidc.OidcClients>();
+builder.Services.AddSingleton<Dmart.Auth.Oidc.OidcCodeStore>();
 builder.Services.AddSingleton<Dmart.Auth.OAuthClientStore>();
 builder.Services.AddHostedService<Dmart.Auth.OAuthStoreSweeper>();
 builder.Services.AddHostedService<Dmart.Services.OtpHistorySweeper>();
@@ -3668,6 +3673,18 @@ else
 {
     app.Logger.LogInformation(
         "MCP surface disabled (ENABLE_MCP=false): /mcp and /oauth/* are not mapped; set ENABLE_MCP=true to expose them");
+}
+
+// OpenID Connect provider, off unless OIDC_ISSUER is set. The key and the
+// client list are loaded now, so a key that cannot be read or created, or a
+// clients file that does not validate, stops startup instead of the first
+// sign-in.
+if (appSettings.OidcEnabled)
+{
+    app.Services.GetRequiredService<Dmart.Auth.Oidc.OidcSigningKey>().EnsureLoaded();
+    app.Services.GetRequiredService<Dmart.Auth.Oidc.OidcClients>().EnsureLoaded();
+    Dmart.Api.Oidc.OidcEndpoints.MapOidc(app);
+    app.Logger.LogInformation("OpenID Connect provider: issuer {Issuer}", appSettings.OidcIssuer);
 }
 
 // WebSocket server — port of dmart/websocket.py.
