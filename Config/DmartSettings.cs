@@ -148,6 +148,17 @@ public sealed class DmartSettings
     public string ManagementSpace { get; set; } = "management";
     public int MaxSessionsPerUser { get; set; } = 5;
 
+    // ---- Directory fields on users (docs/user-directory-fields.md) ----
+    // Comma-separated services a user can be granted (e.g. "mail,matrix,gitea").
+    // Empty accepts any lowercase slug.
+    public string UserServices { get; set; } = "";
+    // Comma-separated mail domains this deployment hosts. When set, a user's
+    // mailbox and aliases must be in one of them; empty accepts any domain.
+    public string UserMailDomains { get; set; } = "";
+
+    public string[] ParseUserServices() => SplitList(UserServices).Select(x => x.ToLowerInvariant()).ToArray();
+    public string[] ParseUserMailDomains() => SplitList(UserMailDomains).Select(x => x.ToLowerInvariant()).ToArray();
+
     // ---- LDAP directory face (Ldap/) ----
     // A read-only LDAPv3 listener that serves the users table as a directory, so
     // mail servers, Gitea and Dex can search and bind against dmart directly.
@@ -168,9 +179,10 @@ public sealed class DmartSettings
     // Most entries one unpaged search returns (slapd's default is also 500).
     // Paged searches (RFC 2696) are not capped by it.
     public int LdapSizeLimit { get; set; } = 500;
-    // Most user rows one search may examine when its filter names no indexed
-    // attribute (uid, mail, mobile). Past it the search ends with
-    // adminLimitExceeded rather than walking a multi-million-row table.
+    // Most rows one request may examine when its filter names no indexed
+    // attribute (uid, mail, mailAlias, mobile, authorizedService). An unpaged
+    // search past it ends with adminLimitExceeded; a paged one sends a short
+    // page and resumes on the next request, so a full listing still completes.
     public int LdapMaxScan { get; set; } = 100_000;
 
     public string[] ParseLdapServiceAccounts() => SplitList(LdapServiceAccounts);

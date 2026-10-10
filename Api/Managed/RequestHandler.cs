@@ -38,6 +38,7 @@ public static class RequestHandler
                                   HistoryRepository history,
                                   RegexPatternsConfig regexConfig,
                                   PasswordHasher hasher,
+                                  DirectoryFieldsValidator directoryFields,
                                   IOptions<DmartSettings> dmartSettings,
                                   HttpContext http, CancellationToken ct) =>
             {
@@ -181,7 +182,7 @@ public static class RequestHandler
                         var (resp, updated, diff) = await DispatchUpdateAsync(
                             rec, req.SpaceName, actor,
                             entries, users, access, spaces, attachments, perms, uniqueness,
-                            schemas, history, regexConfig, ct);
+                            schemas, history, regexConfig, directoryFields, ct);
                         result = (resp, updated);
                         updateDiff = diff;
                     }
@@ -194,7 +195,7 @@ public static class RequestHandler
                                     IsAutoShortname(rec.Shortname),
                                     () => DispatchCreateAsync(rec, req.SpaceName, actor,
                                         entries, users, access, spaces, attachments, perms, uniqueness, folderContent, schemas,
-                                        regexConfig, hasher, ct),
+                                        regexConfig, hasher, directoryFields, ct),
                                     r => r.Response.Error?.Code == InternalErrorCode.SHORTNAME_ALREADY_EXIST),
                             RequestType.Delete =>
                                 await DispatchDeleteAsync(rec, req.SpaceName, actor, managementSpace, req.Force, req.DryRun,
@@ -407,6 +408,7 @@ public static class RequestHandler
         PermissionService perms,
         UniquenessValidator uniqueness, FolderContentValidator folderContent,
         SchemaValidator schemas, RegexPatternsConfig regexConfig, PasswordHasher hasher,
+        DirectoryFieldsValidator directoryFields,
         CancellationToken ct)
     {
         rec = ResolveAutoShortname(rec);
@@ -482,7 +484,7 @@ public static class RequestHandler
         switch (rec.ResourceType)
         {
             case ResourceType.User:
-                return await CreateUserAsync(rec, space, actor, users, uniqueness, regexConfig, hasher, ct);
+                return await CreateUserAsync(rec, space, actor, users, uniqueness, regexConfig, hasher, directoryFields, ct);
             case ResourceType.Role:
                 return await CreateRoleAsync(rec, space, actor, access, uniqueness, ct);
             case ResourceType.Group:
@@ -537,6 +539,7 @@ public static class RequestHandler
     private static async Task<(Response Response, Record UpdatedRecord)> CreateUserAsync(
         Record rec, string space, string actor, UserRepository users,
         UniquenessValidator uniqueness, RegexPatternsConfig regexConfig, PasswordHasher hasher,
+        DirectoryFieldsValidator directoryFields,
         CancellationToken ct)
     {
         var attrs = rec.Attributes ?? new();
@@ -594,6 +597,10 @@ public static class RequestHandler
         if (!uniqRes.IsOk)
             return (Response.Fail(uniqRes.ErrorCode!, uniqRes.ErrorMessage!, uniqRes.ErrorType ?? ErrorTypes.Request), rec);
 
+        var (dirMailbox, dirAliases, dirServices) = ParseDirectoryFields(attrs, existing: null);
+        if (await directoryFields.ValidateAsync(rec.Shortname, dirMailbox, dirAliases, dirServices, ct) is { } dirError)
+            return (Response.Fail(InternalErrorCode.INVALID_DATA, dirError, ErrorTypes.Request), rec);
+
         var rolesList = ExtractStringList(attrs, "roles");
         var groupsList = ExtractStringList(attrs, "groups");
         var languageStr = attrs.TryGetValue("language", out var lObj) ? ConvertToString(lObj) : null;
@@ -637,10 +644,13 @@ public static class RequestHandler
             LockedToDevice = attrs.TryGetValue("locked_to_device", out var ltd) && IsTruthy(ltd),
             // Python parity: Meta.from_record writes `acl` onto the user meta.
             Acl = ParseAcl(attrs),
+            Mailbox = dirMailbox,
+            MailAliases = dirAliases,
+            Services = dirServices,
             CreatedAt = TimeUtils.Now(),
             UpdatedAt = TimeUtils.Now(),
         };
-        await users.UpsertAsync(user, ct);
+        if (await UpsertUserOrClashAsync(users, user, ct) is { } clash) return (clash, rec);
 
         // The echoed record is built from the REQUEST attributes, so the supplied
         // plaintext would ride back out in the response body. User.Password is
@@ -898,7 +908,7 @@ public static class RequestHandler
         SpaceRepository spaces, AttachmentRepository attachments,
         PermissionService perms, UniquenessValidator uniqueness,
         SchemaValidator schemas, HistoryRepository history,
-        RegexPatternsConfig regexConfig, CancellationToken ct)
+        RegexPatternsConfig regexConfig, DirectoryFieldsValidator directoryFields, CancellationToken ct)
     {
         var locator = new Locator(rec.ResourceType, space, rec.Subpath, rec.Shortname);
 
@@ -999,6 +1009,14 @@ public static class RequestHandler
                 // is DEEP-MERGED (Payload.update(replace=false)) so a partial body
                 // patches the existing body instead of replacing it — shared with the
                 // entry and self-service /user/profile paths via PayloadMerge.
+                // Directory fields: an absent attribute keeps the stored value, so
+                // the rules run only when the request names one of them.
+                var (dirMailbox, dirAliases, dirServices) = ParseDirectoryFields(attrs, existing);
+                if (attrs.ContainsKey("mailbox") || attrs.ContainsKey("mail_aliases") || attrs.ContainsKey("services"))
+                {
+                    if (await directoryFields.ValidateAsync(existing.Shortname, dirMailbox, dirAliases, dirServices, ct) is { } dirError)
+                        return (Response.Fail(InternalErrorCode.INVALID_DATA, dirError, ErrorTypes.Request), rec, null);
+                }
                 var newPayload = PayloadMerge.MergeBody(existing.Payload, attrs.GetValueOrDefault("payload"));
                 // Python parity (serve_request_update): validate the MERGED payload
                 // body against its schema before persisting. User updates merge the
@@ -1031,9 +1049,12 @@ public static class RequestHandler
                     DeviceId = attrs.TryGetValue("device_id", out var did) ? ConvertToString(did) : existing.DeviceId,
                     LockedToDevice = attrs.TryGetValue("locked_to_device", out var ltd) ? IsTruthy(ltd) : existing.LockedToDevice,
                     Payload = newPayload,
+                    Mailbox = dirMailbox,
+                    MailAliases = dirAliases,
+                    Services = dirServices,
                     UpdatedAt = TimeUtils.Now(),
                 };
-                await users.UpsertAsync(updated, ct);
+                if (await UpsertUserOrClashAsync(users, updated, ct) is { } updateClash) return (updateClash, rec, null);
 
                 // Append a history row mirroring the self-service profile
                 // update path (UserService.UpdateProfileAsync). Without this
@@ -1979,6 +2000,45 @@ public static class RequestHandler
     // empty array explicitly clears.
     private static List<string>? ExtractStringList(Dictionary<string, object> attrs, string key)
         => attrs.TryGetValue(key, out var raw) ? AttrHelper.TryParseStringList(raw) : null;
+
+    // A user's mailbox, mail_aliases and services from the request, normalized
+    // (docs/user-directory-fields.md). An attribute the request does not name
+    // keeps `existing`'s value, so an update that does not mention them leaves
+    // them alone; `[]` and a null mailbox clear them.
+    private static (string? Mailbox, List<string> Aliases, List<string> Services) ParseDirectoryFields(
+        Dictionary<string, object> attrs, Dmart.Models.Core.User? existing)
+    {
+        var mailbox = attrs.TryGetValue("mailbox", out var mb)
+            ? DirectoryFields.NormalizeAddress(ConvertToString(mb))
+            : existing?.Mailbox;
+        var aliases = ExtractStringList(attrs, "mail_aliases") is { } al
+            ? DirectoryFields.NormalizeAddresses(al)
+            : existing?.MailAliases ?? new();
+        var services = ExtractStringList(attrs, "services") is { } sv
+            ? DirectoryFields.NormalizeServices(sv)
+            : existing?.Services ?? new();
+        return (mailbox, aliases, services);
+    }
+
+    // Writes the user, turning a unique-key clash into a request error. The
+    // validator's pre-checks give the readable message in the ordinary case;
+    // this is the race they cannot close — two writers claiming the same
+    // address, email or msisdn between check and write. The user_addresses
+    // primary key decides it, and the loser's whole write rolls back.
+    private static async Task<Response?> UpsertUserOrClashAsync(
+        UserRepository users, Dmart.Models.Core.User user, CancellationToken ct)
+    {
+        try
+        {
+            await users.UpsertAsync(user, ct);
+            return null;
+        }
+        catch (System.Data.Common.DbException ex) when (DbErrors.IsUniqueViolation(ex))
+        {
+            return Response.Fail(InternalErrorCode.INVALID_DATA,
+                "a mailbox, alias, email or msisdn in this request is already in use", ErrorTypes.Request);
+        }
+    }
 
     // Extracts attrs["relationships"] into the same `List<Dictionary<string, object>>`
     // shape JsonbHelpers.FromRelationships produces on read. Going through

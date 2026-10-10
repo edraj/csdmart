@@ -16,13 +16,31 @@
   sidebar's groups each take a hue from one palette, in both themes. The
   hero's accent runs a slow spectrum, and "How it works" is a numbered
   timeline. The measured figures keep their signal colour.
+- **Users carry directory fields: `mailbox`, `mail_aliases` and `services`.**
+  - `mailbox` is the address the deployment hosts, distinct from the contact
+    `email` used for one-time codes and resets.
+  - `mail_aliases` deliver into it.
+  - `services` lists what the user may use (mail, matrix, gitea).
+
+  They are set through `/managed/request` only; `/user/profile` cannot touch
+  them. Addresses are unique across all users, case-insensitively, and the
+  database enforces it. Two index tables back them, `user_addresses` and
+  `user_services`, maintained in the same transaction as each user write and
+  rebuilt at startup when they are empty. Soft delete releases them, and they
+  are carried in Parquet and zip backups. `USER_SERVICES` and
+  `USER_MAIL_DOMAINS` optionally restrict the values. See
+  `docs/user-directory-fields.md`.
 - **An experimental, read-only LDAP face over the users table** (`LDAP_PORT`,
   off by default). It lets Postfix, Dovecot, Gitea and Dex search and bind
-  against dmart instead of a separate directory. Binds go through the same
-  password, lockout and deactivation checks as `/user/login`, and every
-  write is refused. There is no TLS yet, so keep it on loopback or a private
-  interface. `bench/REPORT-ldap-face.md` has the interop and 1M-user
-  measurements, and the known gap: `mailAlias` lookups are not indexed yet.
+  against dmart instead of a separate directory.
+  - Binds go through the same password, lockout and deactivation checks as
+    `/user/login`, and every write is refused.
+  - `mail`, `mailAlias` and `authorizedService` come from the directory
+    fields above, and lookups on them are indexed.
+  - Paged searches read a page at a time.
+  - There is no TLS yet, so keep it on loopback or a private interface.
+
+  `bench/REPORT-ldap-face.md` has the interop and scale measurements.
 
 ### Fixed
 

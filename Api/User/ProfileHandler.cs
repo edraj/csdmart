@@ -48,6 +48,11 @@ public static class ProfileHandler
                 ["type"] = user.Type.ToString().ToLowerInvariant(),
                 ["roles"] = user.Roles,
                 ["groups"] = user.Groups,
+                // Read-only here: only /managed/request sets them
+                // (docs/user-directory-fields.md).
+                ["mailbox"] = user.Mailbox,
+                ["mail_aliases"] = user.MailAliases,
+                ["services"] = user.Services,
                 ["is_email_verified"] = user.IsEmailVerified,
                 ["is_msisdn_verified"] = user.IsMsisdnVerified,
                 ["force_password_change"] = user.ForcePasswordChange,

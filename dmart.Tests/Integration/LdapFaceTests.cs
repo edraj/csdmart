@@ -36,10 +36,15 @@ public sealed class LdapFaceTests(LdapFaceTests.Fixture fx) : IClassFixture<Ldap
 
         private static readonly string Suffix = Guid.NewGuid().ToString("N")[..6];
         public string Service { get; } = "ldsvc_" + Suffix;
-        public string Alice { get; } = "ldalice_" + Suffix;
-        public string Bob { get; } = "ldbob_" + Suffix;       // deactivated
+        public string Alice { get; } = "ldalice_" + Suffix;   // mailbox, alias, the service
+        public string Bob { get; } = "ldbob_" + Suffix;       // the service, but deactivated
+        public string Carol { get; } = "ldcarol_" + Suffix;   // no mailbox: `mail` is her contact email
         public string Group { get; } = "ldgrp_" + Suffix;
-        public string AliceMail => $"{Alice}@Example.org";
+        public string Granted { get; } = "ldmail" + Suffix;   // a service slug
+        public string AliceMailbox => $"{Alice}@Hosted.test";
+        public string AliceAlias => $"alias-{Alice}@hosted.test";
+        public string AliceContact => $"{Alice}@elsewhere.test";
+        public string CarolContact => $"{Carol}@elsewhere.test";
 
         public async Task InitializeAsync()
         {
@@ -57,6 +62,9 @@ public sealed class LdapFaceTests(LdapFaceTests.Fixture fx) : IClassFixture<Ldap
                 o.LdapHost = "127.0.0.1";
                 o.LdapBaseDn = Base;
                 o.LdapServiceAccounts = Service;
+                // Small enough that an unindexed search over the shared test
+                // database runs out, which is what the budget tests need.
+                o.LdapMaxScan = 3;
             })));
             _ = Host.CreateClient();   // starts the host, and with it the listener
 
@@ -68,8 +76,15 @@ public sealed class LdapFaceTests(LdapFaceTests.Fixture fx) : IClassFixture<Ldap
                 OwnerShortname = "dmart", IsActive = true, CreatedAt = TimeUtils.Now(), UpdatedAt = TimeUtils.Now(),
             });
             await users.UpsertAsync(NewUser(Service, hash, UserType.Bot, active: true, groups: [], email: null));
-            await users.UpsertAsync(NewUser(Alice, hash, UserType.Web, active: true, groups: [Group], email: AliceMail));
-            await users.UpsertAsync(NewUser(Bob, hash, UserType.Web, active: false, groups: [Group], email: null));
+            await users.UpsertAsync(NewUser(Alice, hash, UserType.Web, active: true, groups: [Group], email: AliceContact) with
+            {
+                Mailbox = AliceMailbox, MailAliases = [AliceAlias], Services = [Granted],
+            });
+            await users.UpsertAsync(NewUser(Bob, hash, UserType.Web, active: false, groups: [Group], email: null) with
+            {
+                Services = [Granted],
+            });
+            await users.UpsertAsync(NewUser(Carol, hash, UserType.Web, active: true, groups: [], email: CarolContact));
 
             for (var i = 0; i < 100; i++)
             {
@@ -91,7 +106,7 @@ public sealed class LdapFaceTests(LdapFaceTests.Fixture fx) : IClassFixture<Ldap
         {
             if (Host is not null)
             {
-                foreach (var u in new[] { Service, Alice, Bob })
+                foreach (var u in new[] { Service, Alice, Bob, Carol })
                     await TestUserCleanup.DeleteUserAndOwnedAsync(Host.Services, u);
                 try { await Host.Services.GetRequiredService<AccessRepository>().DeleteGroupAsync(Group); } catch { }
                 await Host.DisposeAsync();
@@ -130,7 +145,7 @@ public sealed class LdapFaceTests(LdapFaceTests.Fixture fx) : IClassFixture<Ldap
     }
 
     [FactIfPg]
-    public async Task A_Service_Account_Finds_A_User_By_Uid_And_By_Mail()
+    public async Task A_Service_Account_Finds_A_User_By_Uid_Mailbox_And_Alias()
     {
         await using var c = await Client.ConnectAsync(fx.Port);
         (await c.BindAsync(ServiceDn, Password)).ShouldBe(LdapResult.Success);
@@ -140,28 +155,67 @@ public sealed class LdapFaceTests(LdapFaceTests.Fixture fx) : IClassFixture<Ldap
         code.ShouldBe(LdapResult.Success);
         var alice = entries.ShouldHaveSingleItem();
         alice.Dn.ShouldBe(UserDn(fx.Alice));
-        alice.Attrs["mail"].ShouldBe(new[] { fx.AliceMail });
-        alice.Attrs["authorizedService"].ShouldBe(new[] { fx.Group });
+        // `mail` is the hosted mailbox (stored folded), not the contact email.
+        alice.Attrs["mail"].ShouldBe(new[] { fx.AliceMailbox.ToLowerInvariant() });
+        alice.Attrs["mailAlias"].ShouldBe(new[] { fx.AliceAlias });
+        alice.Attrs["authorizedService"].ShouldBe(new[] { fx.Granted });
         alice.Attrs.Keys.ShouldNotContain("userPassword");
 
-        // mail is matched case-insensitively, through the email index.
-        (await c.SearchAsync($"ou=people,{Base}", Filter.Eq("mail", fx.AliceMail.ToUpperInvariant())))
+        // Both addresses resolve through user_addresses, case-insensitively.
+        (await c.SearchAsync($"ou=people,{Base}", Filter.Eq("mail", fx.AliceMailbox.ToUpperInvariant())))
             .Entries.ShouldHaveSingleItem().Dn.ShouldBe(UserDn(fx.Alice));
+        (await c.SearchAsync($"ou=people,{Base}", Filter.Eq("mailAlias", fx.AliceAlias.ToUpperInvariant())))
+            .Entries.ShouldHaveSingleItem().Dn.ShouldBe(UserDn(fx.Alice));
+
+        // Her contact email is not a directory address.
+        (await c.SearchAsync($"ou=people,{Base}", Filter.Eq("mail", fx.AliceContact))).Entries.ShouldBeEmpty();
     }
 
     [FactIfPg]
-    public async Task An_Unanchored_Filter_Scans_And_Applies_Every_Clause()
+    public async Task A_User_Without_A_Mailbox_Is_Found_By_Contact_Email()
+    {
+        await using var c = await Client.ConnectAsync(fx.Port);
+        (await c.BindAsync(ServiceDn, Password)).ShouldBe(LdapResult.Success);
+        var carol = (await c.SearchAsync($"ou=people,{Base}", Filter.Eq("mail", fx.CarolContact)))
+            .Entries.ShouldHaveSingleItem();
+        carol.Dn.ShouldBe(UserDn(fx.Carol));
+        carol.Attrs["mail"].ShouldBe(new[] { fx.CarolContact });
+    }
+
+    [FactIfPg]
+    public async Task A_Service_Listing_Reads_The_Services_Index()
     {
         await using var c = await Client.ConnectAsync(fx.Port);
         (await c.BindAsync(ServiceDn, Password)).ShouldBe(LdapResult.Success);
 
-        // authorizedService is not indexed, so this walks the users table in
-        // keyset pages — the query that differs between the two engines.
+        // authorizedService reads user_services: two rows examined (alice, bob),
+        // inside a budget of three that the whole table would blow through.
         var (code, entries) = await c.SearchAsync($"ou=people,{Base}", Filter.And(
-            Filter.Eq("authorizedService", fx.Group), Filter.Eq("isActive", "TRUE")), "uid");
+            Filter.Eq("authorizedService", fx.Granted), Filter.Eq("isActive", "TRUE")), "uid");
         code.ShouldBe(LdapResult.Success);
         entries.Select(e => e.Dn).ToArray().ShouldBe(new[] { UserDn(fx.Alice) },
-            customMessage: "bob is in the group but deactivated");
+            customMessage: "bob holds the service but is deactivated");
+    }
+
+    [FactIfPg]
+    public async Task An_Unindexed_Search_Stops_At_The_Scan_Budget_Unless_Paged()
+    {
+        await using var c = await Client.ConnectAsync(fx.Port);
+        (await c.BindAsync(ServiceDn, Password)).ShouldBe(LdapResult.Success);
+        var anyone = Filter.Present("displayName");
+
+        // Unpaged: three rows examined, then adminLimitExceeded.
+        (await c.SearchAsync($"ou=people,{Base}", anyone, "uid")).Code.ShouldBe(LdapResult.AdminLimitExceeded);
+
+        // Paged: each request gets its own budget of three, so the same listing
+        // completes as a run of short pages — the shape Gitea's user sync takes.
+        var (code, entries, pages) = await c.SearchPagedAsync($"ou=people,{Base}", anyone, 1000, "uid");
+        code.ShouldBe(LdapResult.Success);
+        pages.ShouldBeGreaterThan(1);
+        var dns = entries.Select(e => e.Dn).ToList();
+        dns.ShouldContain(UserDn(fx.Alice));
+        dns.ShouldContain(UserDn(fx.Carol));
+        dns.Count.ShouldBe(dns.Distinct().Count(), "a resumed page must not repeat entries");
     }
 
     [FactIfPg]
@@ -241,25 +295,57 @@ public sealed class LdapFaceTests(LdapFaceTests.Fixture fx) : IClassFixture<Ldap
             return new Client(tcp);
         }
 
-        private async Task SendAsync(int opTag, Action<AsnWriter> body)
+        private async Task SendAsync(int opTag, Action<AsnWriter> body, byte[]? pagedCookie = null, int pageSize = 0)
         {
             var w = new AsnWriter(AsnEncodingRules.BER);
             using (w.PushSequence())
             {
                 w.WriteInteger(_nextId++);
                 using (w.PushSequence(new Asn1Tag(TagClass.Application, opTag, isConstructed: true))) body(w);
+                if (pagedCookie is not null)
+                {
+                    using (w.PushSequence(new Asn1Tag(TagClass.ContextSpecific, 0, isConstructed: true)))
+                    using (w.PushSequence())
+                    {
+                        w.WriteOctetString(Encoding.UTF8.GetBytes(LdapOid.PagedResults));
+                        var v = new AsnWriter(AsnEncodingRules.BER);
+                        using (v.PushSequence())
+                        {
+                            v.WriteInteger(pageSize);
+                            v.WriteOctetString(pagedCookie);
+                        }
+                        w.WriteOctetString(v.Encode());
+                    }
+                }
             }
             await _stream.WriteAsync(w.Encode());
         }
 
-        private async Task<(int Tag, AsnReader Op)> ReceiveAsync()
+        // The op, plus the paged-results cookie when the message carries one.
+        private async Task<(int Tag, AsnReader Op, byte[]? Cookie)> ReceiveAsync()
         {
             var frame = await LdapCodec.ReadFrameAsync(_stream, 1 << 20, CancellationToken.None)
                 ?? throw new InvalidOperationException("server closed the connection");
             var msg = new AsnReader(frame, AsnEncodingRules.BER).ReadSequence();
             msg.TryReadInt32(out _);
             var tag = msg.PeekTag();
-            return (tag.TagValue, msg.ReadSequence(tag));
+            var op = msg.ReadSequence(tag);
+            byte[]? cookie = null;
+            if (msg.HasData)
+            {
+                var controls = msg.ReadSequence(new Asn1Tag(TagClass.ContextSpecific, 0, isConstructed: true));
+                while (controls.HasData)
+                {
+                    var control = controls.ReadSequence();
+                    var oid = Encoding.UTF8.GetString(control.ReadOctetString());
+                    if (control.HasData && control.PeekTag().HasSameClassAndValue(Asn1Tag.Boolean)) control.ReadBoolean();
+                    if (oid != LdapOid.PagedResults || !control.HasData) continue;
+                    var value = new AsnReader(control.ReadOctetString(), AsnEncodingRules.BER).ReadSequence();
+                    value.TryReadInt32(out _);
+                    cookie = value.ReadOctetString();
+                }
+            }
+            return (tag.TagValue, op, cookie);
         }
 
         private static int ResultCode(AsnReader op)
@@ -278,7 +364,7 @@ public sealed class LdapFaceTests(LdapFaceTests.Fixture fx) : IClassFixture<Ldap
                 w.WriteOctetString(Encoding.UTF8.GetBytes(dn));
                 w.WriteOctetString(Encoding.UTF8.GetBytes(password), new Asn1Tag(TagClass.ContextSpecific, 0));
             });
-            var (_, op) = await ReceiveAsync();
+            var (_, op, _) = await ReceiveAsync();
             return ResultCode(op);
         }
 
@@ -286,6 +372,28 @@ public sealed class LdapFaceTests(LdapFaceTests.Fixture fx) : IClassFixture<Ldap
             => await SearchAsync(baseDn, filter, 2, attrs);
 
         public async Task<(int Code, List<Entry> Entries)> SearchAsync(string baseDn, byte[] filter, int scope, params string[] attrs)
+        {
+            var (code, entries, _) = await SearchPageAsync(baseDn, filter, scope, attrs, null, 0);
+            return (code, entries);
+        }
+
+        public async Task<(int Code, List<Entry> Entries, int Pages)> SearchPagedAsync(
+            string baseDn, byte[] filter, int pageSize, params string[] attrs)
+        {
+            var all = new List<Entry>();
+            byte[] cookie = [];
+            for (var pages = 1; ; pages++)
+            {
+                var (code, entries, next) = await SearchPageAsync(baseDn, filter, 2, attrs, cookie, pageSize);
+                all.AddRange(entries);
+                if (code != LdapResult.Success || next is not { Length: > 0 }) return (code, all, pages);
+                if (pages > 10_000) throw new InvalidOperationException("paged search never ended");
+                cookie = next;
+            }
+        }
+
+        private async Task<(int Code, List<Entry> Entries, byte[]? Cookie)> SearchPageAsync(
+            string baseDn, byte[] filter, int scope, string[] attrs, byte[]? pagedCookie, int pageSize)
         {
             await SendAsync(LdapOp.SearchRequest, w =>
             {
@@ -298,13 +406,13 @@ public sealed class LdapFaceTests(LdapFaceTests.Fixture fx) : IClassFixture<Ldap
                 w.WriteEncodedValue(filter);
                 using (w.PushSequence())
                     foreach (var a in attrs) w.WriteOctetString(Encoding.UTF8.GetBytes(a));
-            });
+            }, pagedCookie, pageSize);
 
             var entries = new List<Entry>();
             while (true)
             {
-                var (tag, op) = await ReceiveAsync();
-                if (tag == LdapOp.SearchResultDone) return (ResultCode(op), entries);
+                var (tag, op, cookie) = await ReceiveAsync();
+                if (tag == LdapOp.SearchResultDone) return (ResultCode(op), entries, cookie);
                 var dn = Encoding.UTF8.GetString(op.ReadOctetString());
                 var attrMap = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
                 var list = op.ReadSequence();

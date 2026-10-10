@@ -2945,6 +2945,8 @@ builder.Services.AddHostedService<AdminBootstrap>();
 // the schema initializers for the obvious reason (the users table has to exist)
 // and a no-op on every boot after the first — see LegacyLockoutBackfill.
 builder.Services.AddHostedService<LegacyLockoutRepair>();
+// Same ordering requirement: the index tables come from the schema initializers.
+builder.Services.AddHostedService<DirectoryIndexRepair>();
 
 // IP-based rate limiter for authentication endpoints. Account lockout (on the
 // user row) limits attempts per-account; this limits attempts per-IP so an
@@ -3021,6 +3023,7 @@ builder.Services.AddSingleton<FolderContentValidator>();
 builder.Services.AddSingleton<EntryService>();
 builder.Services.AddSingleton<QueryService>();
 builder.Services.AddSingleton<UserService>();
+builder.Services.AddSingleton<DirectoryFieldsValidator>();
 // The LDAP directory face. Registered unconditionally and off at LDAP_PORT=0:
 // the listener reads the port when it starts, so a test host can turn it on
 // through IOptions without the registration depending on builder-time config.

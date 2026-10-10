@@ -85,16 +85,28 @@ internal sealed class LdapServer(
         }
     }
 
-    private sealed class Session
+    private sealed class Session : IAsyncDisposable
     {
         public LdapPrincipal Principal { get; set; } = LdapPrincipal.Anonymous;
-        public PagedSearch? Paged { get; set; }
+        private PagedSearch? _paged;
+        public PagedSearch? Paged => _paged;
+
+        // Replacing or clearing a paged search disposes the one before it: its
+        // enumerator is a suspended stream over the users table.
+        public async ValueTask SetPagedAsync(PagedSearch? next)
+        {
+            var previous = _paged;
+            _paged = next;
+            if (previous is not null && !ReferenceEquals(previous, next)) await previous.Results.DisposeAsync();
+        }
+
+        public ValueTask DisposeAsync() => SetPagedAsync(null);
     }
 
-    // The rest of a paged search: the cookie handed to the client and the
-    // entries it has not been sent yet. One per connection — a new paged search
+    // A paged search in progress: the cookie handed to the client, and the
+    // streaming search it resumes. One per connection — a new paged search
     // replaces it, which is what every client does anyway.
-    private sealed record PagedSearch(byte[] Cookie, List<LdapEntry> Remaining, int FinalCode, string FinalMessage);
+    private sealed record PagedSearch(byte[] Cookie, LdapDirectory.Search Search, IAsyncEnumerator<LdapEntry?> Results);
 
     private async Task ServeAsync(TcpClient client, CancellationToken stop)
     {
@@ -102,7 +114,7 @@ internal sealed class LdapServer(
         client.NoDelay = true;
         var peer = client.Client.RemoteEndPoint?.ToString() ?? "?";
         var stream = client.GetStream();
-        var session = new Session();
+        await using var session = new Session();
 
         try
         {
@@ -199,7 +211,7 @@ internal sealed class LdapServer(
     private async Task<byte[]> BindAsync(LdapBindRequest b, Session session, string peer, CancellationToken ct)
     {
         session.Principal = LdapPrincipal.Anonymous;
-        session.Paged = null;
+        await session.SetPagedAsync(null);
         byte[] Reply(int code, string message = "") => LdapCodec.Result(b.MessageId, LdapOp.BindResponse, code, message);
 
         if (b.Version != 3) return Reply(LdapResult.ProtocolError, "only LDAPv3 is supported");
@@ -258,74 +270,102 @@ internal sealed class LdapServer(
     {
         var selection = new AttributeSelection(s.Attributes);
         var pagedControl = s.Controls.FirstOrDefault(c => c.Oid == LdapOid.PagedResults);
+        byte[] Done(int code, string message, string matchedDn = "", IReadOnlyList<LdapControl>? controls = null)
+            => LdapCodec.Result(s.MessageId, LdapOp.SearchResultDone, code, message, matchedDn, controls);
 
         if (pagedControl is null)
         {
             var max = settings.Value.LdapSizeLimit;
             var limit = s.SizeLimit > 0 ? Math.Min(s.SizeLimit, max) : max;
-            var outcome = await directory.SearchAsync(s, session.Principal, limit, ct);
-            var code = outcome.Code;
-            var entries = outcome.Entries;
-            if (entries.Count > limit)
+            var search = directory.Start(s, session.Principal);
+            int? stoppedWith = null;
+            var sent = 0;
+            await using (var results = search.Results.GetAsyncEnumerator(ct))
             {
-                entries = entries.Take(limit).ToList();
-                if (code == LdapResult.Success) code = LdapResult.SizeLimitExceeded;
+                while (await results.MoveNextAsync())
+                {
+                    if (results.Current is not { } entry)
+                    {
+                        if (!search.Budget.Exhausted) continue;
+                        stoppedWith = LdapResult.AdminLimitExceeded;
+                        break;
+                    }
+                    if (sent == limit)
+                    {
+                        stoppedWith = LdapResult.SizeLimitExceeded;
+                        break;
+                    }
+                    await send(LdapCodec.SearchEntry(s.MessageId, entry, selection, s.TypesOnly));
+                    sent++;
+                }
             }
-            foreach (var e in entries) await send(LdapCodec.SearchEntry(s.MessageId, e, selection, s.TypesOnly));
-            await send(LdapCodec.Result(s.MessageId, LdapOp.SearchResultDone, code, outcome.Message, outcome.MatchedDn));
+            await send(stoppedWith switch
+            {
+                LdapResult.AdminLimitExceeded => Done(LdapResult.AdminLimitExceeded,
+                    $"examined {settings.Value.LdapMaxScan} rows; narrow the filter to an indexed attribute "
+                    + "(uid, mail, mailAlias, mobile, authorizedService) or use paged results"),
+                { } code => Done(code, ""),
+                null => Done(search.Code, search.Message, search.MatchedDn),
+            });
             return;
         }
 
         var (size, cookie) = LdapCodec.ReadPagedControl(pagedControl.Value, s.MessageId);
-        PagedSearch state;
+        PagedSearch paged;
         if (cookie.Length > 0)
         {
-            if (session.Paged is null || !CryptographicOperations.FixedTimeEquals(cookie, session.Paged.Cookie))
+            if (session.Paged is not { } current || !CryptographicOperations.FixedTimeEquals(cookie, current.Cookie))
             {
-                await send(LdapCodec.Result(s.MessageId, LdapOp.SearchResultDone, LdapResult.UnwillingToPerform,
-                    "unknown paged results cookie"));
+                await send(Done(LdapResult.UnwillingToPerform, "unknown paged results cookie"));
                 return;
             }
-            state = session.Paged;
+            paged = current;
             if (size == 0)
             {
                 // Page size 0 with a cookie abandons the paged search.
-                session.Paged = null;
-                await send(LdapCodec.Result(s.MessageId, LdapOp.SearchResultDone, LdapResult.Success,
-                    controls: [LdapCodec.PagedControl([])]));
+                await session.SetPagedAsync(null);
+                await send(Done(LdapResult.Success, "", controls: [LdapCodec.PagedControl([])]));
                 return;
             }
         }
         else
         {
-            // Paged searches are bounded by LdapMaxScan, not LdapSizeLimit: the
-            // client is asking for everything, a page at a time.
-            var outcome = await directory.SearchAsync(s, session.Principal, int.MaxValue - 1, ct);
-            if (outcome.Code is not (LdapResult.Success or LdapResult.AdminLimitExceeded))
+            var search = directory.Start(s, session.Principal);
+            paged = new PagedSearch(RandomNumberGenerator.GetBytes(16), search, search.Results.GetAsyncEnumerator(ct));
+            await session.SetPagedAsync(paged);
+        }
+
+        // Each page gets a fresh scan budget. A page that runs out of budget
+        // before it fills is sent short, with a cookie: RFC 2696 allows fewer
+        // entries than asked for, and the client simply asks again.
+        paged.Search.Budget.Reset(settings.Value.LdapMaxScan);
+        var pageSize = size == 0 ? int.MaxValue : size;
+        var count = 0;
+        var finished = false;
+        while (count < pageSize)
+        {
+            if (!await paged.Results.MoveNextAsync())
             {
-                await send(LdapCodec.Result(s.MessageId, LdapOp.SearchResultDone, outcome.Code, outcome.Message, outcome.MatchedDn));
-                return;
+                finished = true;
+                break;
             }
-            state = new PagedSearch(RandomNumberGenerator.GetBytes(16), outcome.Entries.ToList(), outcome.Code, outcome.Message);
+            if (paged.Results.Current is not { } entry)
+            {
+                if (paged.Search.Budget.Exhausted) break;
+                continue;
+            }
+            await send(LdapCodec.SearchEntry(s.MessageId, entry, selection, s.TypesOnly));
+            count++;
         }
 
-        var pageSize = size == 0 ? state.Remaining.Count : size;
-        var page = state.Remaining.Take(pageSize).ToList();
-        state.Remaining.RemoveRange(0, page.Count);
-        foreach (var e in page) await send(LdapCodec.SearchEntry(s.MessageId, e, selection, s.TypesOnly));
-
-        if (state.Remaining.Count > 0)
+        if (!finished)
         {
-            session.Paged = state;
-            await send(LdapCodec.Result(s.MessageId, LdapOp.SearchResultDone, LdapResult.Success,
-                controls: [LdapCodec.PagedControl(state.Cookie)]));
+            await send(Done(LdapResult.Success, "", controls: [LdapCodec.PagedControl(paged.Cookie)]));
+            return;
         }
-        else
-        {
-            session.Paged = null;
-            await send(LdapCodec.Result(s.MessageId, LdapOp.SearchResultDone, state.FinalCode, state.FinalMessage,
-                controls: [LdapCodec.PagedControl([])]));
-        }
+        await session.SetPagedAsync(null);
+        await send(Done(paged.Search.Code, paged.Search.Message, paged.Search.MatchedDn,
+            [LdapCodec.PagedControl([])]));
     }
 
     // ----- extended -----

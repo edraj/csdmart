@@ -213,6 +213,11 @@ internal static class HistoryDiffUtil
             // DeleteUserAsync) — surfaces that event in the user's history. Inert
             // for every other update path, where it never changes.
             ["is_deleted"] = u.IsDeleted,
+            // Directory fields are access grants (services) and mail routing
+            // (mailbox, aliases): exactly what an audit trail is for.
+            ["mailbox"] = u.Mailbox,
+            ["mail_aliases"] = u.MailAliases,
+            ["services"] = u.Services,
         };
         if (u.Displayname is not null)
         {

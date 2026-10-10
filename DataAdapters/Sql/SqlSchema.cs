@@ -91,6 +91,12 @@ public static class SqlSchema
         is_deleted              BOOLEAN NOT NULL DEFAULT FALSE,
         deleted_at              TIMESTAMP,
 
+        -- Directory fields (docs/user-directory-fields.md). Indexed through
+        -- user_addresses / user_services below, not here.
+        mailbox                 TEXT,
+        mail_aliases            JSONB NOT NULL DEFAULT '[]'::jsonb,
+        services                JSONB NOT NULL DEFAULT '[]'::jsonb,
+
         UNIQUE (shortname, space_name, subpath)
     );
 
@@ -332,6 +338,33 @@ public static class SqlSchema
     -- a trigger: `dmart import --fast` sets session_replication_role='replica',
     -- which bypasses triggers — so a trigger-based tombstone would be silently
     -- skipped during exactly the bulk operations that move the most rows.
+    -- ============================================================
+    -- USER DIRECTORY INDEXES  (docs/user-directory-fields.md)
+    -- ============================================================
+    -- Derived from users.mailbox / mail_aliases / services, and maintained by
+    -- UserRepository IN THE SAME TRANSACTION as every user write — in code,
+    -- not triggers, because `import --fast` disables triggers (see
+    -- Tombstones). Tables rather than indexes on the JSON arrays because
+    -- uniqueness ACROSS ROWS of array elements is not expressible as an index:
+    -- a GIN index finds an alias fast but cannot stop two users holding it.
+    -- The deferred foreign keys turn a write path that forgets these rows into
+    -- a commit-time error instead of a silent orphan.
+    CREATE TABLE IF NOT EXISTS user_addresses (
+        address    TEXT PRIMARY KEY,               -- lowercased
+        shortname  TEXT NOT NULL REFERENCES users(shortname) DEFERRABLE INITIALLY DEFERRED,
+        kind       TEXT NOT NULL CHECK (kind IN ('mailbox', 'alias'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_user_addresses_shortname ON user_addresses (shortname);
+
+    CREATE TABLE IF NOT EXISTS user_services (
+        service    TEXT NOT NULL,
+        shortname  TEXT NOT NULL REFERENCES users(shortname) DEFERRABLE INITIALLY DEFERRED,
+        -- (service, shortname): a service's members come out in shortname
+        -- order, which is what a keyset-paged LDAP listing reads.
+        PRIMARY KEY (service, shortname)
+    );
+    CREATE INDEX IF NOT EXISTS idx_user_services_shortname ON user_services (shortname);
+
     CREATE TABLE IF NOT EXISTS deletions (
         id             BIGSERIAL PRIMARY KEY,
         table_name     TEXT NOT NULL,
@@ -610,6 +643,9 @@ public static class SqlSchema
     ALTER TABLE users       ADD COLUMN IF NOT EXISTS query_policies        TEXT[] NOT NULL DEFAULT '{}';
     ALTER TABLE users       ADD COLUMN IF NOT EXISTS is_deleted            BOOLEAN NOT NULL DEFAULT FALSE;
     ALTER TABLE users       ADD COLUMN IF NOT EXISTS deleted_at            TIMESTAMP;
+    ALTER TABLE users       ADD COLUMN IF NOT EXISTS mailbox               TEXT;
+    ALTER TABLE users       ADD COLUMN IF NOT EXISTS mail_aliases          JSONB NOT NULL DEFAULT '[]'::jsonb;
+    ALTER TABLE users       ADD COLUMN IF NOT EXISTS services              JSONB NOT NULL DEFAULT '[]'::jsonb;
     ALTER TABLE roles       ADD COLUMN IF NOT EXISTS last_checksum_history TEXT;
     ALTER TABLE roles       ADD COLUMN IF NOT EXISTS grantable_by          JSONB;
     ALTER TABLE roles       ADD COLUMN IF NOT EXISTS query_policies        TEXT[] NOT NULL DEFAULT '{}';

@@ -66,6 +66,8 @@ LDAP_HOST="127.0.0.1"
 LDAP_BASE_DN="$BASE"
 LDAP_SERVICE_ACCOUNTS="dex,mail,gitea"
 LDAP_EXTRA_USER_OBJECT_CLASSES="freexPerson,freexUser"
+USER_SERVICES="mail,matrix,gitea"
+USER_MAIL_DOMAINS="imx.sh"
 EOF
 chmod 600 "$WORK/config.env"
 
@@ -98,22 +100,25 @@ seed() {
   jq -e '.status == "success"' >/dev/null <<<"$out" || { echo "seed failed: $out"; exit 100; }
 }
 
+# Groups are team structure only (memberOf). Access to a service is the
+# user's `services` field, which LDAP serves as authorizedService.
 seed '{"space_name":"management","request_type":"create","records":[
-  {"resource_type":"group","subpath":"groups","shortname":"matrix","attributes":{"is_active":true,"displayname":{"en":"Matrix chat"}}},
-  {"resource_type":"group","subpath":"groups","shortname":"mail","attributes":{"is_active":true,"displayname":{"en":"Mail"}}},
-  {"resource_type":"group","subpath":"groups","shortname":"gitea","attributes":{"is_active":true,"displayname":{"en":"Gitea"}}}]}'
+  {"resource_type":"group","subpath":"groups","shortname":"staff","attributes":{"is_active":true,"displayname":{"en":"Staff"}}}]}'
 
-# alice: everything. bob: deactivated. carol: active but granted nothing.
-# The three service accounts are bots, which dmart exempts from the lockout.
+# alice: a hosted mailbox, an alias and every service; her contact email is
+# elsewhere. bob: the same shape, deactivated. carol: active, no mailbox, no
+# services. The three service accounts are bots, which dmart exempts from the
+# lockout.
 seed '{"space_name":"management","request_type":"create","records":[
   {"resource_type":"user","subpath":"users","shortname":"alice","attributes":{
-    "is_active":true,"password":"Alice12345","email":"alice@imx.sh","is_email_verified":true,
-    "msisdn":"9647701234567","displayname":{"en":"Alice Example"},"groups":["matrix","mail","gitea"],
-    "payload":{"content_type":"json","body":{"mail_aliases":["postmaster@imx.sh"]}}}},
+    "is_active":true,"password":"Alice12345","email":"alice@elsewhere.test","is_email_verified":true,
+    "msisdn":"9647701234567","displayname":{"en":"Alice Example"},"groups":["staff"],
+    "mailbox":"alice@imx.sh","mail_aliases":["postmaster@imx.sh"],"services":["matrix","mail","gitea"]}},
   {"resource_type":"user","subpath":"users","shortname":"bob","attributes":{
-    "is_active":false,"password":"Bob1234567","email":"bob@imx.sh","displayname":{"en":"Bob Disabled"},"groups":["matrix","mail"]}},
+    "is_active":false,"password":"Bob1234567","email":"bob@elsewhere.test","displayname":{"en":"Bob Disabled"},
+    "groups":["staff"],"mailbox":"bob@imx.sh","services":["matrix","mail"]}},
   {"resource_type":"user","subpath":"users","shortname":"carol","attributes":{
-    "is_active":true,"password":"Carol12345","email":"carol@imx.sh","displayname":{"en":"Carol NoServices"},"groups":[]}},
+    "is_active":true,"password":"Carol12345","email":"carol@elsewhere.test","displayname":{"en":"Carol NoServices"}}},
   {"resource_type":"user","subpath":"users","shortname":"dex","attributes":{"is_active":true,"type":"bot","password":"'"$SVC_PW"'"}},
   {"resource_type":"user","subpath":"users","shortname":"mail","attributes":{"is_active":true,"type":"bot","password":"'"$SVC_PW"'"}},
   {"resource_type":"user","subpath":"users","shortname":"gitea","attributes":{"is_active":true,"type":"bot","password":"'"$SVC_PW"'"}}]}'
@@ -173,10 +178,10 @@ out=$(in_box "ldapsearch -LLL -x -H $URI -D $DEX_DN -w $SVC_PW -b ou=people,$BAS
 check "paged results deliver every page" "uid: carol" "$out"
 
 out=$(in_box "ldapsearch -LLL -x -H $URI -D $DEX_DN -w $SVC_PW -b ou=groups,$BASE '(member=uid=alice,ou=people,$BASE)' cn member")
-check "group membership by member DN" "cn: gitea" "$out"
+check "group membership by member DN" "cn: staff" "$out"
 
 out=$(in_box "ldapsearch -LLL -x -H $URI -D $DEX_DN -w $SVC_PW -b uid=alice,ou=people,$BASE -s base '(objectClass=*)' memberOf")
-check "memberOf on request" "memberOf: cn=mail,ou=groups,$BASE" "$out"
+check "memberOf on request" "memberOf: cn=staff,ou=groups,$BASE" "$out"
 
 out=$(in_box "ldapsearch -LLL -x -H $URI -D $DEX_DN -w $SVC_PW -b uid=zed,ou=people,$BASE -s base; echo rc=\$?")
 check "missing entry is noSuchObject" "rc=32" "$out"
@@ -208,8 +213,10 @@ out=$(in_box "postmap -q alice@imx.sh ldap:/work/ldap-mailboxes.cf")
 check "mailbox lookup" "alice@imx.sh/" "$out"
 out=$(in_box "postmap -q bob@imx.sh ldap:/work/ldap-mailboxes.cf; echo rc=\$?")
 check "no mailbox for deactivated bob" "rc=1" "$out"
+out=$(in_box "postmap -q alice@elsewhere.test ldap:/work/ldap-mailboxes.cf; echo rc=\$?")
+check "a contact email is not a local mailbox" "rc=1" "$out"
 out=$(in_box "postmap -q postmaster@imx.sh ldap:/work/ldap-aliases.cf")
-check "alias lookup (payload mail_aliases)" "alice@imx.sh" "$out"
+check "alias lookup (mail_aliases, indexed)" "alice@imx.sh" "$out"
 
 echo
 echo "== Dovecot 2.4 (passdb ldap, bind = yes)"

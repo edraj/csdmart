@@ -208,6 +208,11 @@ internal static class UserParquetTable
         Pq.OptionalTimestamp("last_failed_login"),
         Pq.Optional("notes"),
         Pq.Required("query_policies"),
+        // Directory fields (docs/user-directory-fields.md). Optional so an
+        // archive written before them still reads: see Pq.StringsIfPresent.
+        Pq.Optional("mailbox"),
+        Pq.Optional("mail_aliases"),
+        Pq.Optional("services"),
     ];
 
     public static IReadOnlyList<ParquetFileWriter.ColumnPage> BuildPages(IReadOnlyList<User> rows) =>
@@ -250,6 +255,9 @@ internal static class UserParquetTable
         Pq.NullableTs(rows, u => u.LastFailedLogin),
         Pq.NullableStr(rows, u => u.Notes),
         Pq.Str(rows, u => Pq.JsonAlways(u.QueryPolicies, DmartJsonContext.Default.ListString)),
+        Pq.NullableStr(rows, u => u.Mailbox),
+        Pq.NullableStr(rows, u => Pq.JsonAlways(u.MailAliases, DmartJsonContext.Default.ListString)),
+        Pq.NullableStr(rows, u => Pq.JsonAlways(u.Services, DmartJsonContext.Default.ListString)),
     ];
 
     public static List<User> FromTable(ParquetFileReader.ParquetTable t)
@@ -293,6 +301,9 @@ internal static class UserParquetTable
         var lastFailed = t.Column("last_failed_login").AsTimestamps();
         var notes = Pq.Strings(t, "notes");
         var queryPolicies = Pq.Strings(t, "query_policies");
+        var mailbox = Pq.StringsIfPresent(t, "mailbox");
+        var mailAliases = Pq.StringsIfPresent(t, "mail_aliases");
+        var services = Pq.StringsIfPresent(t, "services");
 
         var result = new List<User>(count);
         for (var i = 0; i < count; i++)
@@ -336,6 +347,9 @@ internal static class UserParquetTable
                 LastFailedLogin = Pq.ToLocalNaiveOrNull(lastFailed[i]),
                 Notes = notes[i],
                 QueryPolicies = Pq.FromJson(queryPolicies[i], DmartJsonContext.Default.ListString) ?? [],
+                Mailbox = mailbox[i],
+                MailAliases = Pq.FromJson(mailAliases[i], DmartJsonContext.Default.ListString) ?? [],
+                Services = Pq.FromJson(services[i], DmartJsonContext.Default.ListString) ?? [],
             });
         return result;
     }

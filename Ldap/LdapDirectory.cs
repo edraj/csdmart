@@ -1,6 +1,5 @@
 using System.Globalization;
 using System.Runtime.CompilerServices;
-using System.Text.Json;
 using Dmart.Config;
 using Dmart.DataAdapters.Sql;
 using Dmart.Models.Core;
@@ -18,12 +17,6 @@ internal readonly record struct LdapPrincipal(PrincipalKind Kind, string? Shortn
     public static readonly LdapPrincipal Anonymous = new(PrincipalKind.Anonymous, null);
 }
 
-internal sealed record SearchOutcome(int Code, string Message, string MatchedDn, IReadOnlyList<LdapEntry> Entries)
-{
-    public static SearchOutcome Fail(int code, string message, string matchedDn = "")
-        => new(code, message, matchedDn, []);
-}
-
 // The dmart users table seen as a directory tree:
 //
 //   <base>                              dcObject / organization
@@ -34,22 +27,20 @@ internal sealed record SearchOutcome(int Code, string Message, string MatchedDn,
 // It is a projection, not a store. Every entry is built from a row at search
 // time and nothing is written back; changes go through dmart's API and UI.
 //
-// Two mappings carry the freex/dmart directory schema:
-//   * authorizedService = the user's dmart groups. Granting a user Matrix or
-//     mail is adding them to that group, which is the same act as making them a
-//     member of cn=<group>,ou=groups.
-//   * mailAlias = payload.body.mail_aliases (an array of addresses), so the
-//     user's schema decides whether aliases exist at all.
+// The freex/dmart directory attributes come from the user's core directory
+// fields (docs/user-directory-fields.md): mail = mailbox (else the contact
+// email), mailAlias = mail_aliases, authorizedService = services. Groups are
+// memberOf and nothing else.
 internal sealed class LdapDirectory(
     UserRepository users, AccessRepository access, IOptions<DmartSettings> settings)
 {
     // User rows fetched per keyset page during a scan.
     private const int ScanPage = 500;
 
-    // Filter attributes that resolve through an index instead of a scan.
-    private static readonly HashSet<string> IndexedUserAttributes = new(StringComparer.OrdinalIgnoreCase)
+    // Filter attributes a single indexed lookup answers (UserCandidatesAsync).
+    private static readonly HashSet<string> PointIndexed = new(StringComparer.OrdinalIgnoreCase)
     {
-        "uid", "mail", "mobile",
+        "uid", "mail", "mailAlias", "mobile",
     };
 
     private Layout? _layout;
@@ -92,32 +83,80 @@ internal sealed class LdapDirectory(
 
     // ----- search -----
 
-    // Returns at most limit + 1 entries; the caller turns the extra one into
-    // sizeLimitExceeded. The search itself never throws for a client mistake —
-    // those are result codes.
-    public async Task<SearchOutcome> SearchAsync(LdapSearchRequest req, LdapPrincipal who, int limit, CancellationToken ct)
+    // A search that charges every examined row to a budget, and STREAMS its
+    // matches: Results yields entries as they are found, so a paged search
+    // reads one page of rows at a time instead of materializing the answer.
+    //
+    // A null in Results is a checkpoint: the budget ran out. An unpaged caller
+    // stops there (adminLimitExceeded); a paged caller ends the page, and on the
+    // next page resets the budget and resumes the same enumerator, so a full
+    // listing of a multi-million-row table is many bounded requests rather than
+    // one unbounded one. Code / Message / MatchedDn are final once Results ends.
+    internal sealed class Search
+    {
+        public ScanBudget Budget { get; } = new();
+        public int Code { get; private set; } = LdapResult.Success;
+        public string Message { get; private set; } = "";
+        public string MatchedDn { get; private set; } = "";
+        public IAsyncEnumerable<LdapEntry?> Results { get; set; } = Nothing();
+
+        private static async IAsyncEnumerable<LdapEntry?> Nothing()
+        {
+            await Task.CompletedTask;
+            yield break;
+        }
+
+        public void Fail(int code, string message, string matchedDn = "")
+            => (Code, Message, MatchedDn) = (code, message, matchedDn);
+    }
+
+    internal sealed class ScanBudget
+    {
+        private int _left;
+        public bool Exhausted => _left <= 0;
+        public void Reset(int rows) => _left = rows;
+        // Charges one examined row; true when that used up the budget.
+        public bool Spend() => --_left <= 0;
+    }
+
+    public Search Start(LdapSearchRequest req, LdapPrincipal who)
+    {
+        var search = new Search();
+        search.Budget.Reset(settings.Value.LdapMaxScan);
+        search.Results = RunAsync(search, req, who);
+        return search;
+    }
+
+    private async IAsyncEnumerable<LdapEntry?> RunAsync(
+        Search s, LdapSearchRequest req, LdapPrincipal who, [EnumeratorCancellation] CancellationToken ct = default)
     {
         var nb = LdapDn.Normalize(req.BaseDn);
-        if (nb is null) return SearchOutcome.Fail(LdapResult.InvalidDnSyntax, "invalid base DN");
+        if (nb is null) { s.Fail(LdapResult.InvalidDnSyntax, "invalid base DN"); yield break; }
 
         if (nb.Length == 0)
         {
             // The root DSE: readable before binding, as on every LDAP server,
             // because clients read it to discover the naming context.
             if (req.Scope != LdapScope.BaseObject)
-                return SearchOutcome.Fail(LdapResult.NoSuchObject, "no entries above the naming context");
+            {
+                s.Fail(LdapResult.NoSuchObject, "no entries above the naming context");
+                yield break;
+            }
             var root = RootDse();
-            return new SearchOutcome(LdapResult.Success, "", "",
-                req.Filter.Evaluate(root) == Tri.True ? [root] : []);
+            if (req.Filter.Evaluate(root) == Tri.True) yield return root;
+            yield break;
         }
 
         if (who.Kind == PrincipalKind.Anonymous)
-            return SearchOutcome.Fail(LdapResult.InsufficientAccessRights, "bind before searching");
+        {
+            s.Fail(LdapResult.InsufficientAccessRights, "bind before searching");
+            yield break;
+        }
         if (nb != L.NormBase && !nb.EndsWith("," + L.NormBase, StringComparison.Ordinal))
-            return SearchOutcome.Fail(LdapResult.NoSuchObject, "outside the naming context");
-
-        var results = new List<LdapEntry>();
-        var collector = new Collector(req.Filter, results, limit);
+        {
+            s.Fail(LdapResult.NoSuchObject, "outside the naming context");
+            yield break;
+        }
 
         if (who.Kind == PrincipalKind.User)
         {
@@ -127,40 +166,34 @@ internal sealed class LdapDirectory(
             if (self is { IsDeleted: false })
             {
                 var entry = UserEntry(self);
-                if (InScope(LdapDn.Normalize(entry.Dn)!, nb, req.Scope)) collector.Offer(entry);
+                if (InScope(LdapDn.Normalize(entry.Dn)!, nb, req.Scope) && req.Filter.Evaluate(entry) == Tri.True)
+                    yield return entry;
             }
-            return new SearchOutcome(LdapResult.Success, "", "", results);
+            yield break;
         }
 
-        // Null when the base exists; otherwise the deepest existing ancestor,
-        // which noSuchObject reports as matchedDN.
-        var missing = await SearchAsServiceAsync(nb, req, collector, ct);
-        if (missing is not null)
-            return SearchOutcome.Fail(LdapResult.NoSuchObject, "no such entry", missing);
-        if (collector.ScanLimitHit)
-            return new SearchOutcome(LdapResult.AdminLimitExceeded,
-                $"filter names no indexed attribute (uid, mail, mobile) and the scan passed {settings.Value.LdapMaxScan} rows",
-                "", results);
-        return new SearchOutcome(LdapResult.Success, "", "", results);
+        await foreach (var e in ServiceViewAsync(s, nb, req, ct)) yield return e;
     }
 
-    private async Task<string?> SearchAsServiceAsync(string nb, LdapSearchRequest req, Collector c, CancellationToken ct)
+    // Everything a service account may read under `nb`, filtered.
+    private async IAsyncEnumerable<LdapEntry?> ServiceViewAsync(
+        Search s, string nb, LdapSearchRequest req, [EnumeratorCancellation] CancellationToken ct)
     {
         var scope = req.Scope;
-        var sub = scope == LdapScope.WholeSubtree;
+        var f = req.Filter;
+        bool Match(LdapEntry e) => f.Evaluate(e) == Tri.True;
 
         if (nb == L.NormBase)
         {
-            if (scope != LdapScope.SingleLevel) c.Offer(BaseEntry());
-            if (scope == LdapScope.BaseObject) return null;
-            c.Offer(OuEntry(L.People, "people"));
-            c.Offer(OuEntry(L.Groups, "groups"));
-            c.Offer(OuEntry(L.Services, "services"));
-            if (!sub) return null;
-            await OfferUsersAsync(req.Filter, c, ct);
-            await OfferGroupsAsync(req.Filter, c, ct);
-            await OfferServicesAsync(c, ct);
-            return null;
+            if (scope != LdapScope.SingleLevel && Match(BaseEntry())) yield return BaseEntry();
+            if (scope == LdapScope.BaseObject) yield break;
+            foreach (var ou in new[] { OuEntry(L.People, "people"), OuEntry(L.Groups, "groups"), OuEntry(L.Services, "services") })
+                if (Match(ou)) yield return ou;
+            if (scope != LdapScope.WholeSubtree) yield break;
+            await foreach (var e in UsersAsync(s, f, ct)) yield return e;
+            await foreach (var e in GroupsAsync(s, f, ct)) yield return e;
+            await foreach (var e in ServicesAsync(f, ct)) yield return e;
+            yield break;
         }
 
         foreach (var (ouDn, normOu, ou) in new[]
@@ -172,12 +205,17 @@ internal sealed class LdapDirectory(
         {
             if (nb == normOu)
             {
-                if (scope != LdapScope.SingleLevel) c.Offer(OuEntry(ouDn, ou));
-                if (scope == LdapScope.BaseObject) return null;
-                if (ou == "people") await OfferUsersAsync(req.Filter, c, ct);
-                else if (ou == "groups") await OfferGroupsAsync(req.Filter, c, ct);
-                else await OfferServicesAsync(c, ct);
-                return null;
+                var ouEntry = OuEntry(ouDn, ou);
+                if (scope != LdapScope.SingleLevel && Match(ouEntry)) yield return ouEntry;
+                if (scope == LdapScope.BaseObject) yield break;
+                var children = ou switch
+                {
+                    "people" => UsersAsync(s, f, ct),
+                    "groups" => GroupsAsync(s, f, ct),
+                    _ => ServicesAsync(f, ct),
+                };
+                await foreach (var e in children) yield return e;
+                yield break;
             }
 
             if (!nb.EndsWith("," + normOu, StringComparison.Ordinal)) continue;
@@ -187,14 +225,19 @@ internal sealed class LdapDirectory(
             // exist — otherwise it is noSuchObject like any missing base.
             if (!LdapDn.TryParse(req.BaseDn, out var avas)) break;
             var first = avas.Where(a => a.Rdn == 0).ToList();
-            if (first.Count != 1 || ParentOf(avas) != normOu) return ouDn;
-            var entry = await LeafAsync(ou, LdapSchema.Canonical(first[0].Type), first[0].Value, ct);
-            if (entry is null) return ouDn;
-            if (scope != LdapScope.SingleLevel) c.Offer(entry);
-            return null;
+            var entry = first.Count == 1 && ParentOf(avas) == normOu
+                ? await LeafAsync(ou, LdapSchema.Canonical(first[0].Type), first[0].Value, ct)
+                : null;
+            if (entry is null)
+            {
+                s.Fail(LdapResult.NoSuchObject, "no such entry", ouDn);
+                yield break;
+            }
+            if (scope != LdapScope.SingleLevel && Match(entry)) yield return entry;
+            yield break;
         }
 
-        return L.Base;
+        s.Fail(LdapResult.NoSuchObject, "no such entry", L.Base);
     }
 
     private async Task<LdapEntry?> LeafAsync(string ou, string type, string name, CancellationToken ct)
@@ -224,54 +267,99 @@ internal sealed class LdapDirectory(
 
     // ----- candidate sources -----
 
-    private async Task OfferUsersAsync(LdapFilter filter, Collector c, CancellationToken ct)
+    private async IAsyncEnumerable<LdapEntry?> UsersAsync(
+        Search s, LdapFilter f, [EnumeratorCancellation] CancellationToken ct)
     {
-        await foreach (var u in UserCandidatesAsync(filter, c, ct))
+        await foreach (var u in UserCandidatesAsync(s, f, ct))
         {
+            if (u is null) { yield return null; continue; }   // budget checkpoint
             if (L.ServiceAccounts.Contains(u.Shortname)) continue;
-            if (c.Offer(UserEntry(u))) return;
+            var e = UserEntry(u);
+            if (f.Evaluate(e) == Tri.True) yield return e;
         }
     }
 
-    // Anchored filters become indexed lookups; anything else walks the table in
-    // keyset pages, bounded by LdapMaxScan.
-    private async IAsyncEnumerable<User> UserCandidatesAsync(
-        LdapFilter filter, Collector c, [EnumeratorCancellation] CancellationToken ct)
+    // The cheapest source that is guaranteed to contain every match:
+    //   1. point lookups, when the filter pins uid / mail / mailAlias / mobile;
+    //   2. the user_services range, when it pins authorizedService;
+    //   3. otherwise a keyset walk of the whole users table.
+    // Sources 2 and 3 charge each row to the budget and yield a null checkpoint
+    // when it runs out (see Search).
+    private async IAsyncEnumerable<User?> UserCandidatesAsync(
+        Search s, LdapFilter f, [EnumeratorCancellation] CancellationToken ct)
     {
-        if (filter.Anchors(IndexedUserAttributes.Contains) is { } anchors)
+        if (f.Anchors(PointIndexed.Contains) is { } points)
         {
             var seen = new HashSet<string>(StringComparer.Ordinal);
-            foreach (var (attr, value) in anchors)
+            foreach (var (attr, value) in points)
             {
-                var u = attr.ToLowerInvariant() switch
-                {
-                    "uid" => await FindUserAsync(value, ct),
-                    "mail" => await users.GetByEmailAsync(value, ct),
-                    "mobile" => await users.GetByMsisdnAsync(value, ct),
-                    _ => null,
-                };
+                var u = await LookupAsync(attr, value, ct);
                 if (u is { IsDeleted: false } && seen.Add(u.Shortname)) yield return u;
             }
             yield break;
         }
 
+        if (f.Anchors(a => a.Equals("authorizedService", StringComparison.OrdinalIgnoreCase)) is { } grants)
+        {
+            var services = grants.Select(g => g.Value.Trim().ToLowerInvariant()).Distinct(StringComparer.Ordinal).ToList();
+            // One service (the usual case) comes out of its index range already
+            // unique; a union of several needs de-duplicating.
+            var seen = services.Count > 1 ? new HashSet<string>(StringComparer.Ordinal) : null;
+            foreach (var service in services)
+            {
+                await foreach (var u in KeysetAsync(s, (after, n) => users.ListByServiceAsync(service, after, n, ct)))
+                    if (u is null || seen is null || seen.Add(u.Shortname)) yield return u;
+            }
+            yield break;
+        }
+
+        await foreach (var u in KeysetAsync(s, (after, n) => users.ListForDirectoryAsync(after, n, ct)))
+            yield return u;
+    }
+
+    // Pages through a shortname-ordered source, charging each row to the
+    // budget. Holds no connection between pages, so a paged LDAP search can
+    // sit between client requests indefinitely.
+    private static async IAsyncEnumerable<User?> KeysetAsync(
+        Search s, Func<string?, int, Task<List<User>>> fetch)
+    {
         string? after = null;
-        var scanned = 0;
-        var max = settings.Value.LdapMaxScan;
         while (true)
         {
-            var page = await users.ListForDirectoryAsync(after, ScanPage, ct);
+            var page = await fetch(after, ScanPage);
             foreach (var u in page)
             {
-                if (++scanned > max)
-                {
-                    c.ScanLimitHit = true;
-                    yield break;
-                }
                 yield return u;
+                if (s.Budget.Spend()) yield return null;
             }
             if (page.Count < ScanPage) yield break;
             after = page[^1].Shortname;
+        }
+    }
+
+    private async Task<User?> LookupAsync(string attr, string value, CancellationToken ct)
+    {
+        switch (attr.ToLowerInvariant())
+        {
+            case "uid":
+                return await FindUserAsync(value, ct);
+            case "mail":
+            {
+                // LDAP `mail` is the hosted mailbox, or the contact email for a
+                // user who has none (UserEntry) — so look it up the same way.
+                if (DirectoryFields.NormalizeAddress(value) is not { } address) return null;
+                if (await users.GetByAddressAsync(address, "mailbox", ct) is { } owner) return owner;
+                var contact = await users.GetByEmailAsync(value, ct);
+                return contact is { Mailbox: null } ? contact : null;
+            }
+            case "mailalias":
+                return DirectoryFields.NormalizeAddress(value) is { } alias
+                    ? await users.GetByAddressAsync(alias, "alias", ct)
+                    : null;
+            case "mobile":
+                return await users.GetByMsisdnAsync(value, ct);
+            default:
+                return null;
         }
     }
 
@@ -289,11 +377,11 @@ internal sealed class LdapDirectory(
         return u is { IsDeleted: false } ? u : null;
     }
 
-    private async Task OfferGroupsAsync(LdapFilter filter, Collector c, CancellationToken ct)
+    private async IAsyncEnumerable<LdapEntry?> GroupsAsync(
+        Search s, LdapFilter f, [EnumeratorCancellation] CancellationToken ct)
     {
         List<Group> groups;
-        if (c.Full) return;
-        var anchors = filter.Anchors(a => a.Equals("cn", StringComparison.OrdinalIgnoreCase)
+        var anchors = f.Anchors(a => a.Equals("cn", StringComparison.OrdinalIgnoreCase)
             || a.Equals("member", StringComparison.OrdinalIgnoreCase));
         if (anchors is null)
         {
@@ -315,15 +403,22 @@ internal sealed class LdapDirectory(
         }
 
         foreach (var g in groups.OrderBy(g => g.Shortname, StringComparer.Ordinal))
-            if (c.Offer(GroupEntry(g, await users.ListShortnamesInGroupAsync(g.Shortname, ct)))) return;
+        {
+            var e = GroupEntry(g, await users.ListShortnamesInGroupAsync(g.Shortname, ct));
+            if (f.Evaluate(e) == Tri.True) yield return e;
+            if (s.Budget.Spend()) yield return null;
+        }
     }
 
-    private async Task OfferServicesAsync(Collector c, CancellationToken ct)
+    private async IAsyncEnumerable<LdapEntry?> ServicesAsync(
+        LdapFilter f, [EnumeratorCancellation] CancellationToken ct)
     {
-        if (c.Full) return;
         foreach (var name in L.ServiceAccounts.Order(StringComparer.Ordinal))
-            if (await users.GetByShortnameAsync(name, ct) is { IsDeleted: false } u && c.Offer(ServiceEntry(u.Shortname)))
-                return;
+        {
+            if (await users.GetByShortnameAsync(name, ct) is not { IsDeleted: false } u) continue;
+            var e = ServiceEntry(u.Shortname);
+            if (f.Evaluate(e) == Tri.True) yield return e;
+        }
     }
 
     // ----- entries -----
@@ -369,11 +464,13 @@ internal sealed class LdapDirectory(
             .Add("sn", words.Length > 0 ? words[^1] : u.Shortname)
             .Add("givenName", words.Length > 1 ? words[0] : null)
             .Add("displayName", name)
-            .Add("mail", u.Email)
-            .AddRange("mailAlias", MailAliases(u))
+            // The hosted mailbox; a user without one is reachable at their
+            // contact email, which Dex and Gitea need as the account's email.
+            .Add("mail", u.Mailbox ?? u.Email)
+            .AddRange("mailAlias", u.MailAliases)
             .Add("mobile", u.Msisdn)
             .Add("isActive", u.IsUsable ? "TRUE" : "FALSE")
-            .AddRange("authorizedService", u.Groups)
+            .AddRange("authorizedService", u.Services)
             .Add("preferredLanguage", u.Language.ToString().ToLowerInvariant())
             .Add("description", u.Description?.En)
             .Add("entryUUID", u.Uuid)
@@ -405,16 +502,6 @@ internal sealed class LdapDirectory(
         .Add("cn", shortname)
         .Add("hasSubordinates", "FALSE");
 
-    private static List<string> MailAliases(User u)
-    {
-        if (u.Payload?.Body is not { ValueKind: JsonValueKind.Object } body) return [];
-        if (!body.TryGetProperty("mail_aliases", out var aliases) || aliases.ValueKind != JsonValueKind.Array) return [];
-        return aliases.EnumerateArray()
-            .Where(a => a.ValueKind == JsonValueKind.String)
-            .Select(a => a.GetString()!)
-            .ToList();
-    }
-
     private static string? FirstNonEmpty(params string?[] values)
         => values.FirstOrDefault(v => !string.IsNullOrWhiteSpace(v));
 
@@ -438,24 +525,6 @@ internal sealed class LdapDirectory(
             .GroupBy(a => a.Rdn)
             .Select(g => string.Join('+', g.Select(a => a.Type + "=" + LdapDn.Escape(a.Value))));
         return LdapDn.Normalize(string.Join(',', rest)) ?? "";
-    }
-
-    // Applies the filter and the size limit to every entry offered, in order.
-    private sealed class Collector(LdapFilter filter, List<LdapEntry> results, int limit)
-    {
-        // Set when an unanchored scan passed LdapMaxScan; the entries collected
-        // so far are still returned, with adminLimitExceeded.
-        public bool ScanLimitHit { get; set; }
-
-        public bool Full => results.Count > limit || ScanLimitHit;
-
-        // True once the limit is passed: the caller stops producing.
-        public bool Offer(LdapEntry entry)
-        {
-            if (Full) return true;
-            if (filter.Evaluate(entry) == Tri.True) results.Add(entry);
-            return Full;
-        }
     }
 
     private sealed class Layout
