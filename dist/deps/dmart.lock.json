@@ -43,12 +43,6 @@
         "resolved": "1.1.1",
         "type": "Transitive"
       },
-      "Markdig": {
-        "contentHash": "lLhaiI/mNDTNzgLqnmknhf4LjgTqOAyjx5+GNz0X3AxYMxUhmFppF2WVMdER+SDqwhE5wUF1pzs/cuLwFxs7xA==",
-        "requested": "[1.4.0, )",
-        "resolved": "1.4.0",
-        "type": "Direct"
-      },
       "Microsoft.AspNetCore.Authentication.JwtBearer": {
         "contentHash": "fZzXogChrwQ/SfifQJgeW7AtR8hUv5+LH9oLWjm5OqfnVt3N8MwcMHHMdawvqqdjP79lIZgetnSpj77BLsSI1g==",
         "dependencies": {

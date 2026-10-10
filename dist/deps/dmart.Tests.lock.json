@@ -61,11 +61,6 @@
         "resolved": "1.1.1",
         "type": "Transitive"
       },
-      "Markdig": {
-        "contentHash": "lLhaiI/mNDTNzgLqnmknhf4LjgTqOAyjx5+GNz0X3AxYMxUhmFppF2WVMdER+SDqwhE5wUF1pzs/cuLwFxs7xA==",
-        "resolved": "1.4.0",
-        "type": "Transitive"
-      },
       "Microsoft.AspNetCore.Authentication.JwtBearer": {
         "contentHash": "fZzXogChrwQ/SfifQJgeW7AtR8hUv5+LH9oLWjm5OqfnVt3N8MwcMHHMdawvqqdjP79lIZgetnSpj77BLsSI1g==",
         "dependencies": {
@@ -633,7 +628,6 @@
           "Dmart.QueryGrammar": "[1.0.0, )",
           "JsonSchema.Net": "[9.4.0, )",
           "Konscious.Security.Cryptography.Argon2": "[1.3.1, )",
-          "Markdig": "[1.4.0, )",
           "Microsoft.AspNetCore.Authentication.JwtBearer": "[10.0.5, )",
           "Microsoft.AspNetCore.OpenApi": "[10.0.5, )",
           "Microsoft.Data.Sqlite": "[10.0.5, )",

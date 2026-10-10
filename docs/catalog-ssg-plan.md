@@ -3,10 +3,12 @@
 Design note for making `/cat` emit a real static website from entries held in
 dmart, with **dmart.cc as the reference migration**.
 
-**Status: built.** The Node prototype (`catalog/ssg/generate.mjs`) proved the
-approach and has been replaced by `dmart website build` in the binary; the
-open questions at the end were decided on 2026-10-08 (see "Decided" below).
-The operator guide is `docs/website.md`. This note keeps the design record.
+**Status: built, then removed.** The Node prototype (`catalog/ssg/generate.mjs`)
+proved the approach and was replaced by `dmart website build` in the binary
+(1.5.22). That generator and the server's `/website` mount were removed in
+1.7.0: dmart.cc moved to its own repository (edraj/website), which builds the
+site from dmart's public API and has a web server serve the files, so dmart is
+needed only at build time. This note keeps the design record.
 
 Context: this closes the one objection that otherwise ends every CMS
 comparison. Today dmart is a headless backend — `PayloadHandler.RendersInline`

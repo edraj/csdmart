@@ -76,27 +76,8 @@ public static class ResponseHeadersMiddleware
         + "frame-src 'self' blob:; connect-src 'self'; frame-ancestors 'none'; "
         + "object-src 'none'; base-uri 'self'";
 
-    // The generated website (WEBSITE_URL) is a public document site, not the
-    // admin SPA, and gets its own policy rather than a loosened global one:
-    //   * script-src adds ONE host, jsdelivr, for the pinned, integrity-checked
-    //     mermaid engine (WebsiteRenderer.MermaidScript). Still no
-    //     'unsafe-inline' — that absence is what stops script in an html-typed
-    //     page, or a javascript: URL, from running in an origin the admin UI
-    //     shares.
-    //   * style-src/font-src add Google Fonts, which the site's type uses.
-    //   * img-src allows https: because published content links images from
-    //     wherever its authors host them; an image cannot run script.
-    //   * connect-src 'self' — the pages never call anything, and mermaid
-    //     renders locally.
-    private const string WebsiteContentSecurityPolicy =
-        "default-src 'self'; script-src 'self' https://cdn.jsdelivr.net; "
-        + "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
-        + "font-src 'self' https://fonts.gstatic.com; img-src 'self' data: https:; "
-        + "connect-src 'self'; frame-ancestors 'none'; object-src 'none'; "
-        + "base-uri 'self'; form-action 'self'";
-
     public static IApplicationBuilder UseDmartResponseHeaders(
-        this IApplicationBuilder app, PathString cxbPath, PathString catPath, PathString websitePath)
+        this IApplicationBuilder app, PathString cxbPath, PathString catPath)
     {
         // Resolve once at setup — DmartSettings is singleton-scoped.
         var settings = app.ApplicationServices.GetRequiredService<IOptions<DmartSettings>>().Value;
@@ -162,21 +143,7 @@ public static class ResponseHeadersMiddleware
                 // un-hashed entry points that must never be served stale, or the
                 // browser keeps booting a build whose hashed assets are gone.
                 // Everything else (all API responses) keeps the no-store policy.
-                //
-                // Website pages are revalidated rather than refetched: no-cache
-                // (without no-store) lets WebsiteMiddleware's ETag answer 304,
-                // and a rebuild still shows on the next load. Its assets are
-                // versioned with ?v=, so they are left to cache like the SPAs'.
-                PathString websiteRest = default;
-                var isWebsite = websitePath.HasValue
-                    && ctx.Request.Path.StartsWithSegments(websitePath, out websiteRest);
-                if (isWebsite)
-                {
-                    var ext = Path.GetExtension(websiteRest.Value ?? "");
-                    if (ext.Length == 0 || ext.Equals(".html", StringComparison.OrdinalIgnoreCase))
-                        headers["Cache-Control"] = "no-cache";
-                }
-                else if (!IsCacheableSpaAsset(ctx.Request.Path, cxbPath, catPath))
+                if (!IsCacheableSpaAsset(ctx.Request.Path, cxbPath, catPath))
                 {
                     headers["Cache-Control"] = CacheControlNoCache;
                     headers["Pragma"] = "no-cache";
@@ -215,11 +182,7 @@ public static class ResponseHeadersMiddleware
                 // path trees to the policy they already declare.
                 var isHtml = headers.ContentType.ToString()
                     .StartsWith("text/html", StringComparison.OrdinalIgnoreCase);
-                if (isHtml && isWebsite)
-                {
-                    headers["Content-Security-Policy"] = WebsiteContentSecurityPolicy;
-                }
-                else if (isHtml
+                if (isHtml
                     && !ctx.Request.Path.StartsWithSegments("/docs")
                     && !ctx.Request.Path.StartsWithSegments("/oauth"))
                 {
