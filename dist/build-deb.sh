@@ -83,6 +83,10 @@ rm -rf "bin/Release/net10.0/linux-x64" "obj/Release/net10.0/linux-x64"
 # The mcr.microsoft.com/dotnet/sdk:10.0 image is Debian-12-based and ships
 # dotnet pre-installed — saves the 3-min `dnf install dotnet-sdk` step
 # that dist/build-rpm.sh's almalinux path pays.
+# Pulled under the store lock first: a pull racing another job's prune fails
+# (dist/podman-store-lock.sh).
+CONTAINER_ENGINE="$ENGINE" "$SRCDIR/dist/podman-store-lock.sh" pull debian:12-slim
+
 $ENGINE run --rm \
     --network=host \
     -v "${SRCDIR}:/src:z" \

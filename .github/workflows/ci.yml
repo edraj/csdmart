@@ -1191,7 +1191,9 @@ jobs:
       - name: Build the container image from it
         if: steps.scope.outputs.run == 'true'
         run: |
-          podman build -t dmart-ci:test \
+          # Shared store lock: the build pulls its base images, and a release's
+          # prune must not run under them (dist/podman-store-lock.sh).
+          dist/podman-store-lock.sh shared -- podman build -t dmart-ci:test \
             -f admin_scripts/docker/Dockerfile \
             --build-arg DMART_VERSION=0.0.0 .
 
@@ -1332,6 +1334,8 @@ jobs:
         run: |
           set -e
           mkdir -p "$HOME/.nuget/packages"
+          # Pulled under the store lock first (dist/podman-store-lock.sh).
+          dist/podman-store-lock.sh pull mcr.microsoft.com/dotnet/sdk:10.0-alpine
           podman run --rm \
             -v "$PWD":/src:z \
             -v "$HOME/.nuget/packages":/nuget:z \
