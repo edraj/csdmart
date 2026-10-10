@@ -1,5 +1,20 @@
 # Changelog
 
+## v1.6.4 — 2026-10-10
+
+### Fixed
+
+- **cxb draws mermaid diagrams in markdown.** A ```mermaid block showed
+  as its source in the editor's Preview tab and in the attachment view.
+  It is now drawn as a diagram that follows the light/dark theme. A
+  diagram that does not parse keeps its source under an error caption.
+  Mermaid is bundled into cxb, because the CSP takes scripts from 'self'
+  only, and loaded only when a page has a diagram. It adds about 7.5 MB
+  to the embedded cxb assets.
+- **cxb: a markdown page longer than 4096 characters can be edited.**
+  The editor's textarea was capped at 4096 characters, and a browser
+  refuses every keystroke in a field already over its cap.
+
 ## v1.6.3 — 2026-10-10
 
 ### Removed
