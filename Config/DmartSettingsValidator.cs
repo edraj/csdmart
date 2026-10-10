@@ -47,6 +47,26 @@ internal sealed class DmartSettingsValidator : IValidateOptions<DmartSettings>
                 failures.Add($"LdapTrustedPeers has entries that are not an address or CIDR range: {string.Join(", ", badPeers)}");
         }
 
+        // The OIDC provider signs with a key it may have to create, and serves
+        // clients from a file: both paths must be usable before it starts.
+        if (s.OidcEnabled)
+        {
+            if (!Uri.TryCreate(s.OidcIssuer, UriKind.Absolute, out var issuer)
+                || issuer.Scheme is not ("https" or "http")
+                || !string.IsNullOrEmpty(issuer.Query) || !string.IsNullOrEmpty(issuer.Fragment))
+                failures.Add($"OidcIssuer must be an absolute http(s) URL without query or fragment (got '{s.OidcIssuer}')");
+            else if (issuer.Scheme == "http" && !issuer.IsLoopback)
+                failures.Add("OidcIssuer must be https unless it is a loopback address: relying parties send it codes and secrets");
+            if (s.OidcSigningKeyFile.Length == 0)
+                failures.Add("OidcIssuer needs OidcSigningKeyFile (it is created on first start if missing)");
+            else if (Path.GetDirectoryName(Path.GetFullPath(s.OidcSigningKeyFile)) is { } keyDir && !Directory.Exists(keyDir))
+                failures.Add($"OidcSigningKeyFile's directory '{keyDir}' does not exist");
+            if (s.OidcClientsFile.Length == 0 || !File.Exists(s.OidcClientsFile))
+                failures.Add($"OidcIssuer needs OidcClientsFile to name an existing file (got '{s.OidcClientsFile}')");
+            if (s.OidcTokenSeconds is < 60 or > 86400)
+                failures.Add($"OidcTokenSeconds must be 60-86400 (got {s.OidcTokenSeconds})");
+        }
+
         // A replica polls its primary from startup on; a URL or credential it
         // cannot use would only surface as a warning in the log, while LDAP
         // answers `unavailable` forever.

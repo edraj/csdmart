@@ -4,6 +4,18 @@
 
 ### Added
 
+- **dmart is an OpenID Connect provider** (`OIDC_ISSUER`, off by default), so
+  a suite needs no Dex: MAS, Gitea and other relying parties sign users in
+  against dmart directly. It provides:
+  - the authorization code flow with PKCE, discovery, JWKS and userinfo;
+  - single sign-on from an existing dmart browser session;
+  - a sign-in form that takes a shortname, contact email or hosted mailbox.
+
+  ID and access tokens are RS256, from a key created on first start. The
+  access token reads userinfo and nothing else; it is not a dmart session.
+  Clients are listed in `OIDC_CLIENTS_FILE`, and each may require a
+  directory service (the `authorizedService` gate Dex applied). See
+  `docs/oidc-provider.md`.
 - **The website's home page explains dmart in 30 seconds.** A new `explainer`
   section kind plays an animated figure one scene at a time, captioned by
   the section's items. The built-in figure covers modelling a space and its

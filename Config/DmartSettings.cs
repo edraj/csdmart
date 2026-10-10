@@ -250,6 +250,23 @@ public sealed class DmartSettings
     public int DirectoryReplicaIntervalSeconds { get; set; } = 30;
 
     public string[] ParseDirectoryFeedReaders() => SplitList(DirectoryFeedReaders);
+
+    // ---- OpenID Connect provider (docs/oidc-provider.md) ----
+    // The issuer: the public base URL relying parties reach this dmart at,
+    // exactly as they will compare it (e.g. "https://id.example.com"). Set, it
+    // serves discovery at <issuer>/.well-known/openid-configuration and the
+    // provider under <issuer>/oidc/. Empty (the default) turns it off.
+    public string OidcIssuer { get; set; } = "";
+    // PEM file holding the RSA key that signs ID and access tokens. Created
+    // (0600) on first start when missing. Losing it invalidates every token in
+    // flight; keep it with the database backups.
+    public string OidcSigningKeyFile { get; set; } = "";
+    // JSON file listing the relying parties (docs/oidc-provider.md has the
+    // format). Re-read when it changes on disk.
+    public string OidcClientsFile { get; set; } = "";
+    // Lifetime of ID and access tokens, in seconds.
+    public int OidcTokenSeconds { get; set; } = 3600;
+    public bool OidcEnabled => OidcIssuer.Length > 0;
     public bool IsDirectoryReplica => DirectoryReplicaOf.Length > 0;
 
     public string[] ParseLdapServiceAccounts() => SplitList(LdapServiceAccounts);
